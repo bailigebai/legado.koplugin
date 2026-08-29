@@ -1,0 +1,7 @@
+.dotnet-sdk-10.0.302/
+.tools/
+.worktrees/
+.superpowers/
+dist/
+*.zip
+
