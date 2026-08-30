@@ -20,5 +20,10 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
+& powershell -ExecutionPolicy Bypass -File (Join-Path $repositoryRoot "spec\namespace_checker_spec.ps1")
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
 & $venvPython (Join-Path $PSScriptRoot "run_lua_specs.py") "--spec" "spec/plugin_smoke_spec.lua"
 exit $LASTEXITCODE
