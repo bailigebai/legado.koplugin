@@ -29,6 +29,10 @@ local function fixture(options)
         state.tasks[task.id] = clone(task); return task
     end
     function storage:listDownloadTasks()
+        if options.preserve_initial_order then
+            local values = {}; for _, task in ipairs(options.initial or {}) do values[#values + 1] = clone(state.tasks[task.id]) end
+            return values
+        end
         local values = {}; for _, task in pairs(state.tasks) do values[#values + 1] = clone(task) end; return values
     end
     function storage:listSources() return { source } end
@@ -77,6 +81,88 @@ local function fixture(options)
         standby = standby, builder = builder, scheduler = options.scheduler,
         output_root = "downloads", now = function() return 10 end })
     return manager, state
+end
+
+local function permutations(values)
+    local output = {}
+    for first = 1, #values do
+        for second = 1, #values do
+            for third = 1, #values do
+                if first ~= second and first ~= third and second ~= third then
+                    output[#output + 1] = { clone(values[first]), clone(values[second]), clone(values[third]) }
+                end
+            end
+        end
+    end
+    return output
+end
+
+local function restored_task(id, sequence, created, task_id)
+    local value = book(id)
+    return { id = task_id or ("task-" .. id), book_id = value.id, source_id = value.source_id, book = value,
+        chapters = { chapter(value, 1) }, status = "queued", queue_sequence = sequence,
+        created_at = created, updated_at = created, completed = 0, failed = 0,
+        final_path = "downloads/" .. id .. ".epub" }
+end
+
+local function with_forced_task_pairs(order, call)
+    local original_pairs = pairs
+    _G.pairs = function(target)
+        if type(target) == "table" and rawget(target, "a2") and rawget(target, "b2") and rawget(target, "c2") then
+            local index = 0
+            return function()
+                index = index + 1
+                local key = order[index]
+                if key then return key, target[key] end
+            end, target, nil
+        end
+        return original_pairs(target)
+    end
+    local result = { pcall(call) }
+    _G.pairs = original_pairs
+    if not result[1] then error(result[2]) end
+    return unpack(result, 2)
+end
+
+-- Mixed legacy queue metadata must define one strict total order independent of
+-- storage/hash insertion order, both at startup and after persistence recovery.
+do
+    for _, legacy_kind in ipairs({ "missing", "invalid" }) do
+        local legacy_sequence
+        if legacy_kind == "invalid" then legacy_sequence = "invalid" end
+        local tasks = {
+            restored_task("order-a", 2, 1, "a2"),
+            restored_task("order-b", 1, 3, "b2"),
+            restored_task("order-c", legacy_sequence, 2, "c2"),
+        }
+        for permutation_index, initial in ipairs(permutations(tasks)) do
+            local scheduled = {}
+            local scheduler = { scheduleIn = function(_, _, action) scheduled[#scheduled + 1] = action end }
+            local forced_order = { initial[1].id, initial[2].id, initial[3].id }
+            local manager, state = with_forced_task_pairs(forced_order, function()
+                return fixture({ initial = initial, preserve_initial_order = true, scheduler = scheduler,
+                    fail_put = function(_, _, current) return current.storage_down end })
+            end)
+            equal("b2,a2,c2", table.concat(manager.queue, ","),
+                "startup mixed queue order is deterministic for permutation " .. permutation_index)
+            state.storage_down = true
+            scheduled[1]()
+            truthy(manager.persistence_blocked, "mixed queue start outage blocks permutation " .. permutation_index)
+            state.storage_down = false
+            truthy(with_forced_task_pairs(forced_order, function() return manager:recoverPersistence() end),
+                "mixed queue recovers permutation " .. permutation_index)
+            local observed = {}
+            for action_index = 2, 4 do
+                scheduled[action_index]()
+                local request = state.pending[#state.pending]
+                observed[#observed + 1] = request and request.book.id or "missing"
+                if request then request.callback({ content = "<p>ordered</p>" }, nil) end
+            end
+            equal("order-b,order-a,order-c", table.concat(observed, ","),
+                "mixed queue ordering is deterministic for permutation " .. permutation_index)
+            equal(3, #state.pending, "mixed queue has no duplicates for permutation " .. permutation_index)
+        end
+    end
 end
 
 -- A persistent storage outage is a circuit breaker: no unpersisted terminal

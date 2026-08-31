@@ -43,6 +43,34 @@ local function published_diagnostic(value)
     }
 end
 
+local function valid_queue_sequence(value)
+    local numeric = tonumber(value)
+    if not numeric or numeric ~= numeric or numeric == math.huge or numeric == -math.huge
+        or numeric <= 0 or numeric % 1 ~= 0 then return nil end
+    return numeric
+end
+
+local function queued_before(a, b)
+    local aq, bq = valid_queue_sequence(a.queue_sequence), valid_queue_sequence(b.queue_sequence)
+    if aq ~= nil or bq ~= nil then
+        if aq == nil then return false end
+        if bq == nil then return true end
+        if aq ~= bq then return aq < bq end
+    end
+    local created_a, created_b = tonumber(a.created_at) or 0, tonumber(b.created_at) or 0
+    if created_a ~= created_a then created_a = 0 end
+    if created_b ~= created_b then created_b = 0 end
+    if created_a ~= created_b then return created_a < created_b end
+    return tostring(a.id or "") < tostring(b.id or "")
+end
+
+local function sorted_queued_tasks(tasks)
+    local queued = {}
+    for _, task in pairs(tasks) do if task.status == "queued" then queued[#queued + 1] = task end end
+    table.sort(queued, queued_before)
+    return queued
+end
+
 function DownloadManager.new(options)
     options = options or {}
     assert(options.storage, "DownloadManager requires storage")
@@ -81,17 +109,10 @@ function DownloadManager.new(options)
         end
     end
     if recovered and type(self.standby.releaseAll) == "function" then self.standby:releaseAll() end
-    local queued = {}
     for _, task in pairs(self.tasks) do
-        self.queue_sequence = math.max(self.queue_sequence, tonumber(task.queue_sequence) or 0)
-        if task.status == "queued" then queued[#queued + 1] = task end
+        self.queue_sequence = math.max(self.queue_sequence, valid_queue_sequence(task.queue_sequence) or 0)
     end
-    table.sort(queued, function(a, b)
-        local aq, bq = tonumber(a.queue_sequence), tonumber(b.queue_sequence)
-        if aq and bq and aq ~= bq then return aq < bq end
-        if (a.created_at or 0) ~= (b.created_at or 0) then return (a.created_at or 0) < (b.created_at or 0) end
-        return a.id < b.id
-    end)
+    local queued = sorted_queued_tasks(self.tasks)
     for _, task in ipairs(queued) do self.queue[#self.queue + 1] = task.id end
     if #self.queue > 0 and not self.persistence_blocked then self:_schedulePump() end
     return self
@@ -429,16 +450,7 @@ function DownloadManager:recoverPersistence()
             end
         end
     end
-    local queued = {}
-    for _, task in pairs(self.tasks) do
-        if task.status == "queued" then queued[#queued + 1] = task end
-    end
-    table.sort(queued, function(a, b)
-        local aq, bq = tonumber(a.queue_sequence), tonumber(b.queue_sequence)
-        if aq and bq and aq ~= bq then return aq < bq end
-        if (a.created_at or 0) ~= (b.created_at or 0) then return (a.created_at or 0) < (b.created_at or 0) end
-        return a.id < b.id
-    end)
+    local queued = sorted_queued_tasks(self.tasks)
     self.queue = {}
     for _, task in ipairs(queued) do self.queue[#self.queue + 1] = task.id end
     self.persistence_blocked, self.init_error = false, nil
