@@ -9,13 +9,25 @@ from pathlib import Path
 
 
 BASELINE = "v2026.07.1"
+EXPECTED_COMMIT = "9192014d8bd82a91dc1012473be0f238dedfdb54"
+KNOWN_EXTERNAL = {
+    "apps/reader/readerui", "bit", "datastorage", "device", "ffi", "ffi/archiver", "ffi/loadlib", "ffi/sha2", "ffi/util",
+    "json", "lfs", "libs/libkoreader-lfs", "ltn12", "lua-ljsqlite3/init", "luasettings", "socket", "socket.http",
+    "ssl.https",
+}
 
 
 def referenced_modules(plugin_root: Path) -> set[str]:
-    pattern = re.compile(r'(?:require|optional_require|optional|loaded)\s*\(?\s*["\']([^"\']+)["\']')
+    patterns = (
+        re.compile(r'\brequire\s*\(?\s*["\']([^"\']+)["\']'),
+        re.compile(r'\bpcall\s*\(\s*require\s*,\s*["\']([^"\']+)["\']'),
+        re.compile(r'\b(?:optional_require|optional|loaded)\s*\(\s*["\']([^"\']+)["\']'),
+    )
     modules: set[str] = set()
     for path in plugin_root.rglob("*.lua"):
-        modules.update(pattern.findall(path.read_text(encoding="utf-8")))
+        text = path.read_text(encoding="utf-8")
+        for pattern in patterns:
+            modules.update(pattern.findall(text))
     return modules
 
 
@@ -30,6 +42,10 @@ def source_names(source_root: Path) -> set[str]:
 
 def validate(plugin_root: Path, source_root: Path, archive_path: Path) -> list[str]:
     modules = referenced_modules(plugin_root)
+    external = {module for module in modules if not module.startswith("legado.")}
+    unknown = sorted(module for module in external if not module.startswith("ui/") and module not in KNOWN_EXTERNAL)
+    if unknown:
+        raise ValueError("unclassified external modules: " + ", ".join(unknown))
     ui_modules = sorted(module for module in modules if module == "datastorage" or module.startswith("ui/"))
     source = source_names(source_root)
     with zipfile.ZipFile(archive_path) as archive:
@@ -43,6 +59,19 @@ def validate(plugin_root: Path, source_root: Path, archive_path: Path) -> list[s
         if not (suffix_present(release, "frontend/" + relative) or suffix_present(release, relative)):
             missing.append("kindlehf:" + module)
 
+    paired_modules = {
+        "apps/reader/readerui": ("frontend/apps/reader/readerui.lua",),
+        "device": ("frontend/device.lua",),
+        "ffi/archiver": ("base/ffi/archiver.lua", "ffi/archiver.lua"),
+    }
+    for module, candidates in paired_modules.items():
+        if module in external:
+            if not any(suffix_present(source, candidate) for candidate in candidates):
+                missing.append("source:" + module)
+            release_candidates = tuple(candidate.removeprefix("base/") for candidate in candidates)
+            if not any(suffix_present(release, candidate) for candidate in release_candidates):
+                missing.append("kindlehf:" + module)
+
     runtime_groups = {
         "ffi/util": ("ffi/util.lua",),
         "ffi/loadlib": ("ffi/loadlib.lua",),
@@ -52,6 +81,12 @@ def validate(plugin_root: Path, source_root: Path, archive_path: Path) -> list[s
         "LuaSec core": ("ssl.so", "ssl/core.so"),
         "Ltn12": ("ltn12.lua",),
         "SQLite": ("lua-ljsqlite3/init.lua",),
+        "JSON": ("json.lua",),
+        "Lua settings": ("luasettings.lua",),
+        "LuaSocket entry": ("socket.lua",),
+        "LuaJIT core": ("luajit",),
+        "filesystem": ("libs/libkoreader-lfs.so", "lfs.so"),
+        "ffi/sha2": ("ffi/sha2.lua",),
     }
     for label, alternatives in runtime_groups.items():
         if not any(suffix_present(release, item) for item in alternatives):
@@ -85,10 +120,16 @@ def self_test(plugin_root: Path) -> None:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("return {}", encoding="utf-8")
             entries.append("koreader/" + relative.as_posix())
+        for relative in ("base/ffi/archiver.lua", "frontend/apps/reader/readerui.lua", "frontend/device.lua"):
+            path = source / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("return {}", encoding="utf-8")
+        entries.extend(("koreader/ffi/archiver.lua", "koreader/frontend/apps/reader/readerui.lua", "koreader/frontend/device.lua"))
         entries.extend(
             "koreader/" + item for item in (
                 "ffi/util.lua", "ffi/loadlib.lua", "socket/http.lua", "socket/score.so",
-                "ssl/https.lua", "ssl.so", "ltn12.lua", "lua-ljsqlite3/init.lua",
+                "ssl/https.lua", "ssl.so", "ltn12.lua", "lua-ljsqlite3/init.lua", "json.lua", "luasettings.lua",
+                "socket.lua", "luajit", "libs/libkoreader-lfs.so", "ffi/sha2.lua",
             )
         )
         with zipfile.ZipFile(archive, "w") as output:
@@ -108,6 +149,22 @@ def self_test(plugin_root: Path) -> None:
                 raise AssertionError("missing module failure is not specific") from error
         else:
             raise AssertionError("checker accepted a kindlehf fixture without Ltn12")
+        for missing_suffix, expected in (
+            ("ffi/archiver.lua", "kindlehf:ffi/archiver"),
+            ("apps/reader/readerui.lua", "kindlehf:apps/reader/readerui"),
+        ):
+            broken = root / ("broken-" + missing_suffix.replace("/", "-") + ".zip")
+            with zipfile.ZipFile(broken, "w") as output:
+                for name in entries:
+                    if not name.endswith(missing_suffix):
+                        output.writestr(name, b"fixture")
+            try:
+                validate(plugin_root, source, broken)
+            except ValueError as error:
+                if expected not in str(error):
+                    raise AssertionError(f"missing {missing_suffix} failure is not specific") from error
+            else:
+                raise AssertionError(f"checker accepted kindlehf fixture without {missing_suffix}")
     print("KOReader compatibility checker self-test passed.")
 
 

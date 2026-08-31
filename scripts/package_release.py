@@ -6,18 +6,10 @@ import re
 import zipfile
 from pathlib import Path
 
+from release_policy import DOCUMENTS, TOP, collect_runtime, read_document
+
 
 FIXED_TIME = (1980, 1, 1, 0, 0, 0)
-TOP = "legado.koplugin"
-DOCUMENTS = (
-    "README.md",
-    "LICENSE",
-    "THIRD_PARTY_NOTICES.md",
-    "docs/rule-compatibility.md",
-    "docs/privacy-and-copyright.md",
-    "docs/testing.md",
-    "docs/kpw6-checklist.md",
-)
 
 
 def plugin_version(meta: bytes) -> str:
@@ -29,15 +21,9 @@ def plugin_version(meta: bytes) -> str:
 
 def collect(root: Path) -> dict[str, bytes]:
     plugin = root / TOP
-    entries: dict[str, bytes] = {}
-    for path in sorted(item for item in plugin.rglob("*") if item.is_file()):
-        relative = path.relative_to(plugin).as_posix()
-        entries[f"{TOP}/{relative}"] = path.read_bytes()
+    entries = collect_runtime(plugin)
     for relative in DOCUMENTS:
-        path = root / relative
-        if not path.is_file():
-            raise FileNotFoundError(f"required release file is missing: {relative}")
-        entries[f"{TOP}/{relative}"] = path.read_bytes()
+        entries[f"{TOP}/{relative}"] = read_document(root, relative)
     return entries
 
 

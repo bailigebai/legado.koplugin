@@ -1,5 +1,6 @@
 local assertx = require("assertions")
 local CompatibilityReport = require("legado.ui.compatibility_report")
+local SourceManager = require("legado.ui.source_manager")
 
 local count = 0
 local function equal(expected, actual, message) count = count + 1; assertx.equal(expected, actual, message) end
@@ -43,7 +44,51 @@ diagnostic_callback({ status = "completed", steps = {} })
 equal("completed", completed.status, "diagnostic result is delivered")
 equal("completed", view.diagnostic.status, "diagnostic result remains visible")
 equal(true, view:close(), "report can be closed")
-equal(1, active_cancelled, "closing report cancels any retained handle")
+equal(0, active_cancelled, "closing a completed report does not cancel a stale handle")
 equal(false, view:close(), "closing report is idempotent")
+
+local active_cancel_count = 0
+local active_view = CompatibilityReport.new({
+    source = source,
+    scanner = { scan = function() return scan end },
+    diagnostics = { run = function()
+        return { cancel = function() active_cancel_count = active_cancel_count + 1; return true end }
+    end },
+})
+active_view:run("keyword", function() end)
+equal(true, active_view:cancel(), "active report exposes explicit cancellation")
+equal(false, active_view:cancel(), "explicit cancellation is idempotent")
+active_view:close()
+equal(1, active_cancel_count, "cancel followed by close reaches the active handle exactly once")
+
+local hostile = CompatibilityReport.new({
+    source = source,
+    scanner = { scan = function() return {
+        status = "partial",
+        capabilities = { search = true, SECRET = true },
+        issues = {
+            { field = "extra.https://reader:password@x/?token=SECRET\n", code = "EXECUTABLE_JS", message = "SECRET" },
+            { field = "ruleContent.%53%45%43%52%45%54", code = "UNKNOWN_SECRET", message = "SECRET" },
+        },
+    } end },
+})
+local rendered = ""
+for _, issue in ipairs(hostile.issues) do rendered = rendered .. tostring(issue.field) .. tostring(issue.code) .. tostring(issue.message) end
+for _, capability in ipairs(hostile.capabilities) do rendered = rendered .. tostring(capability.name) end
+equal(nil, rendered:find("SECRET", 1, true), "compatibility UI model drops unknown capabilities and secret issue data")
+equal(nil, rendered:find("password", 1, true), "compatibility UI model redacts URL userinfo")
+equal("EXECUTABLE_JS", hostile.issues[1].code, "known issue code remains useful")
+equal("UNSUPPORTED_RULE", hostile.issues[2].code, "unknown issue code maps to a safe constant")
+
+local manager = SourceManager.new({
+    storage = { getSource = function() return source end, listSources = function() return { source } end },
+    scanner = { scan = function() return {
+        status = "partial", capabilities = { search = true },
+        issues = { { field = "extra.https://x/?token=SECRET", code = "EXECUTABLE_JS", message = "SECRET" } },
+    } end },
+})
+local manager_report = manager:compatibility("s1")
+local manager_text = manager_report.issues[1].field .. manager_report.issues[1].message
+equal(nil, manager_text:find("SECRET", 1, true), "source manager never exposes the scanner's raw issue object")
 
 return count

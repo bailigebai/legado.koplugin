@@ -1,5 +1,6 @@
 local Scanner = require("legado.lib.compatibility_scanner")
 local SourceImporter = require("legado.lib.source_importer")
+local Sanitizer = require("legado.lib.diagnostic_sanitizer")
 
 local SourceManager = {}
 SourceManager.__index = SourceManager
@@ -76,7 +77,7 @@ end
 
 function SourceManager:compatibility(id)
     local source = self.storage:getSource(id)
-    return source and self.scanner.scan(source) or nil
+    return source and Sanitizer.compatibility(self.scanner.scan(source)) or nil
 end
 
 function SourceManager:compatibilityReport(id)

@@ -7,6 +7,7 @@ $sourceRoot = Join-Path $toolsRoot "koreader"
 $archivePath = Join-Path $toolsRoot "koreader-kindlehf-v2026.07.1.zip"
 $python = Join-Path $toolsRoot "python\python.exe"
 $tag = "v2026.07.1"
+$expectedCommit = "9192014d8bd82a91dc1012473be0f238dedfdb54"
 $archiveUrl = "https://github.com/koreader/koreader/releases/download/v2026.07.1/koreader-kindlehf-v2026.07.1.zip"
 $archiveSha256 = "3343a916d12f36c01b59df1f65bd83ff5616e6c2a4dfbe919e7fa1400b8b1bbb"
 
@@ -26,8 +27,25 @@ if (-not (Test-Path -LiteralPath $sourceRoot -PathType Container)) {
 $headCommit = (& git -C $sourceRoot rev-parse HEAD 2>$null).Trim()
 if ($LASTEXITCODE -ne 0) { Write-Error "Unable to read KOReader checkout: $sourceRoot"; exit 1 }
 $tagCommit = (& git -C $sourceRoot rev-parse ("refs/tags/{0}^{{commit}}" -f $tag) 2>$null).Trim()
-if ($LASTEXITCODE -ne 0 -or $headCommit -ne $tagCommit) {
+if ($LASTEXITCODE -ne 0 -or $headCommit -ne $expectedCommit -or $tagCommit -ne $expectedCommit) {
     Write-Error "KOReader source must be an exact $tag checkout: $sourceRoot"
+    exit 1
+}
+$dirty = & git -C $sourceRoot status --porcelain=v1 --untracked-files=all --ignore-submodules=none
+if ($LASTEXITCODE -ne 0 -or $dirty) {
+    Write-Error "KOReader source cache has tracked/index/worktree changes: $sourceRoot"
+    exit 1
+}
+
+$archiverSource = Join-Path $sourceRoot "base\ffi\archiver.lua"
+if (-not (Test-Path -LiteralPath $archiverSource -PathType Leaf)) {
+    if ($Offline) { Write-Error "KOReader base submodule is absent in offline mode: $archiverSource"; exit 1 }
+    & git -C $sourceRoot submodule update --init --depth 1 base
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+$dirty = & git -C $sourceRoot status --porcelain=v1 --untracked-files=all --ignore-submodules=none
+if ($LASTEXITCODE -ne 0 -or $dirty) {
+    Write-Error "KOReader source cache changed after submodule initialization: $sourceRoot"
     exit 1
 }
 

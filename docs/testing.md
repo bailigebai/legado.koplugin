@@ -14,7 +14,7 @@ powershell -ExecutionPolicy Bypass -File scripts/run-specs.ps1
 powershell -ExecutionPolicy Bypass -File scripts/check-koreader-compat.ps1
 ```
 
-该脚本只接受 KOReader v2026.07.1 基线，将官方源码安全地放入忽略的 `.tools/koreader/`（已有正确检出时复用），再核对插件实际使用的 UI、FFI、归档、Socket/LuaSec/Ltn12、SQLite 与子进程相关模块路径。它是源码和 `kindlehf` 模块清单检查，不代替真机运行。
+该脚本只接受 KOReader v2026.07.1 的固定 commit，将官方源码及固定 `koreader-base` 子模块放入忽略的 `.tools/koreader/`（已有完全一致且干净的检出时复用），并校验官方 `kindlehf` ZIP 的固定 SHA256。它静态核对插件实际引用的 ReaderUI、UI、FFI/archiver、Socket/LuaSec/Ltn12、SQLite 与子进程相关模块路径；不会启动 Kindle 二进制，也不代替真机运行。
 
 ## 构建发布包
 

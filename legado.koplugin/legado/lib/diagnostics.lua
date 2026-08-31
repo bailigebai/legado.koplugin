@@ -1,5 +1,6 @@
 local Errors = require("legado.lib.errors")
 local Scanner = require("legado.lib.compatibility_scanner")
+local Sanitizer = require("legado.lib.diagnostic_sanitizer")
 
 local Diagnostics = {}
 Diagnostics.__index = Diagnostics
@@ -82,7 +83,7 @@ function Diagnostics:run(source, keyword, callback)
     assert(type(callback) == "function", "Diagnostics callback must be a function")
     local report = {
         status = "running",
-        compatibility = self.scanner and self.scanner.scan and self.scanner.scan(source) or nil,
+        compatibility = Sanitizer.compatibility(self.scanner and self.scanner.scan and self.scanner.scan(source) or nil),
         steps = skipped_steps(),
     }
     local state = { completed = false, cancelled = false, active = nil, step = 0 }

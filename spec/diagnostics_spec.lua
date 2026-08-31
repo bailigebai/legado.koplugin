@@ -88,6 +88,58 @@ local function flatten(value, seen)
     return table.concat(output, "|")
 end
 
+local hostile_scan = {
+    status = "partial",
+    capabilities = { search = true, catalog = true, content = true, SECRET_CAPABILITY = true },
+    issues = {
+        { field = "extra.https://reader:password@x/?token=SECRET\ncontrol", code = "EXECUTABLE_JS", message = "SECRET message" },
+        { field = "ruleContent.%53%45%43%52%45%54", code = "UNKNOWN_SECRET", message = "SECRET unknown" },
+    },
+    SECRET = "must not survive",
+}
+
+local function assert_compatibility_redacted(report, label)
+    local serialized = flatten(report)
+    equal(nil, serialized:find("SECRET", 1, true), label .. " redacts literal secrets")
+    equal(nil, serialized:find("password", 1, true), label .. " redacts URL userinfo")
+    equal(nil, serialized:find("token=", 1, true), label .. " redacts query strings")
+    equal(nil, serialized:find("%%53%%45%%43%%52%%45%%54"), label .. " redacts encoded key material")
+end
+
+do
+    local complete_service = {}
+    function complete_service:search(_, _, _, callback)
+        callback({ groups = { { book = book } } }, nil, { http_status = 200 })
+        return { cancel = function() return false end }
+    end
+    function complete_service:getChapters(_, _, callback)
+        callback({ chapter }, nil, { http_status = 200 })
+        return { cancel = function() return false end }
+    end
+    function complete_service:getContent(_, _, _, callback)
+        callback({ content = "body", pages = 1 }, nil, { http_status = 200 })
+        return { cancel = function() return false end }
+    end
+    local completed
+    Diagnostics.new({ book_service = complete_service, scanner = { scan = function() return hostile_scan end }, now = function() return 1 end })
+        :run(source, "book", function(report) completed = report end)
+    assert_compatibility_redacted(completed, "successful diagnostics")
+
+    local failing = fake_service()
+    local failed
+    Diagnostics.new({ book_service = failing, scanner = { scan = function() return hostile_scan end }, now = function() return 1 end })
+        :run(source, "book", function(report) failed = report end)
+    failing:respond(1, nil, { code = "NETWORK_ERROR" })
+    assert_compatibility_redacted(failed, "failed diagnostics")
+
+    local cancelling = fake_service()
+    local cancelled
+    local handle = Diagnostics.new({ book_service = cancelling, scanner = { scan = function() return hostile_scan end }, now = function() return 1 end })
+        :run(source, "book", function(report) cancelled = report end)
+    handle:cancel()
+    assert_compatibility_redacted(cancelled, "cancelled diagnostics")
+end
+
 do
     local service = fake_service()
     local final

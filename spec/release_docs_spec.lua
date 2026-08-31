@@ -22,6 +22,12 @@ truthy(readme:find("不附带书源", 1, true), "README says no sources are bund
 truthy(readme:find("不执行", 1, true) and readme:find("JavaScript", 1, true), "README documents the JavaScript safety boundary")
 truthy(readme:find("AGPL%-3%.0"), "README states the project license")
 truthy(readme:find("legado.koplugin", 1, true), "README contains installation location guidance")
+truthy(readme:find("## 故障排查", 1, true), "README has troubleshooting guidance")
+truthy(readme:find("## 卸载与清理", 1, true), "README has uninstall guidance")
+truthy(readme:find("DataStorage:getDataDir()", 1, true), "README identifies the actual KOReader data root")
+for _, token in ipairs({ "/legado/cache/", "/legado/covers/", "/legado/downloads/", "/legado/legado.sqlite" }) do
+    truthy(readme:find(token, 1, true), "README documents cleanup location " .. token)
+end
 
 local rules = read("docs/rule-compatibility.md")
 for _, token in ipairs({ "CSS", "JSONPath", "XPath", "{{", "&&", "||", "##", "@js:", "WebView" }) do
@@ -32,6 +38,10 @@ local privacy = read("docs/privacy-and-copyright.md")
 for _, token in ipairs({ "Cookie", "日志", "书源", "版权", "JavaScript", "4 MB", "20 秒" }) do
     truthy(privacy:find(token, 1, true), "privacy document covers " .. token)
 end
+truthy(privacy:find("退出 KOReader", 1, true), "privacy document gives an executable safe deletion procedure")
+truthy(privacy:find("Cookie Jar 只驻留内存", 1, true), "privacy document accurately states cookie persistence")
+truthy(privacy:find("Header", 1, true) and privacy:find("legado.sqlite", 1, true),
+    "privacy document explains persisted source headers and credentials")
 
 local testing = read("docs/testing.md")
 for _, token in ipairs({ "run-specs.ps1", "package.ps1", "verify-package.ps1", "check-koreader-compat.ps1", "未连接" }) do

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import stat
 import shutil
 import subprocess
 import tempfile
+import warnings
 import zipfile
 from pathlib import Path
 
@@ -22,6 +24,16 @@ def rewrite(source: Path, destination: Path, mutate) -> None:
             name, data = info.filename, original.read(info)
             name, data = mutate(name, data)
             changed.writestr(name, data)
+
+
+def clone(source: Path, destination: Path, additions: list[tuple[zipfile.ZipInfo | str, bytes]]) -> None:
+    with zipfile.ZipFile(source) as original, zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as changed:
+        for info in original.infolist():
+            changed.writestr(info, original.read(info))
+        for info, data in additions:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="Duplicate name:.*", category=UserWarning)
+                changed.writestr(info, data)
 
 
 def main() -> int:
@@ -42,17 +54,73 @@ def main() -> int:
     if first_hash != second_hash:
         raise AssertionError("package output is not reproducible")
 
+    accidental = root / "legado.koplugin" / "accidental.txt"
+    accidental.write_text("must not enter release", encoding="utf-8")
+    try:
+        run(build, False, "builder rejects files outside the explicit allowlist")
+    finally:
+        accidental.unlink()
+    run(build, True, "package recovers after an unexpected file is removed")
+    accidental_directory = root / "legado.koplugin" / "legado" / "lib" / "unexpected"
+    accidental_directory.mkdir()
+    try:
+        run(build, False, "builder rejects directories outside the explicit allowlist")
+    finally:
+        accidental_directory.rmdir()
+    run(build, True, "package recovers after an unexpected directory is removed")
+    sensitive_name = root / "legado.koplugin" / "legado" / "lib" / "secret.lua"
+    sensitive_name.write_text("return {}", encoding="utf-8")
+    try:
+        run(build, False, "builder rejects credential-like names even inside an allowed directory")
+    finally:
+        sensitive_name.unlink()
+    run(build, True, "package recovers after a credential-like file is removed")
+
     def verify_command(path: Path) -> list[str]:
         return [powershell, "-ExecutionPolicy", "Bypass", "-File", str(verify), "-Archive", str(path), "-Version", "0.1.0"]
     run(verify_command(artifact), True, "valid package verifies")
 
     with tempfile.TemporaryDirectory(prefix="legado-package-test-") as temporary:
         temporary_path = Path(temporary)
-        forbidden = temporary_path / "forbidden.zip"
-        rewrite(artifact, forbidden, lambda name, data: (name, data))
-        with zipfile.ZipFile(forbidden, "a", zipfile.ZIP_DEFLATED) as changed:
-            changed.writestr("legado.koplugin/spec/forbidden.lua", b"return true")
-        run(verify_command(forbidden), False, "forbidden entry is rejected")
+        attacks: list[tuple[str, list[tuple[zipfile.ZipInfo | str, bytes]]]] = [
+            ("forbidden directory", [("legado.koplugin/spec/forbidden.lua", b"return true")]),
+            ("unexpected root file", [("legado.koplugin/notes.txt", b"notes")]),
+            ("nested wrapper", [("wrapper/legado.koplugin/main.lua", b"return {}")]),
+            ("nested plugin segment", [("legado.koplugin/docs/legado.koplugin/readme.md", b"nested")]),
+            ("path traversal", [("legado.koplugin/docs/../main.lua", b"return {}")]),
+            ("empty segment", [("legado.koplugin//main.lua", b"return {}")]),
+            ("backslash", [("legado.koplugin\\main.lua", b"return {}")]),
+            ("control character", [("legado.koplugin/docs/bad\x01.md", b"bad")]),
+            ("case collision", [("legado.koplugin/readme.md", b"collision")]),
+            ("unicode collision", [
+                ("legado.koplugin/docs/\u00e9.md", b"one"),
+                ("legado.koplugin/docs/e\u0301.md", b"two"),
+            ]),
+            ("directory entry", [("legado.koplugin/docs/", b"")]),
+            ("compression bomb", [("legado.koplugin/docs/bomb.md", b"A" * (9 * 1024 * 1024))]),
+            ("entry count", [(f"legado.koplugin/docs/extra-{index}.md", b"x") for index in range(300)]),
+            ("sensitive text", [("legado.koplugin/docs/leak.md", b"-----BEGIN PRIVATE KEY-----")]),
+        ]
+        symlink = zipfile.ZipInfo("legado.koplugin/docs/link.md")
+        symlink.create_system = 3
+        symlink.external_attr = (stat.S_IFLNK | 0o777) << 16
+        attacks.append(("symlink", [(symlink, b"../../outside")]))
+        device = zipfile.ZipInfo("legado.koplugin/docs/device.md")
+        device.create_system = 3
+        device.external_attr = (stat.S_IFCHR | 0o600) << 16
+        attacks.append(("device", [(device, b"")]))
+
+        accepted = []
+        for index, (label, additions) in enumerate(attacks):
+            malicious = temporary_path / f"attack-{index}.zip"
+            clone(artifact, malicious, additions)
+            result = run(verify_command(malicious), False, label + " is rejected")
+            if result.returncode == 0:
+                accepted.append(label)
+
+        duplicate = temporary_path / "duplicate.zip"
+        clone(artifact, duplicate, [("legado.koplugin/README.md", b"duplicate")])
+        run(verify_command(duplicate), False, "duplicate exact name is rejected")
 
         mismatch = temporary_path / "mismatch.zip"
         def change_version(name: str, data: bytes):
@@ -62,7 +130,15 @@ def main() -> int:
         rewrite(artifact, mismatch, change_version)
         run(verify_command(mismatch), False, "version mismatch is rejected")
 
-    print("Package behavior checks passed (reproducible, forbidden entry, version mismatch).")
+        sensitive = temporary_path / "sensitive.zip"
+        def add_sensitive_content(name: str, data: bytes):
+            if name == "legado.koplugin/README.md":
+                data += b"\n-----BEGIN PRIVATE KEY-----\n"
+            return name, data
+        rewrite(artifact, sensitive, add_sensitive_content)
+        run(verify_command(sensitive), False, "sensitive content in an allowed entry is rejected")
+
+    print("Package behavior checks passed (allowlist, reproducibility, malicious ZIPs, version mismatch).")
     return 0
 
 

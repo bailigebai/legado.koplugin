@@ -2,9 +2,18 @@
 
 ## 本地数据
 
-书源、书架、目录、阅读进度和下载任务保存在 KOReader 数据目录。正文缓存、封面和 EPUB 以文件保存。卸载插件目录不会自动删除数据目录；删除设备数据前请自行备份。
+书源、书架、目录、阅读进度和下载任务保存在 `${DataStorage:getDataDir()}/legado/legado.sqlite`。SQLite 不可用时，同一路径保存 Lua 降级索引。正文目录/章节缓存位于 `/legado/cache/`，封面位于 `/legado/covers/`，生成的 EPUB 与 `.part` 位于 `/legado/downloads/`。卸载插件目录不会自动删除这些数据；删除前请自行备份。
 
-Cookie 按书源标识隔离，避免不同站点或不同书源互相读取。插件不会把数据上传到项目作者的服务，也没有遥测、广告或自动更新功能。
+Cookie Jar 只驻留内存，按书源标识隔离，并在 KOReader 进程结束后丢弃。它不会写入数据库。需要注意：用户导入的书源 JSON 会完整保存书源配置，因此配置中自带的 `Header`、`Cookie`、`Authorization` 或其他凭据字段会持久化到 `legado.sqlite`；这些值用于该书源请求，不应把数据库或原始书源文件分享给他人。插件不会把数据上传到项目作者的服务，也没有遥测、广告或自动更新功能。
+
+## 删除个人数据
+
+1. 完全退出 KOReader，避免数据库或缓存仍在写入。
+2. 备份希望保留的 `/legado/downloads/*.epub`。
+3. 删除 `koreader/plugins/legado.koplugin/` 以卸载插件。
+4. 删除 `${DataStorage:getDataDir()}/legado/` 以清除书源 Header/凭据、书架、进度、任务、Cookie 之外的持久数据、缓存、封面和 EPUB。
+
+若只清缓存，可在退出 KOReader 后分别删除 `/legado/cache/` 和 `/legado/covers/`；若只清导出文件，可删除 `/legado/downloads/`。删除 `legado.sqlite` 不可撤销，并会清除全部书源和阅读状态。运行期 Cookie 无需单独删除，退出 KOReader 即消失。
 
 ## 网络与诊断
 

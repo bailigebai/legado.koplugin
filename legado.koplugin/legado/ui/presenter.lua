@@ -238,8 +238,18 @@ local function diagnostic_report_text(report)
     local lines = { "状态：" .. safe_token(type(report) == "table" and report.status, "unknown") }
     for _, step in ipairs(type(report) == "table" and report.steps or {}) do
         local line = tostring(step.name or "step") .. "：" .. safe_token(step.status, "unknown")
+        local duration = tonumber(step.duration_ms)
+        if duration and duration >= 0 then line = line .. " · " .. tostring(math.floor(duration)) .. " ms" end
         if tonumber(step.http_status) then line = line .. " · HTTP " .. tostring(math.floor(tonumber(step.http_status))) end
         if type(step.charset) == "string" and step.charset:match("^[%w._%-]+$") then line = line .. " · " .. step.charset end
+        local counts = {}
+        if type(step.field_counts) == "table" then
+            for _, name in ipairs({ "results", "fields", "chapters", "pages" }) do
+                local value = tonumber(rawget(step.field_counts, name))
+                if value and value >= 0 then counts[#counts + 1] = name .. "=" .. tostring(math.floor(value)) end
+            end
+        end
+        if #counts > 0 then line = line .. " · " .. table.concat(counts, ",") end
         if type(step.error) == "table" then line = line .. " · " .. safe_token(step.error.code, "UNKNOWN_ERROR") end
         lines[#lines + 1] = line
     end
@@ -265,9 +275,35 @@ function Presenter:_compatibility(view)
         local function start(keyword)
             if (keyword == nil or keyword == "") and dialog and type(dialog.getInputText) == "function" then keyword = dialog:getInputText() end
             if type(keyword) ~= "string" or keyword:match("^%s*$") then return self:_info("请输入测试书名", "书源诊断") end
-            return view:run(keyword, function(report)
-                self:_info(diagnostic_report_text(report), "书源诊断")
-            end)
+            local progress, handle, result_widget
+            local completed, closed = false, false
+            local function finish(report)
+                if closed then return end
+                completed = true
+                if progress and self.ui_manager and type(self.ui_manager.close) == "function" then self.ui_manager:close(progress) end
+                result_widget = self:_info(diagnostic_report_text(report), "书源诊断")
+            end
+            handle = view:run(keyword, finish)
+            if completed then return result_widget or handle end
+            local function cancel_once()
+                if closed or completed then return false end
+                closed = true
+                if type(view.cancel) == "function" then
+                    pcall(view.cancel, view)
+                elseif handle and type(handle.cancel) == "function" then
+                    pcall(handle.cancel, handle)
+                end
+                if progress and self.ui_manager and type(self.ui_manager.close) == "function" then self.ui_manager:close(progress) end
+                return true
+            end
+            progress = construct(self.menu, { title = "诊断中", item_table = {
+                { text = "search：等待中", enabled = false },
+                { text = "result：等待中", enabled = false },
+                { text = "catalog：等待中", enabled = false },
+                { text = "content：等待中", enabled = false },
+                { text = "取消诊断", callback = cancel_once },
+            }, close_callback = cancel_once })
+            return self:_show(progress)
         end
         dialog = construct(self.input_dialog, { title = "书源诊断", input_hint = "测试书名", input_type = "string", buttons = {
             { { text = "取消" }, { text = "开始", is_enter_default = true, callback = start } },
