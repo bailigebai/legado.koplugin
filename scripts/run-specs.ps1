@@ -26,4 +26,9 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 & $venvPython (Join-Path $PSScriptRoot "run_lua_specs.py") "--spec" "spec/plugin_smoke_spec.lua"
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
+& powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "verify-epub.ps1") -SelfTest
 exit $LASTEXITCODE

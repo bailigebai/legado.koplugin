@@ -11,6 +11,10 @@ package.preload["ui/event"] = function() return { new = function(_, name) return
 package.preload["legado.lib.storage"] = function() return { new = function() return {
     listShelf = function() return {} end, listSources = function() return {} end,
     getSource = function() end,
+    listDownloadTasks = function() return {} end,
+    putDownloadTask = function(_, task) return task end,
+    listChapters = function() return {} end,
+    replaceChapters = function() return true end,
 } end } end
 package.preload["legado.lib.request_engine"] = function() return { new = function(options) return {
     scheduler = options.scheduler,
@@ -27,5 +31,6 @@ local settings = app:openSettings()
 assertx.equal(true, settings.actions[1].callback(), "native appearance action is handled")
 assertx.equal("ShowConfigMenu", events[1].name, "appearance action uses KOReader reader-config event API")
 assertx.truthy(app.cover_loader, "bootstrap injects nonblocking cover loader")
+assertx.truthy(app.download_manager, "bootstrap composes EPUB download manager from KOReader services")
 
-return 6
+return 7

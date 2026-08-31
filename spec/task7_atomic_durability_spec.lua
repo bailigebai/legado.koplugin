@@ -20,7 +20,8 @@ local bit = require("bit")
 local function posix_fake(initial, behavior)
     behavior = behavior or {}
     local state = { files = {}, dirs = { [""] = true, root = true }, fds = {}, next_fd = 9, next_ino = 100,
-        errno_value = 0, directory_flags = {}, fsync_dir_calls = 0, backup_unlink_calls = 0, close_calls = 0 }
+        errno_value = 0, directory_flags = {}, fsync_dir_calls = 0, backup_unlink_calls = 0, close_calls = 0,
+        close_by_fd = {} }
     local function inode(content)
         state.next_ino = state.next_ino + 1
         return { ino = state.next_ino, content = content or "" }
@@ -99,6 +100,13 @@ local function posix_fake(initial, behavior)
     end
     function sys:close(fd)
         state.close_calls = state.close_calls + 1
+        state.close_by_fd[fd] = (state.close_by_fd[fd] or 0) + 1
+        if behavior.close_eintr_reuse_once and not state.reused_fd then
+            if not state.fds[fd] then return fail(9) end
+            state.reused_fd = fd
+            state.fds[fd] = { kind = "sentinel", label = "reused-after-close" }
+            return fail(4)
+        end
         if behavior.close_eintr_once and state.close_calls == 1 then return fail(4) end
         if not state.fds[fd] then return fail(9) end
         state.fds[fd] = nil; return 0
@@ -118,14 +126,16 @@ end
 -- injected syscall surface, including ARM flags and EINTR handling.
 do
     local sys, state = posix_fake({ ["root/target"] = "old" }, {
-        fsync_dir_eintr_once = true, backup_unlink_eintr_once = true, close_eintr_once = true,
+        fsync_dir_eintr_once = true, backup_unlink_eintr_once = true, close_eintr_reuse_once = true,
     })
     local saved, err = injected_fs(sys):atomicWrite("root/target", "new", { root = "root", root_identity = { dev = "1", ino = "2" } })
-    truthy(saved, "injected POSIX transaction succeeds after EINTR retries: " .. tostring(err and err.message))
+    truthy(saved, "injected POSIX transaction succeeds after retry-safe EINTR handling: " .. tostring(err and err.message))
     equal("new", state.files["root/target"] and state.files["root/target"].content, "successful transaction publishes new bytes")
     truthy(state.fsync_dir_calls >= 2, "parent fsync retries EINTR")
     equal(2, state.backup_unlink_calls, "backup unlink retries EINTR")
-    equal(nil, next(state.fds), "all descriptors are closed after retries")
+    equal(1, state.close_by_fd[state.reused_fd], "Linux close EINTR is never retried against a reused descriptor number")
+    equal("reused-after-close", state.fds[state.reused_fd] and state.fds[state.reused_fd].label,
+        "descriptor reused before close returned is not closed by atomic cleanup")
     for _, flags in ipairs(state.directory_flags) do
         truthy(bit.band(flags, 16384) ~= 0 and bit.band(flags, 32768) ~= 0, "ARM open/openat uses ARM directory and nofollow bits")
         equal(0, bit.band(flags, 65536 + 131072), "ARM open/openat excludes asm-generic directory/nofollow bits")

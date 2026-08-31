@@ -3,6 +3,7 @@ local SearchView = require("legado.ui.search")
 local SettingsView = require("legado.ui.settings")
 local About = require("legado.ui.about")
 local BookDetail = require("legado.ui.book_detail")
+local Downloads = require("legado.ui.downloads")
 local Models = require("legado.lib.models")
 
 local App = {}
@@ -15,6 +16,7 @@ function App.new(options)
         settings = options.settings, appearance = options.appearance,
         reading_hook = options.reading_hook, download_hook = options.download_hook,
         reader_session = options.reader_session,
+        download_manager = options.download_manager,
         cover_loader = options.cover_loader,
         show = options.show,
     }, App)
@@ -39,7 +41,10 @@ function App:openSearch()
     }))
 end
 function App:openSources() return self:_present(self.source_manager or { title = "书源管理", empty_text = "暂无书源" }) end
-function App:openDownloads() return self:_present({ title = "下载管理", empty_text = "下载功能将在下一阶段提供" }) end
+function App:openDownloads()
+    if not self.download_manager then return self:_present({ title = "下载管理", empty_text = "下载功能尚未初始化" }) end
+    return self:_present(Downloads.new({ manager = self.download_manager }))
+end
 function App:openSettings() return self:_present(SettingsView.new({ settings = self.settings, appearance = self.appearance })) end
 function App:openAbout() return self:_present(About) end
 function App:startReading(book, chapters)
@@ -60,7 +65,11 @@ function App:startReading(book, chapters)
         self.reader_session:resume(source, book, values)
     end)
 end
-function App:startDownload(book) return self.download_hook and self.download_hook(book) or "下载功能将在下一阶段提供" end
+function App:startDownload(book)
+    if self.download_hook then return self.download_hook(book) end
+    if self.download_manager then return self.download_manager:enqueue(book) end
+    return "下载功能尚未初始化"
+end
 function App:createBookDetail(book, alternatives)
     local page_size = self.settings and self.settings:get("shelf_page") or 20
     local covers_enabled = not self.settings or self.settings:get("covers_enabled") ~= false

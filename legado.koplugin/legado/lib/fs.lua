@@ -197,8 +197,10 @@ local function posix_dirfd_atomic(self, path, data, options)
     local function remember(fd) if fd and fd >= 0 then opened[tonumber(fd)] = true end return fd end
     local function close_fd(fd)
         if not fd or fd < 0 then return true end
-        if retry(function() return sys:close(fd) end) ~= 0 then return nil, "descriptor close failed" end
-        opened[tonumber(fd)] = nil; return true
+        opened[tonumber(fd)] = nil
+        local result = tonumber(sys:close(fd))
+        if result == 0 or (result == -1 and sys:errno() == 4) then return true end
+        return nil, "descriptor close failed"
     end
     local function unlink_name(name)
         if retry(function() return sys:unlinkat(parent_fd, name, 0) end) ~= 0 then return nil, "atomic cleanup unlink failed" end
@@ -680,6 +682,24 @@ function Fs:removeFile(path)
     local removed, err = self.remove(path)
     if removed or err == nil then return true end
     return nil, Errors.new(Errors.STORAGE_ERROR, "cannot remove file", { path = path, cause = err })
+end
+
+function Fs:atomicReplaceFile(prepared_path, target_path, options)
+    if type(prepared_path) ~= "string" or prepared_path == "" or type(target_path) ~= "string" or target_path == ""
+        or prepared_path == target_path then
+        return nil, Errors.new(Errors.INVALID_INPUT, "prepared and target paths must be distinct")
+    end
+    local prepared_size, size_error = self:size(prepared_path)
+    if not prepared_size or prepared_size <= 0 then
+        return nil, size_error or Errors.new(Errors.STORAGE_ERROR, "prepared file is empty")
+    end
+    local bytes, read_error = self:read(prepared_path)
+    if not bytes then return nil, read_error end
+    local published, publish_error = self:atomicWrite(target_path, bytes, options)
+    if not published then return nil, publish_error end
+    local removed, remove_error = self:removeFile(prepared_path)
+    if not removed then return nil, remove_error end
+    return true
 end
 
 function Fs:size(path)

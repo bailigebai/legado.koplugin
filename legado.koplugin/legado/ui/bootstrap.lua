@@ -32,7 +32,7 @@ end
 
 function Bootstrap.build(plugin)
     local settings = Settings.new()
-    local storage, service, source_manager, cover_loader, reader_session, root
+    local storage, service, source_manager, cover_loader, reader_session, download_manager, root
     local DataStorage = optional("datastorage")
     local fs = Fs.new()
     if DataStorage and type(DataStorage.getDataDir) == "function" then
@@ -77,8 +77,22 @@ function Bootstrap.build(plugin)
             local CacheStore = require("legado.lib.cache_store")
             local ReaderSession = require("legado.lib.reader_session")
             local ReaderUIAdapter = require("legado.lib.koreader_reader_ui")
-            reader_session = ReaderSession.new({ cache = CacheStore.new({ fs = fs, root = root .. "/cache" }), storage = storage,
-                service = service, ui = ReaderUIAdapter.new(), settings = settings })
+            local cache = CacheStore.new({ fs = fs, root = root .. "/cache" })
+            local reader_ui = ReaderUIAdapter.new()
+            reader_session = ReaderSession.new({ cache = cache, storage = storage,
+                service = service, ui = reader_ui, settings = settings })
+            if type(storage.listDownloadTasks) == "function" and type(storage.putDownloadTask) == "function"
+                and type(storage.listChapters) == "function" and type(storage.replaceChapters) == "function" then
+                local download_root = root .. "/downloads"
+                fs:ensureDirectory(download_root)
+                local EpubBuilder = require("legado.lib.epub_builder")
+                local DownloadManager = require("legado.lib.download_manager")
+                local StandbyGuard = require("legado.lib.standby_guard")
+                download_manager = DownloadManager.new({ storage = storage, cache = cache, book_service = service,
+                    builder = EpubBuilder.new({ fs = fs }), standby = StandbyGuard.new({ ui_manager = UIManager }),
+                    scheduler = UIManager, output_root = download_root,
+                    open_final = function(path) return reader_ui:openDocument(path) end })
+            end
         end
     end
 
@@ -91,6 +105,7 @@ function Bootstrap.build(plugin)
         appearance = native_appearance(plugin),
         cover_loader = cover_loader,
         reader_session = reader_session,
+        download_manager = download_manager,
         show = presenter and function(view) return presenter:show(view) end or nil,
     })
     if presenter then presenter.detail_factory = function(book, alternatives) return app:createBookDetail(book, alternatives) end end

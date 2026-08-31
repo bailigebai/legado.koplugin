@@ -288,7 +288,14 @@ function Presenter:_detail(view)
             end
             return self:_show(construct(self.menu, { title = "切换书源", item_table = alternatives }))
         end },
-        { text = "下载整本", callback = function() return self:_info(view:startDownload()) end },
+        { text = "下载整本", callback = function()
+            local task, err = view:startDownload()
+            if type(task) == "table" then return self:_info("已加入下载队列", "下载整本") end
+            if task == nil and err ~= nil then
+                return self:_info("下载任务创建失败（" .. safe_token(type(err) == "table" and err.code, "UNKNOWN_ERROR") .. "）", "下载整本")
+            end
+            return self:_info(tostring(task or "下载任务创建失败"), "下载整本")
+        end },
     }
     for _, item in ipairs(actions) do items[#items + 1] = item end
     if not info and not view.info_error and not view._presenter_info_started and type(view.loadInfo) == "function" then
@@ -307,6 +314,33 @@ function Presenter:_detail(view)
     }))
 end
 
+function Presenter:_downloads(view)
+    view:refresh()
+    local items = {}
+    for _, row in ipairs(view.items or {}) do
+        local task = row.task
+        items[#items + 1] = { text = row.text, callback = function()
+            if not view.alive then return false end
+            local actions = {}
+            if task.status == "queued" or task.status == "running" or task.status == "cancelling" then
+                actions[#actions + 1] = { text = "取消下载", callback = function() return view:cancel(task.id) end }
+            elseif task.status == "failed" or task.status == "cancelled" then
+                actions[#actions + 1] = { text = "重试", callback = function() return view:retry(task.id) end }
+            elseif task.status == "interrupted" then
+                actions[#actions + 1] = { text = "继续下载", callback = function() return view:resume(task.id) end }
+            elseif task.status == "completed" then
+                actions[#actions + 1] = { text = "打开 EPUB", callback = function() return view:open(task.id) end }
+            end
+            if #actions == 0 then actions[1] = { text = "暂无可用操作", enabled = false } end
+            return self:_show(construct(self.menu, { title = "下载操作", item_table = actions }))
+        end }
+    end
+    if #items == 0 then items[1] = { text = "暂无下载记录", enabled = false } end
+    items[#items + 1] = { text = "刷新", callback = function() return self:_downloads(view) end }
+    return self:_show(construct(self.menu, { title = "下载管理", item_table = items,
+        close_callback = function() return view:close() end }))
+end
+
 function Presenter:show(view)
     if type(view) ~= "table" then return self:_info("界面不可用") end
     if view.kind == "bookshelf" then return self:_shelf(view, 1, "text") end
@@ -315,6 +349,7 @@ function Presenter:show(view)
     if view.kind == "settings" then return self:_settings(view) end
     if view.kind == "catalog" then return self:_catalog(view) end
     if view.kind == "book_detail" then return self:_detail(view) end
+    if view.kind == "downloads" then return self:_downloads(view) end
     return self:_info(view.text or view.empty_text or view.error or "", view.title)
 end
 
