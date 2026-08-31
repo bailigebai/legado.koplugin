@@ -42,7 +42,10 @@ function App:openSearch()
         source_provider = self.storage and function() return self.storage:listSources() end or nil,
     }))
 end
-function App:openSources() return self:_present(self.source_manager or { title = "书源管理", empty_text = "暂无书源" }) end
+function App:openSources()
+    if self.source_manager and type(self.source_manager.reopen) == "function" then self.source_manager:reopen() end
+    return self:_present(self.source_manager or { title = "书源管理", empty_text = "暂无书源" })
+end
 function App:openDownloads()
     if not self.download_manager then return self:_present({ title = "下载管理", empty_text = "下载功能尚未初始化" }) end
     return self:_present(Downloads.new({ manager = self.download_manager, scheduler = self.scheduler }))

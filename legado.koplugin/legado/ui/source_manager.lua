@@ -75,6 +75,14 @@ function SourceManager:close()
     return true
 end
 
+function SourceManager:reopen()
+    if self.alive then return false end
+    self.alive = true
+    self.generation = self.generation + 1
+    self.request = nil
+    return true
+end
+
 function SourceManager:compatibility(id)
     local source = self.storage:getSource(id)
     return source and Sanitizer.compatibility(self.scanner.scan(source)) or nil

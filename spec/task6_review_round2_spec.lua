@@ -55,7 +55,8 @@ do
     late_callback()
     assertx.equal(1, cancelled, "native Menu Back cancels an in-flight search exactly once")
     assertx.equal(nil, view.progress_widget, "native Menu Back clears the search progress widget")
-    assertx.equal(1, #closed, "native Menu Back closes the progress widget once")
+    assertx.equal(2, #closed, "valid submit closes the input and native Menu Back closes progress once")
+    assertx.equal(progress, closed[2], "native Menu Back closes the progress widget")
     assertx.equal(2, #shown, "late search callback cannot reopen results after native close")
 end
 

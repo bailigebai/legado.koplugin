@@ -54,6 +54,7 @@ equal("ruleToc：EXECUTABLE_JS", menu.item_table[4].text, "first issue remains f
 equal("ruleContent：ANDROID_API", menu.item_table[5].text, "second issue remains second")
 equal("运行诊断", menu.item_table[6].text, "report exposes the diagnostic action")
 menu.item_table[6].callback()
+menu.close_callback() -- KOReader Menu:onMenuSelect follows item.callback with this call.
 local dialog = shown[#shown]
 equal("input", dialog.widget_type, "diagnostic action asks for a probe title")
 dialog.buttons[1][2].callback("probe")
@@ -80,6 +81,7 @@ local async_view = {
 }
 local async_menu = presenter:show(async_view)
 async_menu.item_table[#async_menu.item_table].callback()
+async_menu.close_callback()
 local async_dialog = shown[#shown]
 async_dialog.buttons[1][2].callback("probe")
 local progress = shown[#shown]

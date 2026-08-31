@@ -9,7 +9,8 @@ The files `init.lua`, `ElementNode.lua`, and `voidelements.lua` come from
 `src/htmlparser/voidelements.lua` at the exact revision above. The two local
 `require` keys in `init.lua` are namespaced under `legado.vendor` so the
 vendored module obeys the plugin's module namespace; the parser logic is
-otherwise unchanged.
+otherwise unchanged. `ElementNode.lua` also has two trailing spaces removed;
+this is a whitespace-only modification with no parser behavior change.
 
 The upstream license notice and exception are reproduced verbatim in
 `legado.koplugin/legado/vendor/htmlparser/LICENSE`. The complete GNU Lesser

@@ -242,6 +242,9 @@ function RequestEngine.new(options)
         settings = settings,
         now = options.now or default_now(scheduler),
         concurrency = concurrency,
+        active_count = 0,
+        pending = {},
+        draining = false,
     }, RequestEngine)
 end
 
@@ -486,29 +489,65 @@ end
 function RequestEngine:_cleanup_child(state, after, attempt)
     attempt = attempt or 1
     if not state.child then after(); return end
-    local done = self.subprocess:reap(state.child)
-    if done then
-        self.subprocess:close(state.child)
+    local function close_and_continue()
+        pcall(self.subprocess.close, self.subprocess, state.child)
         state.child = nil
         after()
+    end
+    local reap_ok, done = pcall(self.subprocess.reap, self.subprocess, state.child)
+    if not reap_ok or done then
+        close_and_continue()
         return
     end
     if attempt >= RequestEngine.MAX_CLEANUP_POLLS then
-        self.subprocess:close(state.child)
-        state.child = nil
-        after()
+        close_and_continue()
         return
     end
     local delay = RequestEngine.POLL_INTERVAL * (2 ^ (attempt - 1))
-    state.cleanup_scheduled = self:_schedule(delay, function()
+    local scheduled_ok, scheduled = pcall(self._schedule, self, delay, function()
         self:_cleanup_child(state, after, attempt + 1)
     end)
+    if scheduled_ok then state.cleanup_scheduled = scheduled
+    else close_and_continue() end
+end
+
+function RequestEngine:_releaseSlot(state)
+    if not state.active or state.slot_released then return false end
+    state.slot_released = true
+    state.active = false
+    self.active_count = math.max(0, self.active_count - 1)
+    self:_drainPending()
+    return true
+end
+
+function RequestEngine:_drainPending()
+    if self.draining then return end
+    self.draining = true
+    while self.active_count < self.concurrency and #self.pending > 0 do
+        local state = table.remove(self.pending, 1)
+        state.queued = false
+        if not state.cancelled and not state.completed then
+            state.active = true
+            state.slot_released = false
+            self.active_count = self.active_count + 1
+            local ok, cause = pcall(state.start)
+            if not ok then
+                state.finish(nil, Errors.new(Errors.NETWORK_ERROR, "request worker failed safely", {
+                    reason = "start_failure", cause = tostring(cause),
+                }))
+            end
+        end
+    end
+    self.draining = false
 end
 
 function RequestEngine:execute(request, callback)
     assert(type(callback) == "function", "RequestEngine callback must be a function")
     local normalized, normalize_error = self:_normalize(request)
-    local state = { cancelled = false, completed = false, child = nil, scheduled = nil, timeout_scheduled = nil }
+    local state = {
+        cancelled = false, completed = false, queued = false, active = false, slot_released = false,
+        child = nil, scheduled = nil, timeout_scheduled = nil,
+    }
     local engine = self
 
     local function finish(response, err)
@@ -518,7 +557,21 @@ function RequestEngine:execute(request, callback)
             engine.scheduler:unschedule(state.timeout_scheduled)
             state.timeout_scheduled = nil
         end
+        engine:_releaseSlot(state)
         callback(response, err)
+    end
+    state.finish = finish
+
+    local function schedule(field, delay, action)
+        local ok, scheduled = pcall(engine._schedule, engine, delay, action)
+        if not ok then
+            finish(nil, Errors.new(Errors.NETWORK_ERROR, "request scheduling failed", {
+                reason = "schedule_failure", cause = tostring(scheduled),
+            }))
+            return nil
+        end
+        if not state.completed and not state.cancelled then state[field] = scheduled end
+        return scheduled
     end
 
     local handle = {}
@@ -533,71 +586,88 @@ function RequestEngine:execute(request, callback)
             engine.scheduler:unschedule(state.timeout_scheduled)
             state.timeout_scheduled = nil
         end
+        engine:_releaseSlot(state)
         if state.child then
-            engine.subprocess:terminate(state.child)
-            engine:_cleanup_child(state, function() end)
+            pcall(engine.subprocess.terminate, engine.subprocess, state.child)
+            pcall(engine._cleanup_child, engine, state, function() end)
         end
+        if state.queued then engine:_drainPending() end
         return true
     end
 
     if normalize_error then
-        state.scheduled = self:_schedule(0, function() finish(nil, normalize_error) end)
+        schedule("scheduled", 0, function() finish(nil, normalize_error) end)
         return handle
     end
 
-    local subprocess_available = self.subprocess and type(self.subprocess.available) == "function"
-        and self.subprocess:available()
-    local deadline = self.now() + normalized.timeout
-    if subprocess_available then
-        local child, start_error = self.subprocess:start(function() return self:_run_work(normalized, deadline) end)
-        if child then
-            state.child = child
-            local function timeout_child()
-                if state.cancelled or state.completed then return end
-                self.subprocess:terminate(child)
-                finish(nil, Errors.new(Errors.TIMEOUT, "source request timed out", { url = normalized.url }))
-                self:_cleanup_child(state, function() end)
-            end
-            state.timeout_scheduled = self:_schedule(normalized.timeout, timeout_child)
-            local poll
-            poll = function()
-                if state.cancelled or state.completed then return end
-                if self.now() >= deadline then
-                    timeout_child()
-                    return
+    state.start = function()
+        local deadline = self.now() + normalized.timeout
+        local subprocess_available = false
+        if self.subprocess and type(self.subprocess.available) == "function" then
+            local available_ok, available = pcall(self.subprocess.available, self.subprocess)
+            subprocess_available = available_ok and available == true
+        end
+        if subprocess_available then
+            local start_ok, child, start_error = pcall(self.subprocess.start, self.subprocess,
+                function() return self:_run_work(normalized, deadline) end)
+            if not start_ok then start_error, child = child, nil end
+            if child then
+                state.child = child
+                local function timeout_child()
+                    if state.cancelled or state.completed then return end
+                    pcall(self.subprocess.terminate, self.subprocess, child)
+                    finish(nil, Errors.new(Errors.TIMEOUT, "source request timed out", { url = normalized.url }))
+                    pcall(self._cleanup_child, self, state, function() end)
                 end
-                local done, payload, poll_error = self.subprocess:poll(child)
-                if not done then state.scheduled = self:_schedule(RequestEngine.POLL_INTERVAL, poll); return end
-                if poll_error then self.subprocess:terminate(child) end
-                self:_cleanup_child(state, function()
-                    if poll_error then finish(nil, transport_error(poll_error, normalized.url)); return end
-                    local decoded, decode_error = self:_decode_child_payload(payload)
-                    if not decoded then finish(nil, decode_error); return end
-                    self:_apply_cookie_updates(decoded.cookie_updates)
-                    finish(decoded.response, decoded.error)
-                end)
+                schedule("timeout_scheduled", normalized.timeout, timeout_child)
+                local poll
+                poll = function()
+                    if state.cancelled or state.completed then return end
+                    if self.now() >= deadline then timeout_child(); return end
+                    local poll_ok, done, payload, poll_error = pcall(self.subprocess.poll, self.subprocess, child)
+                    if not poll_ok then
+                        pcall(self.subprocess.terminate, self.subprocess, child)
+                        finish(nil, Errors.new(Errors.NETWORK_ERROR, "request worker failed safely", {
+                            reason = "poll_failure", cause = tostring(done),
+                        }))
+                        pcall(self._cleanup_child, self, state, function() end)
+                        return
+                    end
+                    if not done then schedule("scheduled", RequestEngine.POLL_INTERVAL, poll); return end
+                    if poll_error then pcall(self.subprocess.terminate, self.subprocess, child) end
+                    self:_cleanup_child(state, function()
+                        if poll_error then finish(nil, transport_error(poll_error, normalized.url)); return end
+                        local decoded, decode_error = self:_decode_child_payload(payload)
+                        if not decoded then finish(nil, decode_error); return end
+                        self:_apply_cookie_updates(decoded.cookie_updates)
+                        finish(decoded.response, decoded.error)
+                    end)
+                end
+                schedule("scheduled", 0, poll)
+                return
             end
-            state.scheduled = self:_schedule(0, poll)
-            return handle
+            safe_log(self.logger, "warn", { event = "subprocess_fallback", cause = tostring(start_error) })
         end
-        safe_log(self.logger, "warn", { event = "subprocess_fallback", cause = tostring(start_error) })
-    end
 
-    state.scheduled = self:_schedule(0, function()
-        if state.cancelled then return end
-        local safe_deadline = self.transport and self.transport.total_deadline_safe
-        if not safe_deadline then
-            finish(nil, Errors.new(Errors.NETWORK_ERROR, "synchronous transport cannot enforce a total deadline", {
-                reason = "deadline_unavailable", url = normalized.url,
-            }))
-            return
-        end
-        local payload = self:_run_work(normalized, deadline)
-        local decoded, decode_error = self:_decode_child_payload(payload)
-        if not decoded then finish(nil, decode_error); return end
-        self:_apply_cookie_updates(decoded.cookie_updates)
-        finish(decoded.response, decoded.error)
-    end)
+        schedule("scheduled", 0, function()
+            if state.cancelled then return end
+            local safe_deadline = self.transport and self.transport.total_deadline_safe
+            if not safe_deadline then
+                finish(nil, Errors.new(Errors.NETWORK_ERROR, "synchronous transport cannot enforce a total deadline", {
+                    reason = "deadline_unavailable", url = normalized.url,
+                }))
+                return
+            end
+            local payload = self:_run_work(normalized, deadline)
+            local decoded, decode_error = self:_decode_child_payload(payload)
+            if not decoded then finish(nil, decode_error); return end
+            self:_apply_cookie_updates(decoded.cookie_updates)
+            finish(decoded.response, decoded.error)
+        end)
+    end
+    state.queued = true
+    self.pending[#self.pending + 1] = state
+    self:_drainPending()
     return handle
 end
 

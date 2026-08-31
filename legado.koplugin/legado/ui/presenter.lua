@@ -39,12 +39,61 @@ function Presenter.new(options)
         input_dialog = options.input_dialog or optional("ui/widget/inputdialog"),
         detail_factory = options.detail_factory,
         cover_grid_factory = options.cover_grid_factory or function(grid_options) return require("legado.ui.cover_grid").new(grid_options) end,
+        closed_widgets = setmetatable({}, { __mode = "k" }),
+        keyboard_widgets = setmetatable({}, { __mode = "k" }),
     }, Presenter)
 end
 
 function Presenter:_show(widget)
     if self.ui_manager and type(self.ui_manager.show) == "function" then self.ui_manager:show(widget) end
     return widget
+end
+
+function Presenter:_closeWidget(widget)
+    if widget == nil or self.closed_widgets[widget] then return false end
+    self.closed_widgets[widget] = true
+    if self.ui_manager and type(self.ui_manager.close) == "function" then self.ui_manager:close(widget) end
+    return true
+end
+
+function Presenter:_showInput(widget)
+    self:_show(widget)
+    if widget and not self.keyboard_widgets[widget] and type(widget.onShowKeyboard) == "function" then
+        self.keyboard_widgets[widget] = true
+        widget:onShowKeyboard()
+    end
+    return widget
+end
+
+function Presenter:_modelMenu(view, options)
+    local selected, closed = false, false
+    local wrapped = setmetatable({}, { __mode = "k" })
+    local function prepare(items)
+        for _, item in ipairs(items or {}) do
+            if type(item.callback) == "function" and not wrapped[item] then
+                local callback = item.callback
+                item.callback = function(...)
+                    selected = true
+                    return callback(...)
+                end
+                wrapped[item] = true
+            end
+        end
+        return items
+    end
+    prepare(options.item_table)
+    local close_model = options.close_callback or function()
+        if type(view.close) == "function" then return view:close() end
+    end
+    options.close_callback = function()
+        if selected then selected = false; return false end
+        if closed then return false end
+        closed = true
+        return close_model()
+    end
+    local widget = construct(self.menu, options)
+    widget._legado_prepare_items = prepare
+    return self:_show(widget)
 end
 
 function Presenter:_info(text, title)
@@ -92,7 +141,7 @@ function Presenter:_shelf(view, page, mode)
     items[#items + 1] = { text = model.mode == "text" and "封面模式" or "文字模式", callback = function()
         return self:_shelf(view, model.page, model.mode == "text" and "cover" or "text")
     end }
-    return self:_show(construct(self.menu, { title = "书架", item_table = items, is_popout = false, close_callback = function() return view:close() end }))
+    return self:_modelMenu(view, { title = "书架", item_table = items, is_popout = false })
 end
 
 function Presenter:_search_results(view)
@@ -117,13 +166,10 @@ function Presenter:_search_results(view)
             return self:_info(table.concat(lines, "\n"), "搜索诊断")
         end }
     end
-    return self:_show(construct(self.menu, {
+    return self:_modelMenu(view, {
         title = "搜索结果",
         item_table = items,
-        close_callback = function()
-            if type(view.close) == "function" then return view:close() end
-        end,
-    }))
+    })
 end
 
 function Presenter:_search(view)
@@ -132,6 +178,7 @@ function Presenter:_search(view)
         local keyword = value
         if (keyword == nil or keyword == "") and dialog and type(dialog.getInputText) == "function" then keyword = dialog:getInputText() end
         if type(keyword) ~= "string" or keyword:match("^%s*$") then return self:_info("请输入书名", "搜索") end
+        if not self:_closeWidget(dialog) then return false end
         view.onUpdate = function()
             if view.alive and not view.loading then
                 if view.progress_widget and self.ui_manager and type(self.ui_manager.close) == "function" then self.ui_manager:close(view.progress_widget) end
@@ -169,9 +216,9 @@ function Presenter:_search(view)
     end
     dialog = construct(self.input_dialog, {
         title = "搜索", input_hint = "搜索书名", input_type = "string",
-        buttons = { { { text = "取消", callback = function() view:close() end }, { text = "搜索", is_enter_default = true, callback = submit } } },
+        buttons = { { { text = "取消", callback = function() if self:_closeWidget(dialog) then return view:close() end; return false end }, { text = "搜索", is_enter_default = true, callback = submit } } },
     })
-    return self:_show(dialog)
+    return self:_showInput(dialog)
 end
 
 function Presenter:_sources(view)
@@ -207,12 +254,14 @@ function Presenter:_sources(view)
         local dialog
         local function accepted(value)
             if (value == nil or value == "") and dialog and type(dialog.getInputText) == "function" then value = dialog:getInputText() end
+            if type(value) ~= "string" or value:match("^%s*$") then return self:_info("请输入有效内容", title) end
+            if not self:_closeWidget(dialog) then return false end
             return submit(value)
         end
         dialog = construct(self.input_dialog, { title = title, input_hint = hint, input_type = "string", buttons = {
-            { { text = "取消" }, { text = "确定", is_enter_default = true, callback = accepted } },
+            { { text = "取消", callback = function() return self:_closeWidget(dialog) end }, { text = "确定", is_enter_default = true, callback = accepted } },
         } })
-        return self:_show(dialog)
+        return self:_showInput(dialog)
     end
     items[#items + 1] = { text = "从本地 JSON 导入", callback = function()
         return input_dialog("导入书源", "JSON 文件路径", function(path)
@@ -231,7 +280,7 @@ function Presenter:_sources(view)
             end)
         end)
     end }
-    return self:_show(construct(self.menu, { title = "书源管理", item_table = items, close_callback = function() if type(view.close) == "function" then return view:close() end end }))
+    return self:_modelMenu(view, { title = "书源管理", item_table = items })
 end
 
 local function diagnostic_report_text(report)
@@ -275,6 +324,7 @@ function Presenter:_compatibility(view)
         local function start(keyword)
             if (keyword == nil or keyword == "") and dialog and type(dialog.getInputText) == "function" then keyword = dialog:getInputText() end
             if type(keyword) ~= "string" or keyword:match("^%s*$") then return self:_info("请输入测试书名", "书源诊断") end
+            if not self:_closeWidget(dialog) then return false end
             local progress, handle, result_widget
             local completed, closed = false, false
             local function finish(report)
@@ -306,15 +356,14 @@ function Presenter:_compatibility(view)
             return self:_show(progress)
         end
         dialog = construct(self.input_dialog, { title = "书源诊断", input_hint = "测试书名", input_type = "string", buttons = {
-            { { text = "取消" }, { text = "开始", is_enter_default = true, callback = start } },
+            { { text = "取消", callback = function() return self:_closeWidget(dialog) end }, { text = "开始", is_enter_default = true, callback = start } },
         } })
-        return self:_show(dialog)
+        return self:_showInput(dialog)
     end }
-    return self:_show(construct(self.menu, {
+    return self:_modelMenu(view, {
         title = "兼容性报告",
         item_table = items,
-        close_callback = function() return view:close() end,
-    }))
+    })
 end
 
 function Presenter:_settings(view)
@@ -392,13 +441,10 @@ function Presenter:_detail(view)
             self:_detail(view)
         end)
     end
-    return self:_show(construct(self.menu, {
+    return self:_modelMenu(view, {
         title = view.book.name or "图书详情",
         item_table = items,
-        close_callback = function()
-            if type(view.close) == "function" then return view:close() end
-        end,
-    }))
+    })
 end
 
 local function download_items(self, view)
@@ -428,11 +474,11 @@ end
 
 function Presenter:_downloads(view)
     view:refresh()
-    local widget = construct(self.menu, { title = "下载管理", item_table = download_items(self, view),
-        close_callback = function() return view:close() end })
+    local widget = self:_modelMenu(view, { title = "下载管理", item_table = download_items(self, view) })
     view.on_refresh = function(current)
         if not current.alive then return end
         local items = download_items(self, current)
+        if type(widget._legado_prepare_items) == "function" then items = widget._legado_prepare_items(items) end
         if type(widget.switchItemTable) == "function" then
             pcall(widget.switchItemTable, widget, "下载管理", items, current.navigation:index())
         else
@@ -440,7 +486,7 @@ function Presenter:_downloads(view)
             if type(widget.updateItems) == "function" then pcall(widget.updateItems, widget) end
         end
     end
-    return self:_show(widget)
+    return widget
 end
 
 function Presenter:show(view)

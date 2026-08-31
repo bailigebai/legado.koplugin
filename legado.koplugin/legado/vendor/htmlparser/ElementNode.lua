@@ -68,7 +68,7 @@ Set.mt.__tostring = function (set)
 	for k in pairs(set) do
 		list[#list + 1] = tostring(k)
 		list[#list + 1] = ", " -- <= Theoretically, it should't be a problem because of string buffering.
-					-- Especially, as it allows to avoid string concatenation at all, and also allows to 
+					-- Especially, as it allows to avoid string concatenation at all, and also allows to
 					-- avoid things like [1]
 					-- it looks like good idea to add separators this way.
 					-- But it needs to be tested on real-world examples with giant inputs.
@@ -191,7 +191,7 @@ local function select(self, s)
 								["#"] = self.deeperids,			["."] = self.deeperclasses}
 	local function match(t, w)
 		local m, e, v
-		if t == "[" then w, m, e, v = string.match(w, 
+		if t == "[" then w, m, e, v = string.match(w,
 				"([^=|%*~%$!%^]+)" .. -- w = 1 or more characters up to a possible "=", "|", "*", "~", "$", "!", or "^"
 				"([|%*~%$!%^]?)" ..   -- m = an optional "|", "*", "~", "$", "!", or "^", preceding the optional "="
 				"(=?)" ..             -- e = the optional "="
