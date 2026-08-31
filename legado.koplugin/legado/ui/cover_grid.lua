@@ -1,5 +1,10 @@
 local CoverGrid = {}
 
+local function optional(name)
+    local ok, value = pcall(require, name)
+    return ok and value or nil
+end
+
 local function dependencies(injected)
     injected = injected or {}
     return {
@@ -11,6 +16,7 @@ local function dependencies(injected)
         image = injected.image or require("ui/widget/imagewidget"),
         text = injected.text or require("ui/widget/textwidget"),
         ui_manager = injected.ui_manager or require("ui/uimanager"),
+        device = injected.device or optional("device"),
     }
 end
 
@@ -53,25 +59,36 @@ function CoverGrid.new(options)
     if type(deps.focus_manager.extend) == "function" then Grid = deps.focus_manager:extend({}) end
     local widget = Grid:new({ layout = layout, deps.vertical_group:new(rows) })
     widget.kind, widget.cells, widget.model, widget.alive = "cover_grid", cells, model, true
-    local closed = false
-    local function finalize_close()
+    local closed, closing_terminal = false, true
+    local function finalize_close(terminal)
         if closed then return false end
         closed = true
         widget.alive = false
         for _, cell in ipairs(cells) do cell.item.on_update = nil end
-        if options.on_close then options.on_close() end
+        if terminal and options.on_close then options.on_close() end
         return true
     end
     close_grid = function()
         if closed then return false end
+        closing_terminal = true
         if deps.ui_manager and type(deps.ui_manager.close) == "function" then deps.ui_manager:close(widget) end
-        finalize_close()
+        finalize_close(true)
         return true
     end
     widget.close_button = controls[#controls]
     widget.key_events = widget.key_events or {}
-    widget.key_events.Close = { { "Back" }, { "Close" }, event = "Close" }
+    if deps.device and type(deps.device.hasKeys) == "function" and deps.device:hasKeys()
+        and deps.device.input and deps.device.input.group and deps.device.input.group.Back then
+        widget.key_events.Close = { { deps.device.input.group.Back } }
+    end
     widget.onClose = close_grid
+    widget.closeForReplacement = function()
+        if closed then return false end
+        closing_terminal = false
+        if deps.ui_manager and type(deps.ui_manager.close) == "function" then deps.ui_manager:close(widget) end
+        finalize_close(false)
+        return true
+    end
     for _, cell in ipairs(cells) do
         cell.item.on_update = function(item)
             if not widget.alive then return end
@@ -81,7 +98,7 @@ function CoverGrid.new(options)
             if deps.ui_manager and type(deps.ui_manager.setDirty) == "function" then deps.ui_manager:setDirty(widget, "ui") end
         end
     end
-    widget.onCloseWidget = finalize_close
+    widget.onCloseWidget = function() return finalize_close(closing_terminal) end
     return widget
 end
 

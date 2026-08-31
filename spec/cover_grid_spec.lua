@@ -10,6 +10,7 @@ local Horizontal = class("horizontal")
 local Vertical = class("vertical")
 local Frame = class("frame")
 local Image, Text = class("image"), class("text")
+local back_group = { "back-group" }
 local selected
 local dirty = 0
 local grid = CoverGrid.new({
@@ -20,7 +21,7 @@ local grid = CoverGrid.new({
         { title = "Four", cover_text = "无封面", book = { id = "4" } },
     } },
     on_select = function(book) selected = book.id end,
-    dependencies = { focus_manager = Focus, button = Button, horizontal_group = Horizontal, vertical_group = Vertical, frame = Frame, image = Image, text = Text, ui_manager = { setDirty = function() dirty = dirty + 1 end } },
+    dependencies = { focus_manager = Focus, button = Button, horizontal_group = Horizontal, vertical_group = Vertical, frame = Frame, image = Image, text = Text, ui_manager = { setDirty = function() dirty = dirty + 1 end }, device = { hasKeys = function() return true end, input = { group = { Back = back_group } } } },
 })
 
 assertx.equal("cover_grid", grid.kind, "cover mode returns a dedicated native widget")
@@ -39,5 +40,6 @@ assertx.equal("image", grid.cells[2].visual[1].kind, "late nonblocking cover ref
 assertx.equal(1, dirty, "late cover refresh requests an e-ink repaint")
 grid.layout[1][1].callback()
 assertx.equal("1", selected, "touch/press callback selects the book")
+assertx.equal(back_group, grid.key_events.Close[1][1], "physical close preserves KOReader Back group object")
 
 return 12

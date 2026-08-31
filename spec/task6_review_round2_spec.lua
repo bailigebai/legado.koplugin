@@ -74,6 +74,7 @@ do
     end
     local Button, Horizontal, Vertical, Frame = class("button"), class("horizontal"), class("vertical"), class("frame")
     local Image, Text = class("image"), class("text")
+    local back_group = { "back-group" }
     local grid
     grid = CoverGrid.new({
         model = { items = { { title = "一本书", book = { id = "book" } } } },
@@ -82,6 +83,7 @@ do
             focus_manager = Focus, button = Button, horizontal_group = Horizontal,
             vertical_group = Vertical, frame = Frame, image = Image, text = Text,
             ui_manager = { close = function(_, widget) closed = closed + 1; assertx.equal(grid, widget, "grid closes itself through UIManager") end },
+            device = { hasKeys = function() return true end, input = { group = { Back = back_group } } },
         },
     })
     assertx.equal("返回", grid.close_button.text, "cover grid exposes a touch-reachable return button")
@@ -89,7 +91,7 @@ do
     grid:onClose()
     assertx.equal(1, close_calls, "cover grid close lifecycle is idempotent")
     assertx.equal(1, closed, "cover grid close lifecycle calls UIManager:close once")
-    assertx.truthy(grid.key_events and grid.key_events.Close, "cover grid registers a physical Back/Close key event")
+    assertx.equal(back_group, grid.key_events.Close[1][1], "cover grid registers KOReader's physical Back group")
 end
 
 do

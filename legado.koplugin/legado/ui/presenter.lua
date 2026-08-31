@@ -54,12 +54,24 @@ end
 function Presenter:_shelf(view, page, mode)
     local model = view:page(page or 1, mode or "text")
     if model.mode == "cover" then
-        local grid = self.cover_grid_factory({
+        local grid
+        local function replace_grid(next_page, next_mode)
+            if grid then
+                if type(grid.closeForReplacement) == "function" then grid:closeForReplacement()
+                else
+                    grid.alive = false
+                    for _, cell in ipairs(grid.cells or {}) do cell.item.on_update = nil end
+                    if self.ui_manager and type(self.ui_manager.close) == "function" then self.ui_manager:close(grid) end
+                end
+            end
+            return self:_shelf(view, next_page, next_mode)
+        end
+        grid = self.cover_grid_factory({
             model = model,
             on_select = function(book) if self.detail_factory then return self:show(self.detail_factory(book, { book })) end; return book end,
-            on_prev = model.page > 1 and function() return self:_shelf(view, model.page - 1, "cover") end or nil,
-            on_next = model.page < model.page_count and function() return self:_shelf(view, model.page + 1, "cover") end or nil,
-            on_toggle = function() return self:_shelf(view, model.page, "text") end,
+            on_prev = model.page > 1 and function() return replace_grid(model.page - 1, "cover") end or nil,
+            on_next = model.page < model.page_count and function() return replace_grid(model.page + 1, "cover") end or nil,
+            on_toggle = function() return replace_grid(model.page, "text") end,
             on_close = function() return view:close() end,
         })
         return self:_show(grid)
