@@ -11,6 +11,7 @@ function BookDetail.new(options)
         reading_hook = options.reading_hook, download_hook = options.download_hook,
         service = options.service, source_lookup = options.source_lookup,
         compatibility_provider = options.compatibility,
+        cache_lookup = options.cache_lookup,
         alive = true, loading_info = false, loading_catalog = false,
         info = nil, info_error = nil, catalog = nil, catalog_error = nil,
         info_request = nil, catalog_request = nil, generation = 0,
@@ -63,7 +64,7 @@ function BookDetail:loadCatalog(callback)
         if not self.alive or generation ~= self.generation or request_generation ~= self.catalog_generation or self.book.id ~= book.id then return end
         self.loading_catalog, self.catalog_request = false, nil
         self.catalog_error = err
-        if chapters then self.catalog = Catalog.new(chapters) end
+        if chapters then self.catalog = Catalog.new(chapters, self.cache_lookup) end
         callback(self.catalog, err)
     end)
     return self.catalog_request
@@ -80,7 +81,15 @@ function BookDetail:compatibility()
     if type(self.compatibility_provider) == "function" then return self.compatibility_provider(self.book) end
     return nil
 end
-function BookDetail:startReading() return self.reading_hook and self.reading_hook(self.book) or "阅读功能将在下一阶段提供" end
+function BookDetail:startReading()
+    local chapters = self.catalog and self.catalog.items or nil
+    if chapters then
+        local values = {}
+        for index, item in ipairs(chapters) do values[index] = item.chapter end
+        chapters = values
+    end
+    return self.reading_hook and self.reading_hook(self.book, chapters) or "阅读功能将在下一阶段提供"
+end
 function BookDetail:startDownload() return self.download_hook and self.download_hook(self.book) or "下载功能将在下一阶段提供" end
 
 return BookDetail

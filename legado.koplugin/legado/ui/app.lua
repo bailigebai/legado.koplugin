@@ -14,6 +14,7 @@ function App.new(options)
         storage = options.storage, service = options.book_service, source_manager = options.source_manager,
         settings = options.settings, appearance = options.appearance,
         reading_hook = options.reading_hook, download_hook = options.download_hook,
+        reader_session = options.reader_session,
         cover_loader = options.cover_loader,
         show = options.show,
     }, App)
@@ -41,7 +42,20 @@ function App:openSources() return self:_present(self.source_manager or { title =
 function App:openDownloads() return self:_present({ title = "下载管理", empty_text = "下载功能将在下一阶段提供" }) end
 function App:openSettings() return self:_present(SettingsView.new({ settings = self.settings, appearance = self.appearance })) end
 function App:openAbout() return self:_present(About) end
-function App:startReading(book) return self.reading_hook and self.reading_hook(book) or "阅读功能将在下一阶段提供" end
+function App:startReading(book, chapters)
+    if self.reading_hook then return self.reading_hook(book, chapters) end
+    if not self.reader_session or not self.storage then return "阅读功能尚未初始化" end
+    local source
+    for _, candidate in ipairs(self.storage:listSources() or {}) do if Models.sourceId(candidate) == book.source_id then source = candidate; break end end
+    if not source then return "书源不存在" end
+    if type(chapters) == "table" and #chapters > 0 then return self.reader_session:resume(source, book, chapters) end
+    if not self.service then return "阅读服务尚未初始化" end
+    return self.service:getChapters(source, book, function(values, err)
+        if err or not values then return end
+        self.reader_session.cache:writeCatalog(book.source_id, book.id, { chapters = values })
+        self.reader_session:resume(source, book, values)
+    end)
+end
 function App:startDownload(book) return self.download_hook and self.download_hook(book) or "下载功能将在下一阶段提供" end
 function App:createBookDetail(book, alternatives)
     local page_size = self.settings and self.settings:get("shelf_page") or 20
@@ -62,7 +76,10 @@ function App:createBookDetail(book, alternatives)
             end)()
             return source and self.source_manager:compatibility(source.id) or nil
         end,
-        reading_hook = function(selected) return self:startReading(selected) end,
+        cache_lookup = self.reader_session and function(chapter)
+            return self.reader_session.cache:readBody(book.source_id, book.id, chapter) ~= nil
+        end or nil,
+        reading_hook = function(selected, selected_chapters) return self:startReading(selected, selected_chapters) end,
         download_hook = function(selected) return self:startDownload(selected) end,
     })
 end

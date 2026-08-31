@@ -32,7 +32,7 @@ end
 
 function Bootstrap.build(plugin)
     local settings = Settings.new()
-    local storage, service, source_manager, cover_loader, root
+    local storage, service, source_manager, cover_loader, reader_session, root
     local DataStorage = optional("datastorage")
     local fs = Fs.new()
     if DataStorage and type(DataStorage.getDataDir) == "function" then
@@ -74,6 +74,11 @@ function Bootstrap.build(plugin)
             local CoverLoader = require("legado.lib.cover_loader")
             local loader = CoverLoader.new({ request_engine = requests, fs = fs, root = root .. "/covers" })
             cover_loader = function(book, callback) return loader:load(book, callback) end
+            local CacheStore = require("legado.lib.cache_store")
+            local ReaderSession = require("legado.lib.reader_session")
+            local ReaderUIAdapter = require("legado.lib.koreader_reader_ui")
+            reader_session = ReaderSession.new({ cache = CacheStore.new({ fs = fs, root = root .. "/cache" }), storage = storage,
+                service = service, ui = ReaderUIAdapter.new(), settings = settings })
         end
     end
 
@@ -85,6 +90,7 @@ function Bootstrap.build(plugin)
         storage = storage, book_service = service, source_manager = source_manager, settings = settings,
         appearance = native_appearance(plugin),
         cover_loader = cover_loader,
+        reader_session = reader_session,
         show = presenter and function(view) return presenter:show(view) end or nil,
     })
     if presenter then presenter.detail_factory = function(book, alternatives) return app:createBookDetail(book, alternatives) end end
