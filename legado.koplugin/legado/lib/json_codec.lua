@@ -1,5 +1,5 @@
--- A deliberately small JSON decoder used only when KOReader's `json` module
--- is unavailable. It parses data literals directly and never calls load.
+-- The bundled strict JSON codec. It parses data literals directly, rejects
+-- duplicate object keys and never calls load or a platform-native decoder.
 local Json = {}
 local array_values = setmetatable({}, { __mode = "k" })
 local NULL = {}

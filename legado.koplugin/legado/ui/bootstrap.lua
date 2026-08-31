@@ -65,7 +65,7 @@ function Bootstrap.build(plugin, options)
             local SourceImporter = require("legado.lib.source_importer")
             local SourceManager = require("legado.ui.source_manager")
             source_manager = SourceManager.new({
-                storage = storage, importer = SourceImporter:new({ storage = storage }),
+                storage = storage, importer = SourceImporter:new({ storage = storage, json = Json }),
                 request_engine = requests, fs = fs,
                 diagnostics = diagnostics,
                 confirm = function(message, accepted)

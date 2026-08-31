@@ -22,12 +22,6 @@ local function trim(value)
     return value:match("^%s*(.-)%s*$")
 end
 
-local function default_json()
-    local loaded, json = pcall(require, "json")
-    if loaded and json and type(json.decode) == "function" then return json end
-    return PortableJson
-end
-
 local function decode(json, text)
     if type(json) == "function" then return json(text) end
     if type(json) == "table" and type(json.decode) == "function" then return json.decode(text) end
@@ -74,7 +68,7 @@ function SourceImporter:new(options)
     assert(options.storage, "SourceImporter requires storage")
     return setmetatable({
         storage = options.storage,
-        json = options.json or default_json(),
+        json = options.json or PortableJson,
         max_bytes = options.max_bytes or SourceImporter.DEFAULT_MAX_BYTES,
         now = options.now or os.time,
     }, self)
