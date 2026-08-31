@@ -199,13 +199,14 @@ local void_elements = {
     keygen=true,link=true,meta=true,param=true,source=true,track=true,wbr=true,
 }
 
+local raw_text_elements = { script = true, style = true }
+
 local function markup_tag_end(input, start)
     local quote, index = nil, start + 1
     while index <= #input do
         local character = input:sub(index, index)
         if quote then
-            if character == "\\" then index = index + 2
-            elseif character == quote then quote = nil; index = index + 1
+            if character == quote then quote = nil; index = index + 1
             else index = index + 1 end
         elseif character == "'" or character == '"' then quote = character; index = index + 1
         elseif character == ">" then return index
@@ -216,34 +217,42 @@ end
 
 local function validate_markup(input)
     input = tostring(input or "")
-    local stack, index = {}, 1
+    local stack, index, lower = {}, 1, input:lower()
     while index <= #input do
-        local start = input:find("<", index, true)
-        if not start then break end
-        if input:sub(start, start + 3) == "<!--" then
-            local close = input:find("-->", start + 4, true)
-            if not close then return false, "unterminated comment" end
-            index = close + 3
-        elseif input:sub(start):match("^<%s*[/]?%s*[%w%-]")
-            or input:sub(start):match("^<%s*[!?]") then
-            local close = markup_tag_end(input, start)
-            if not close then return false, "unterminated tag" end
-            local contents = input:sub(start + 1, close - 1)
-            if not contents:match("^%s*[!?]") then
-                local slash, name, tail = contents:match("^%s*(/?)%s*([%w%-]+)(.*)$")
-                if name then
-                    name = name:lower()
-                    if slash == "/" then
-                        if stack[#stack] ~= name then return false, "mismatched closing tag " .. name end
-                        stack[#stack] = nil
-                    elseif not void_elements[name] and not tail:match("/%s*$") then
-                        stack[#stack + 1] = name
-                    end
-                end
-            end
+        local raw_name = stack[#stack]
+        if raw_text_elements[raw_name] then
+            local _, close = lower:find("</%s*" .. raw_name .. "%s*>", index)
+            if not close then return false, "unclosed tag " .. raw_name end
+            stack[#stack] = nil
             index = close + 1
         else
-            index = start + 1
+            local start = input:find("<", index, true)
+            if not start then break end
+            if input:sub(start, start + 3) == "<!--" then
+                local close = input:find("-->", start + 4, true)
+                if not close then return false, "unterminated comment" end
+                index = close + 3
+            elseif input:sub(start):match("^<%s*[/]?%s*[%w%-]")
+                or input:sub(start):match("^<%s*[!?]") then
+                local close = markup_tag_end(input, start)
+                if not close then return false, "unterminated tag" end
+                local contents = input:sub(start + 1, close - 1)
+                if not contents:match("^%s*[!?]") then
+                    local slash, name, tail = contents:match("^%s*(/?)%s*([%w%-]+)(.*)$")
+                    if name then
+                        name = name:lower()
+                        if slash == "/" then
+                            if stack[#stack] ~= name then return false, "mismatched closing tag " .. name end
+                            stack[#stack] = nil
+                        elseif not void_elements[name] and not tail:match("/%s*$") then
+                            stack[#stack + 1] = name
+                        end
+                    end
+                end
+                index = close + 1
+            else
+                index = start + 1
+            end
         end
     end
     if #stack > 0 then return false, "unclosed tag " .. stack[#stack] end
@@ -916,7 +925,15 @@ local function template_css_shell(rule)
         return value == TEMPLATE_MARKER
     end
     for _, step in ipairs(steps) do
-        local parsed, simple_error = parse_simple_selector(step.selector)
+        local shell_selector = step.selector
+        for _, name in ipairs({ "eq", "gt", "lt", "nth-child", "nth-of-type" }) do
+            local replacements
+            local pattern_name = name:gsub("%-", "%%-")
+            shell_selector, replacements = shell_selector:gsub(
+                ":" .. pattern_name .. "%(%s*" .. TEMPLATE_MARKER .. "%s*%)", ":" .. name .. "(1)")
+            if replacements > 0 then marker_found = true end
+        end
+        local parsed, simple_error = parse_simple_selector(shell_selector)
         if not parsed then return false, simple_error end
         if not complete_slot(parsed.tag) or not complete_slot(parsed.id) then
             return false, "template must occupy a complete tag or id slot"

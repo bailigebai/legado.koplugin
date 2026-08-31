@@ -61,11 +61,19 @@ local function decode_identifier_escapes(value)
 end
 
 local function normalize_tokens(value)
-    local output, index = {}, 1
+    local output, index, quote = {}, 1, nil
     while index <= #value do
         local pair = value:sub(index, index + 1)
         local character = value:sub(index, index)
-        if pair == "/*" then
+        if quote then
+            if character == "\\" then index = index + 2
+            elseif character == quote then quote = nil; index = index + 1
+            else index = index + 1 end
+        elseif character == "'" or character == '"' then
+            output[#output + 1] = " "
+            quote = character
+            index = index + 1
+        elseif pair == "/*" then
             output[#output + 1] = " "
             local depth = 1
             index = index + 2
