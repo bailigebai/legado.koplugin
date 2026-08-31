@@ -63,9 +63,24 @@ function BookDetail:_beginReading(chapters, index, callback, expected_book)
             self.reading_request = nil
             return true
         end,
+        replaceDownstream = function(handle)
+            if completion_delivered then return true end
+            if not current() then return false end
+            local previous = self.reading_request
+            self.reading_request = nil
+            if previous and previous ~= handle then cancel_handle(previous) end
+            if handle and type(handle.cancel) == "function" then self.reading_request = handle end
+            return true
+        end,
     }
     local values = pack_values(self.reading_hook(book, chapters, index, complete, intent))
     local handle = values[1]
+    local terminal = values[2] ~= nil or type(handle) == "string"
+        or (type(handle) == "table" and type(handle.code) == "string")
+    if terminal and not completion_delivered and current() then
+        self.reading_generation = self.reading_generation + 1
+        self.reading_request = nil
+    end
     if current() and not request_complete and not completion_delivered
         and handle and type(handle.cancel) == "function" then self.reading_request = handle end
     return unpack_values(values, 1, values.n)

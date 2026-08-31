@@ -102,10 +102,31 @@ equal(nil, first, "BookDetail preserves a nil first return")
 equal(sentinel, second, "BookDetail preserves a structured second return")
 equal("tail", third, "BookDetail preserves subsequent return values")
 
+local terminal_late, terminal_delivered = nil, 0
+local terminal_error = { code = "NETWORK_ERROR" }
+local terminal_detail = BookDetail.new({ book = { id = "terminal" }, reading_hook = function(_, _, _, callback)
+    terminal_late = callback
+    return nil, terminal_error
+end })
+first, second = terminal_detail:startReading(function() terminal_delivered = terminal_delivered + 1 end)
+equal(nil, first, "synchronous terminal hook preserves its nil result")
+equal(terminal_error, second, "synchronous terminal hook preserves its structured error")
+terminal_late({ opened = true }, nil)
+equal(0, terminal_delivered, "structured terminal return seals the reading intent against late success")
+
+terminal_detail = BookDetail.new({ book = { id = "terminal-string" }, reading_hook = function(_, _, _, callback)
+    terminal_late = callback
+    return "阅读功能尚未初始化"
+end })
+equal("阅读功能尚未初始化", terminal_detail:startReading(function() terminal_delivered = terminal_delivered + 1 end),
+    "terminal error string is preserved")
+terminal_late(nil, terminal_error)
+equal(0, terminal_delivered, "terminal error string seals the reading intent against late failure")
+
 -- Catalog fetches belong to the detail's current reading intent.
 local source = { id = "source" }
 local source_id = Models.sourceId(source)
-local pending, cancel_count, resume_calls, resume_callbacks = {}, 0, {}, {}
+local pending, cancel_count, downstream_cancels, resume_calls, resume_callbacks = {}, 0, 0, {}, {}
 local service = { getChapters = function(_, _, book, callback)
     local handle = { cancel = function() cancel_count = cancel_count + 1; return true end }
     pending[#pending + 1] = { book = book, callback = callback, handle = handle }
@@ -116,7 +137,7 @@ local reader_session = {
     resume = function(_, _, book, chapters, callback)
         resume_calls[#resume_calls + 1] = book.id
         resume_callbacks[#resume_callbacks + 1] = callback
-        return { cancel = function() end }
+        return { cancel = function() downstream_cancels = downstream_cancels + 1; return true end }
     end,
     openOffline = function() return nil, { code = "STORAGE_ERROR" } end,
 }
@@ -145,16 +166,19 @@ equal(0, #resume_calls, "out-of-order old catalog response is dropped")
 pending[3].callback({ { uid = "current" } }, nil)
 equal(1, #resume_calls, "only the newest catalog response starts reading")
 equal("book-1", resume_calls[1], "newest intent retains its book snapshot")
-equal(nil, current_detail.reading_request, "completed catalog request handle is cleared")
+truthy(current_detail.reading_request and type(current_detail.reading_request.cancel) == "function",
+    "completed catalog request is replaced by the downstream body handle")
 pending[3].callback({ { uid = "duplicate" } }, nil)
 equal(1, #resume_calls, "duplicate completion from one catalog request cannot resume twice")
 
 current_detail:startReading(function() delivered = delivered + 1 end)
+equal(1, downstream_cancels, "retry cancels the prior downstream body handle")
 resume_callbacks[1]({}, nil)
 equal(0, delivered, "completion from an older reading intent is dropped")
 pending[4].callback({ { uid = "newest" } }, nil)
 resume_callbacks[2]({}, nil)
 equal(1, delivered, "completion from the newest reading intent is delivered")
+equal(nil, current_detail.reading_request, "final downstream completion clears the owned handle")
 
 local switching = app:createBookDetail(book1, { book1, book2 })
 switching:startReading(function() end)
@@ -162,6 +186,12 @@ switching:switchSource(2)
 equal(3, cancel_count, "source switch cancels the prior reading intent")
 pending[5].callback({ { uid = "switched-late" } }, nil)
 equal(2, #resume_calls, "source-switch stale callback cannot open the reader")
+
+local downstream_switch = app:createBookDetail(book1, { book1, book2 })
+downstream_switch:startReading(function() end)
+pending[6].callback({ { uid = "before-switch" } }, nil)
+downstream_switch:switchSource(2)
+equal(2, downstream_cancels, "source switch cancels an already-started downstream body handle")
 
 local synchronous_resumes = 0
 local synchronous_app = App.new({ storage = storage,
@@ -180,7 +210,8 @@ local synchronous_app = App.new({ storage = storage,
 local synchronous_detail = synchronous_app:createBookDetail(book1, { book1 })
 synchronous_detail:startReading(function() end)
 equal(1, synchronous_resumes, "synchronous catalog callback starts the current reading intent")
-equal(nil, synchronous_detail.reading_request, "synchronous callback before handle assignment cannot retain a completed handle")
+truthy(synchronous_detail.reading_request and type(synchronous_detail.reading_request.cancel) == "function",
+    "synchronous catalog callback before handle assignment retains only the downstream handle")
 
 local throwing_callback, throwing_resumes = nil, 0
 local throwing_app = App.new({ storage = storage,
@@ -199,5 +230,46 @@ local close_ok = pcall(throwing_detail.close, throwing_detail)
 equal(true, close_ok, "throwing request cancellation cannot escape detail close")
 throwing_callback({ { uid = "cancel-ignored" } }, nil)
 equal(0, throwing_resumes, "late callback is dropped even when request cancellation throws or is ineffective")
+
+local returned_late, returned_resumes = nil, 0
+local returned_app = App.new({ storage = storage,
+    book_service = { getChapters = function(_, _, _, callback)
+        returned_late = callback
+        return nil, terminal_error
+    end },
+    reader_session = {
+        cache = { writeCatalog = function() return true end },
+        resume = function() returned_resumes = returned_resumes + 1 end,
+    },
+})
+local returned_detail = returned_app:createBookDetail(book1, { book1 })
+first, second = returned_detail:startReading(function() terminal_delivered = terminal_delivered + 1 end)
+equal(nil, first, "getChapters terminal nil is preserved")
+equal(terminal_error, second, "getChapters terminal AppError is preserved")
+returned_late({ { uid = "too-late" } }, nil)
+equal(0, returned_resumes, "late catalog callback after synchronous terminal return cannot resume")
+
+local document_cancelled, document_delivered, document_catalog = 0, 0, nil
+local document = { cancel = function() document_cancelled = document_cancelled + 1 end, is_legado_document = true }
+local document_app = App.new({ storage = storage,
+    book_service = { getChapters = function(_, _, _, callback)
+        document_catalog = callback
+        return { cancel = function() end }
+    end },
+    reader_session = {
+        cache = { writeCatalog = function() return true end },
+        resume = function(_, _, _, _, callback)
+            callback(document, nil)
+            return document
+        end,
+    },
+})
+local document_detail = document_app:createBookDetail(book1, { book1 })
+document_detail:startReading(function() document_delivered = document_delivered + 1 end)
+document_catalog({ { uid = "sync-document" } }, nil)
+equal(1, document_delivered, "synchronous downstream document completion is delivered once")
+equal(nil, document_detail.reading_request, "synchronous document is not retained as a cancellable request")
+document_detail:close()
+equal(0, document_cancelled, "completed document proxy is never cancelled as if it were a request")
 
 return count

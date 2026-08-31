@@ -4,6 +4,8 @@ local CacheStore = require("legado.lib.cache_store")
 local Cleaner = require("legado.lib.content_cleaner")
 local ReaderSession = require("legado.lib.reader_session")
 local BookDetail = require("legado.ui.book_detail")
+local App = require("legado.ui.app")
+local Models = require("legado.lib.models")
 
 local count = 0
 local function equal(expected, actual, message) count = count + 1; assertx.equal(expected, actual, message) end
@@ -193,6 +195,49 @@ do
         completions = completions + 1
     end })
     equal(1, completions, "document activation failure is delivered exactly once across candidate and parent state")
+end
+
+do
+    local cache = CacheStore.new({ fs = fs, root = "detail-intent-body-guard" })
+    local source = { id = "guard-source" }
+    local book = { id = "guard-book", source_id = Models.sourceId(source) }
+    local catalog_callbacks, body_callbacks, body_cancels, opened = {}, {}, 0, 0
+    local service = {
+        getChapters = function(_, _, _, callback)
+            catalog_callbacks[#catalog_callbacks + 1] = callback
+            return { cancel = function() return true end }
+        end,
+        getContent = function(_, _, _, _, callback)
+            body_callbacks[#body_callbacks + 1] = callback
+            return { cancel = function() body_cancels = body_cancels + 1; error("cancel ignored") end }
+        end,
+    }
+    local storage = {
+        listSources = function() return { source } end,
+        replaceChapters = function() return true end,
+        getProgress = function() return nil end,
+        putProgress = function() return true end,
+    }
+    local session = ReaderSession.new({ cache = cache, storage = storage, service = service,
+        settings = { get = function() return 0 end },
+        ui = { openDocument = function()
+            opened = opened + 1
+            return {}
+        end },
+    })
+    local detail = App.new({ storage = storage, book_service = service, reader_session = session })
+        :createBookDetail(book, { book })
+    detail:startReading(function() end)
+    catalog_callbacks[1]({ { uid = "guard-chapter", index = 1, title = "Guard", source_id = book.source_id,
+        book_id = book.id } }, nil)
+    equal(1, #body_callbacks, "catalog completion starts one downstream body request")
+    truthy(detail.reading_request and type(detail.reading_request.cancel) == "function",
+        "BookDetail owns the downstream ReaderSession handle")
+    local closed = pcall(detail.close, detail)
+    equal(true, closed, "downstream cancellation panic is contained")
+    equal(1, body_cancels, "detail close cancels the downstream body request")
+    body_callbacks[1]({ content = "<p>late body</p>" }, nil)
+    equal(0, opened, "late body callback after detail close cannot open a KOReader document")
 end
 
 do

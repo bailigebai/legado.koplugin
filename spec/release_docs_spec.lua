@@ -25,7 +25,7 @@ truthy(readme:find("legado.koplugin", 1, true), "README contains installation lo
 truthy(readme:find("## 故障排查", 1, true), "README has troubleshooting guidance")
 truthy(readme:find("## 卸载与清理", 1, true), "README has uninstall guidance")
 truthy(readme:find("DataStorage:getDataDir()", 1, true), "README identifies the actual KOReader data root")
-truthy(readme:find("${DataStorage:getDataDir()}/settings/legado.lua", 1, true),
+truthy(readme:find("${DataStorage:getDataDir()}/settings/legado.json", 1, true),
     "README identifies the actual KOReader settings file")
 truthy(readme:find("同时删除", 1, true), "README says full cleanup removes both data locations")
 for _, token in ipairs({ "/legado/cache/", "/legado/covers/", "/legado/downloads/", "/legado/legado.sqlite" }) do
@@ -45,7 +45,7 @@ truthy(privacy:find("退出 KOReader", 1, true), "privacy document gives an exec
 truthy(privacy:find("Cookie Jar 只驻留内存", 1, true), "privacy document accurately states cookie persistence")
 truthy(privacy:find("Header", 1, true) and privacy:find("legado.sqlite", 1, true),
     "privacy document explains persisted source headers and credentials")
-truthy(privacy:find("${DataStorage:getDataDir()}/settings/legado.lua", 1, true),
+truthy(privacy:find("${DataStorage:getDataDir()}/settings/legado.json", 1, true),
     "privacy document identifies the separately persisted settings file")
 truthy(privacy:find("同时删除", 1, true), "privacy full-cleanup procedure removes data and settings")
 

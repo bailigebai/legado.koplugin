@@ -68,28 +68,41 @@ function App:startReading(book, chapters, index, callback, intent)
         local ok, completed = pcall(intent.markRequestComplete)
         return ok and completed ~= false
     end
+    local function replace_downstream(handle)
+        if not intent or type(intent.replaceDownstream) ~= "function" then return true end
+        local ok, replaced = pcall(intent.replaceDownstream, handle)
+        if not ok or replaced == false then
+            if handle and type(handle.cancel) == "function" then pcall(handle.cancel, handle) end
+            return false
+        end
+        return true
+    end
     if not current() then return nil, { code = "CANCELLED", message = "阅读请求已失效" } end
     local source
     for _, candidate in ipairs(self.storage:listSources() or {}) do if Models.sourceId(candidate) == book.source_id then source = candidate; break end end
     if not source then return "书源不存在" end
     local function offline()
-        return self.reader_session:openOffline(source, book, index, callback)
+        return self.reader_session:openOffline(source, book, index, callback, { is_current = current })
     end
     if not self.service then return offline() end
     if type(chapters) == "table" and #chapters > 0 then
-        if index then return self.reader_session:open(source, book, chapters, index, { on_complete = callback }) end
-        return self.reader_session:resume(source, book, chapters, callback)
+        if index then return self.reader_session:open(source, book, chapters, index, { on_complete = callback, is_current = current }) end
+        return self.reader_session:resume(source, book, chapters, callback, { is_current = current })
     end
     return self.service:getChapters(source, book, function(values, err)
         if not current() then return end
         if not request_complete() then return end
         if not current() then return end
         if err or not values then
-            return offline()
+            local downstream, downstream_error = offline()
+            replace_downstream(downstream)
+            return downstream, downstream_error
         end
         if type(self.storage.replaceChapters) == "function" then self.storage:replaceChapters(book.id, values) end
         self.reader_session.cache:writeCatalog(book.source_id, book.id, { chapters = values })
-        self.reader_session:resume(source, book, values, callback)
+        local downstream, downstream_error = self.reader_session:resume(source, book, values, callback, { is_current = current })
+        replace_downstream(downstream)
+        return downstream, downstream_error
     end)
 end
 function App:startDownload(book)

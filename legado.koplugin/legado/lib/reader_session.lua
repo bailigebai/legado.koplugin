@@ -56,8 +56,14 @@ function ReaderSession:_reader_error(message, cause)
     return Errors.new(Errors.STORAGE_ERROR, message, { cause = tostring(cause or "unknown") })
 end
 
+function ReaderSession:_isCurrent(state)
+    if not state or type(state.is_current) ~= "function" then return true end
+    local ok, current = pcall(state.is_current)
+    return ok and current == true
+end
+
 function ReaderSession:_notify(state, value, err)
-    if not state then return false end
+    if not state or not self:_isCurrent(state) then return false end
     local notification = state.notification
     local callback = notification and notification.callback or state.on_complete
     if state.notified or (notification and notification.notified) or type(callback) ~= "function" then return false end
@@ -79,7 +85,9 @@ function ReaderSession:_fail_candidate(state, error_value)
 end
 
 function ReaderSession:_activate_candidate(state, document)
-    if self.pending ~= state or state.cancelled then return nil, self:_reader_error("stale reader-ready callback") end
+    if self.pending ~= state or state.cancelled or not self:_isCurrent(state) then
+        return nil, self:_reader_error("stale reader-ready callback")
+    end
     if state.restore_fraction ~= nil then
         if not document or type(document.setProgressFraction) ~= "function" then
             return self:_fail_candidate(state, self:_reader_error("KOReader progress restore API is unavailable"))
@@ -128,6 +136,7 @@ function ReaderSession:_callbacks(state)
 end
 
 function ReaderSession:_open_cached(state, index, restore_fraction)
+    if not self:_isCurrent(state) then return nil, Errors.new(Errors.CANCELLED, "reading intent is stale") end
     local chapter = state.chapters[index]
     local body, error_value = self.cache:readBody(source_id(state.source, state.book), state.book.id, chapter)
     if not body then return nil, error_value end
@@ -139,6 +148,7 @@ function ReaderSession:_open_cached(state, index, restore_fraction)
         token = self.next_token, source = state.source, book = state.book, chapters = state.chapters,
         index = index, restore_fraction = restore_fraction, previous = self.active, active = false,
         offline = state.offline, on_complete = state.on_complete, notification = state.notification,
+        is_current = state.is_current,
     }
     if self.pending then self.pending.cancelled = true end
     self.pending = candidate
@@ -166,6 +176,11 @@ function ReaderSession:_fetch_then_open(state, index, restore_fraction)
     local completed = false
     local function callback(content, request_error)
         completed = true
+        if not self:_isCurrent(state) then
+            state.fetching = false
+            if self.foreground_state == state then self.foreground_handles, self.foreground_state = {}, nil end
+            return
+        end
         if generation ~= self.foreground_generation or self.foreground_state ~= state then return end
         if self.active ~= state and state.active then return end
         state.fetching = false
@@ -287,7 +302,8 @@ function ReaderSession:open(source, book, chapters, index, options)
     local notification = { callback = options.on_complete, notified = false }
     local state = { source = source, book = book, chapters = chapters,
         index = math.max(1, math.min(#chapters, tonumber(index) or 1)), active = false,
-        on_complete = options.on_complete, notification = notification }
+        on_complete = options.on_complete, notification = notification, is_current = options.is_current }
+    if not self:_isCurrent(state) then return nil, Errors.new(Errors.CANCELLED, "reading intent is stale") end
     local document, error_value = self:_open_cached(state, state.index, options.restore_fraction)
     if document then return document end
     if error_value and error_value.message and error_value.message:find("unavailable", 1, true) then
@@ -298,17 +314,24 @@ function ReaderSession:open(source, book, chapters, index, options)
     return nil, error_value
 end
 
-function ReaderSession:resume(source, book, chapters, callback)
+function ReaderSession:resume(source, book, chapters, callback, options)
+    options = options or {}
     local progress = self.storage:getProgress(book.id)
     local index = 1
     if progress then index = self:recoverIndex(chapters, progress) end
     return self:open(source, book, chapters, index, {
         restore_fraction = progress and clamp(progress.fraction, 0, 1) or nil,
         on_complete = callback,
+        is_current = options.is_current,
     })
 end
 
-function ReaderSession:openOffline(source, book, index, callback)
+function ReaderSession:openOffline(source, book, index, callback, options)
+    options = options or {}
+    if type(options.is_current) == "function" then
+        local ok, current = pcall(options.is_current)
+        if not ok or current ~= true then return nil, Errors.new(Errors.CANCELLED, "reading intent is stale") end
+    end
     local catalog, catalog_error = self.cache:readCatalog(source_id(source, book), book.id)
     if not catalog then
         if type(callback) == "function" then pcall(callback, nil, catalog_error) end
@@ -319,7 +342,8 @@ function ReaderSession:openOffline(source, book, index, callback)
     local notification = { callback = callback, notified = false }
     for candidate = wanted, 1, -1 do
         local state = { source = source, book = book, chapters = chapters, index = candidate,
-            active = false, offline = true, on_complete = callback, notification = notification }
+            active = false, offline = true, on_complete = callback, notification = notification,
+            is_current = options.is_current }
         local document, open_error = self:_open_cached(state, candidate, nil)
         if document then return document end
         if candidate == 1 then self:_notify(state, nil, open_error); return nil, open_error end
