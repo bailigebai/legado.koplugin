@@ -5,6 +5,12 @@ local function optional(name)
     return ok and value or nil
 end
 
+local function copy_key_events(events)
+    local copied = {}
+    for name, binding in pairs(events or {}) do copied[name] = binding end
+    return copied
+end
+
 local function dependencies(injected)
     injected = injected or {}
     return {
@@ -76,10 +82,12 @@ function CoverGrid.new(options)
         return true
     end
     widget.close_button = controls[#controls]
-    widget.key_events = widget.key_events or {}
+    widget.key_events = copy_key_events(widget.key_events)
     if deps.device and type(deps.device.hasKeys) == "function" and deps.device:hasKeys()
         and deps.device.input and deps.device.input.group and deps.device.input.group.Back then
         widget.key_events.Close = { { deps.device.input.group.Back } }
+    else
+        widget.key_events.Close = nil
     end
     widget.onClose = close_grid
     widget.closeForReplacement = function()
