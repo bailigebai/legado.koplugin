@@ -138,4 +138,31 @@ do
     equal("two", callbacks[2], "reentrant callback occurs once")
 end
 
+do
+    local scheduler = Fakes.scheduler()
+    function scheduler:unschedule() error("unschedule completion panic") end
+    local engine, runner, subprocess = engine_with({ concurrency = 1, scheduler = scheduler, polls_before_done = 0 })
+    local callbacks = 0
+    engine:execute({ url = "https://books.test/unschedule-complete" }, function() callbacks = callbacks + 1 end)
+    engine:execute({ url = "https://books.test/after-unschedule-complete" }, function() callbacks = callbacks + 1 end)
+    local ok = pcall(runner.runAll, runner, 50)
+    equal(true, ok, "completion contains scheduler unschedule panic")
+    equal(2, #subprocess.children, "completion unschedule panic releases the slot FIFO")
+    equal(2, callbacks, "completion unschedule panic preserves exactly-once callbacks")
+end
+
+do
+    local scheduler = Fakes.scheduler()
+    function scheduler:unschedule() error("unschedule cancel panic") end
+    local engine, _, subprocess = engine_with({ concurrency = 1, scheduler = scheduler, polls_before_done = 5 })
+    local callbacks = 0
+    local first = engine:execute({ url = "https://books.test/unschedule-cancel" }, function() callbacks = callbacks + 1 end)
+    engine:execute({ url = "https://books.test/after-unschedule-cancel" }, function() callbacks = callbacks + 1 end)
+    local ok, cancelled = pcall(first.cancel, first)
+    equal(true, ok, "active cancel contains scheduler unschedule panic")
+    equal(true, cancelled, "active cancel still reports success")
+    equal(2, #subprocess.children, "cancel unschedule panic releases the slot FIFO")
+    equal(0, callbacks, "cancelled request never calls back before successor runs")
+end
+
 return count

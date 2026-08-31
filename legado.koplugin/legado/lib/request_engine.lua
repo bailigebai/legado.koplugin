@@ -550,13 +550,18 @@ function RequestEngine:execute(request, callback)
     }
     local engine = self
 
+    local function safe_unschedule(field)
+        local scheduled = state[field]
+        state[field] = nil
+        if scheduled and type(engine.scheduler.unschedule) == "function" then
+            pcall(engine.scheduler.unschedule, engine.scheduler, scheduled)
+        end
+    end
+
     local function finish(response, err)
         if state.completed or state.cancelled then return end
         state.completed = true
-        if state.timeout_scheduled and type(engine.scheduler.unschedule) == "function" then
-            engine.scheduler:unschedule(state.timeout_scheduled)
-            state.timeout_scheduled = nil
-        end
+        safe_unschedule("timeout_scheduled")
         engine:_releaseSlot(state)
         callback(response, err)
     end
@@ -578,14 +583,8 @@ function RequestEngine:execute(request, callback)
     function handle:cancel()
         if state.completed or state.cancelled then return false end
         state.cancelled = true
-        if state.scheduled and type(engine.scheduler.unschedule) == "function" then
-            engine.scheduler:unschedule(state.scheduled)
-            state.scheduled = nil
-        end
-        if state.timeout_scheduled and type(engine.scheduler.unschedule) == "function" then
-            engine.scheduler:unschedule(state.timeout_scheduled)
-            state.timeout_scheduled = nil
-        end
+        safe_unschedule("scheduled")
+        safe_unschedule("timeout_scheduled")
         engine:_releaseSlot(state)
         if state.child then
             pcall(engine.subprocess.terminate, engine.subprocess, state.child)

@@ -133,6 +133,69 @@ do
 end
 
 do
+    local cache = CacheStore.new({ fs = fs, root = "catalog-select-callback" })
+    local source, book = { id = "s" }, { id = "selected-book", source_id = "source-s" }
+    local chapters = {
+        { uid = "selected-1", index = 1, title = "One", source_id = "source-s", book_id = book.id },
+        { uid = "selected-2", index = 2, title = "Two", source_id = "source-s", book_id = book.id },
+    }
+    assert(cache:writeBody("source-s", book.id, chapters[2], "<p>Two</p>"))
+    local ready = {}
+    local ui = { openDocument = function(_, _, callbacks)
+        local document = { selected = 2 }
+        callbacks.ready(document)
+        return document
+    end }
+    local session = ReaderSession.new({ cache = cache, storage = { putProgress = function() end }, ui = ui })
+    session:open(source, book, chapters, 2, { on_complete = function(value, err) ready[#ready + 1] = { value, err } end })
+    equal(1, #ready, "cached selected chapter reports reader readiness once")
+    equal(2, ready[1][1].selected, "cached selected chapter opens the requested index")
+
+    local pending = {}
+    local online = ReaderSession.new({ cache = CacheStore.new({ fs = fs, root = "catalog-select-online" }),
+        storage = { putProgress = function() end }, ui = ui,
+        service = { getContent = function(_, _, _, _, callback)
+            pending[#pending + 1] = callback
+            return { cancel = function() end }
+        end },
+    })
+    local failures = {}
+    online:open(source, book, chapters, 2, { on_complete = function(value, err) failures[#failures + 1] = { value, err } end })
+    equal(1, #pending, "uncached selected chapter starts one asynchronous content request")
+    pending[1](nil, { code = "NETWORK_ERROR" })
+    pending[1](nil, { code = "NETWORK_ERROR" })
+    equal(1, #failures, "asynchronous selected-chapter failure notifies once")
+    equal("NETWORK_ERROR", failures[1][2].code, "asynchronous selected-chapter failure remains structured")
+
+    local late = 0
+    online:open(source, book, chapters, 1, { on_complete = function() late = late + 1 end })
+    local late_callback = pending[2]
+    online:close()
+    late_callback(nil, { code = "NETWORK_ERROR" })
+    equal(0, late, "reader close drops late selected-chapter callbacks")
+end
+
+do
+    local cache = CacheStore.new({ fs = fs, root = "catalog-select-open-failure" })
+    local source, book = { id = "s" }, { id = "selected-failure-book", source_id = "source-s" }
+    local chapters = {
+        { uid = "selected-failure-1", index = 1, title = "One", source_id = "source-s", book_id = book.id },
+    }
+    assert(cache:writeBody("source-s", book.id, chapters[1], "<p>One</p>"))
+    local completions = 0
+    local session = ReaderSession.new({ cache = cache, storage = { putProgress = function() end },
+        ui = { openDocument = function(_, _, callbacks)
+            callbacks.failure({ code = "OPEN_ERROR" })
+            return nil
+        end },
+    })
+    session:open(source, book, chapters, 1, { on_complete = function()
+        completions = completions + 1
+    end })
+    equal(1, completions, "document activation failure is delivered exactly once across candidate and parent state")
+end
+
+do
     local normalized = assert(Cleaner.normalize('<style>x</style><h1>Title</h1><h1>Title</h1><p onclick="bad">Text <a href="javascript:bad()">bad</a><img src="https://a.test/x.png"></p><script>bad()</script>', { title = "Title" }))
     equal(nil, normalized:find("<script", 1, true), "scripts are removed")
     equal(nil, normalized:find("onclick", 1, true), "event attributes are removed")

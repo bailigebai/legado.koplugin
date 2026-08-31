@@ -56,6 +56,17 @@ function ReaderSession:_reader_error(message, cause)
     return Errors.new(Errors.STORAGE_ERROR, message, { cause = tostring(cause or "unknown") })
 end
 
+function ReaderSession:_notify(state, value, err)
+    if not state then return false end
+    local notification = state.notification
+    local callback = notification and notification.callback or state.on_complete
+    if state.notified or (notification and notification.notified) or type(callback) ~= "function" then return false end
+    state.notified = true
+    if notification then notification.notified = true end
+    pcall(callback, value, err)
+    return true
+end
+
 function ReaderSession:_fail_candidate(state, error_value)
     if self.pending == state then self.pending = nil end
     state.cancelled, state.active = true, false
@@ -63,6 +74,7 @@ function ReaderSession:_fail_candidate(state, error_value)
     local previous = state.previous
     if previous then previous.active = true; self.active = previous end
     self.diagnostics("reader", state.error)
+    self:_notify(state, nil, state.error)
     return nil, state.error
 end
 
@@ -86,6 +98,7 @@ function ReaderSession:_activate_candidate(state, document)
         self.last_offline_chapter = { index = state.index, chapter_uid = chapter and chapter.uid }
     end
     if not state.offline then self:_prefetch(state) end
+    self:_notify(state, document, nil)
     return document
 end
 
@@ -125,7 +138,7 @@ function ReaderSession:_open_cached(state, index, restore_fraction)
     local candidate = {
         token = self.next_token, source = state.source, book = state.book, chapters = state.chapters,
         index = index, restore_fraction = restore_fraction, previous = self.active, active = false,
-        offline = state.offline,
+        offline = state.offline, on_complete = state.on_complete, notification = state.notification,
     }
     if self.pending then self.pending.cancelled = true end
     self.pending = candidate
@@ -142,6 +155,7 @@ function ReaderSession:_fetch_then_open(state, index, restore_fraction)
         state.fetching, state.end_handled = false, false
         local error_value = Errors.new(Errors.STORAGE_ERROR, "chapter is not cached and BookService is unavailable")
         self.diagnostics("read", error_value)
+        self:_notify(state, nil, error_value)
         return nil, error_value
     end
     local chapter = state.chapters[index]
@@ -156,11 +170,15 @@ function ReaderSession:_fetch_then_open(state, index, restore_fraction)
         if self.active ~= state and state.active then return end
         state.fetching = false
         self.foreground_handles, self.foreground_state = {}, nil
-        if request_error or not content then state.end_handled = false; self.diagnostics("read", request_error or Errors.new(Errors.NETWORK_ERROR, "empty content")); return end
+        if request_error or not content then
+            state.end_handled = false
+            local err = request_error or Errors.new(Errors.NETWORK_ERROR, "empty content")
+            self.diagnostics("read", err); self:_notify(state, nil, err); return
+        end
         local body, clean_error = Cleaner.normalize(content.content or content, { replaceRegex = state.source.replaceRegex })
-        if not body then state.end_handled = false; self.diagnostics("read", clean_error); return end
+        if not body then state.end_handled = false; self.diagnostics("read", clean_error); self:_notify(state, nil, clean_error); return end
         local saved, save_error = self.cache:writeBody(source_id(state.source, state.book), state.book.id, chapter, body)
-        if not saved then state.end_handled = false; self.diagnostics("read", save_error); return end
+        if not saved then state.end_handled = false; self.diagnostics("read", save_error); self:_notify(state, nil, save_error); return end
         local opened, open_error = self:_open_cached(state, index, restore_fraction)
         if not opened then
             local current = self.active == state and state or self.active
@@ -173,6 +191,7 @@ function ReaderSession:_fetch_then_open(state, index, restore_fraction)
         state.fetching, state.end_handled = false, false
         local err = not ok and self:_reader_error("foreground request failed", handle) or request_error or Errors.new(Errors.NETWORK_ERROR, "foreground request did not start")
         self.diagnostics("read", err)
+        self:_notify(state, nil, err)
         return nil, err
     end
     if not completed and generation == self.foreground_generation then
@@ -257,39 +276,57 @@ end
 
 function ReaderSession:open(source, book, chapters, index, options)
     options = options or {}
-    if type(chapters) ~= "table" or #chapters == 0 then return nil, Errors.new(Errors.INVALID_INPUT, "reading requires a non-empty catalog") end
+    if type(chapters) ~= "table" or #chapters == 0 then
+        local err = Errors.new(Errors.INVALID_INPUT, "reading requires a non-empty catalog")
+        if type(options.on_complete) == "function" then pcall(options.on_complete, nil, err) end
+        return nil, err
+    end
     self:_cancelForeground()
     self:_cancelPrefetch()
     if self.pending then self.pending.cancelled = true; self.pending = nil end
-    local state = { source = source, book = book, chapters = chapters, index = math.max(1, math.min(#chapters, tonumber(index) or 1)), active = false }
+    local notification = { callback = options.on_complete, notified = false }
+    local state = { source = source, book = book, chapters = chapters,
+        index = math.max(1, math.min(#chapters, tonumber(index) or 1)), active = false,
+        on_complete = options.on_complete, notification = notification }
     local document, error_value = self:_open_cached(state, state.index, options.restore_fraction)
     if document then return document end
     if error_value and error_value.message and error_value.message:find("unavailable", 1, true) then
         local handle, fetch_error = self:_fetch_then_open(state, state.index, options.restore_fraction)
         return handle, fetch_error or error_value
     end
+    self:_notify(state, nil, error_value)
     return nil, error_value
 end
 
-function ReaderSession:resume(source, book, chapters)
+function ReaderSession:resume(source, book, chapters, callback)
     local progress = self.storage:getProgress(book.id)
     local index = 1
     if progress then index = self:recoverIndex(chapters, progress) end
-    return self:open(source, book, chapters, index, { restore_fraction = progress and clamp(progress.fraction, 0, 1) or nil })
+    return self:open(source, book, chapters, index, {
+        restore_fraction = progress and clamp(progress.fraction, 0, 1) or nil,
+        on_complete = callback,
+    })
 end
 
-function ReaderSession:openOffline(source, book, index)
+function ReaderSession:openOffline(source, book, index, callback)
     local catalog, catalog_error = self.cache:readCatalog(source_id(source, book), book.id)
-    if not catalog then return nil, catalog_error end
+    if not catalog then
+        if type(callback) == "function" then pcall(callback, nil, catalog_error) end
+        return nil, catalog_error
+    end
     local chapters = catalog.chapters or catalog
     local wanted = math.max(1, math.min(#chapters, tonumber(index) or 1))
+    local notification = { callback = callback, notified = false }
     for candidate = wanted, 1, -1 do
-        local state = { source = source, book = book, chapters = chapters, index = candidate, active = false, offline = true }
+        local state = { source = source, book = book, chapters = chapters, index = candidate,
+            active = false, offline = true, on_complete = callback, notification = notification }
         local document, open_error = self:_open_cached(state, candidate, nil)
         if document then return document end
-        if candidate == 1 then return nil, open_error end
+        if candidate == 1 then self:_notify(state, nil, open_error); return nil, open_error end
     end
-    return nil, Errors.new(Errors.STORAGE_ERROR, "no readable cached chapter", { last_readable = 0 })
+    local err = Errors.new(Errors.STORAGE_ERROR, "no readable cached chapter", { last_readable = 0 })
+    if type(callback) == "function" and not notification.notified then pcall(callback, nil, err) end
+    return nil, err
 end
 
 function ReaderSession:recoverIndex(chapters, progress)

@@ -335,7 +335,7 @@ function Presenter:_compatibility(view)
             end
             handle = view:run(keyword, finish)
             if completed then return result_widget or handle end
-            local function cancel_once()
+            local function cancel_once(close_widget)
                 if closed or completed then return false end
                 closed = true
                 if type(view.cancel) == "function" then
@@ -343,7 +343,7 @@ function Presenter:_compatibility(view)
                 elseif handle and type(handle.cancel) == "function" then
                     pcall(handle.cancel, handle)
                 end
-                if progress and self.ui_manager and type(self.ui_manager.close) == "function" then self.ui_manager:close(progress) end
+                if close_widget and progress then self:_closeWidget(progress) end
                 return true
             end
             progress = construct(self.menu, { title = "诊断中", item_table = {
@@ -351,8 +351,8 @@ function Presenter:_compatibility(view)
                 { text = "result：等待中", enabled = false },
                 { text = "catalog：等待中", enabled = false },
                 { text = "content：等待中", enabled = false },
-                { text = "取消诊断", callback = cancel_once },
-            }, close_callback = cancel_once })
+                { text = "取消诊断", callback = function() return cancel_once(true) end },
+            }, close_callback = function() return cancel_once(false) end })
             return self:_show(progress)
         end
         dialog = construct(self.input_dialog, { title = "书源诊断", input_hint = "测试书名", input_type = "string", buttons = {
@@ -367,21 +367,64 @@ function Presenter:_compatibility(view)
 end
 
 function Presenter:_settings(view)
-    local values = view.values or {}
-    local items = {
-        { text = "请求超时：" .. tostring(values.timeout or 20) .. " 秒", enabled = false },
-        { text = "并发书源：" .. tostring(values.concurrency or 2), enabled = false },
-        { text = "预取章节：" .. tostring(values.prefetch or 3), enabled = false },
-        { text = "每页书籍：" .. tostring(values.shelf_page or 20), enabled = false },
-    }
+    local values = type(view.refresh) == "function" and view:refresh() or view.values or {}
+    local items = {}
+    local function editable(text, key, hint)
+        items[#items + 1] = { text = text, callback = function()
+            local dialog
+            local function accept(value)
+                if (value == nil or value == "") and dialog and type(dialog.getInputText) == "function" then value = dialog:getInputText() end
+                if tonumber(value) == nil then return self:_info("请输入数字", "设置") end
+                if not self:_closeWidget(dialog) then return false end
+                local saved, err = view:set(key, value)
+                if saved == nil then return self:_info("设置保存失败（" .. safe_token(type(err) == "table" and err.code, "STORAGE_ERROR") .. "）", "设置") end
+                return self:_settings(view)
+            end
+            dialog = construct(self.input_dialog, { title = "修改设置", input_hint = hint, input_type = "number", buttons = {
+                { { text = "取消", callback = function() return self:_closeWidget(dialog) end },
+                    { text = "确定", is_enter_default = true, callback = accept } },
+            } })
+            return self:_showInput(dialog)
+        end }
+    end
+    editable("请求超时：" .. tostring(values.timeout or 20) .. " 秒", "timeout", "1–20 秒")
+    editable("并发书源：" .. tostring(values.concurrency or 2), "concurrency", "2–3")
+    editable("预取章节：" .. tostring(values.prefetch or 3), "prefetch", "0–10")
+    editable("每页书籍：" .. tostring(values.shelf_page or 20), "shelf_page", "5–50")
     for _, action in ipairs(view.actions or {}) do items[#items + 1] = { text = action.text, callback = action.callback } end
     return self:_show(construct(self.menu, { title = "设置", item_table = items }))
+end
+
+function Presenter:_readingResult(result, err)
+    local failure = err
+    if not failure and type(result) == "table" and type(result.code) == "string" then failure = result end
+    if failure then
+        local code = safe_token(type(failure) == "table" and failure.code, "READ_ERROR")
+        return self:_info("阅读失败（" .. code .. "）", "阅读")
+    end
+    if type(result) == "string" then return self:_info(result, "阅读") end
+    return result
+end
+
+function Presenter:_startReading(action)
+    local callback_called, callback_result = false, nil
+    local function complete(value, err)
+        if callback_called then return callback_result end
+        callback_called = true
+        callback_result = self:_readingResult(value, err)
+        return callback_result
+    end
+    local result, err = action(complete)
+    if callback_called then return callback_result or result end
+    return self:_readingResult(result, err)
 end
 
 function Presenter:_catalog(view)
     local items = {}
     for _, item in ipairs(view.items or {}) do
-        items[#items + 1] = { text = tostring(item.index) .. ". " .. item.title .. (item.cached and " ✓" or ""), callback = function() return item.chapter end }
+        items[#items + 1] = { text = tostring(item.index) .. ". " .. item.title .. (item.cached and " ✓" or ""), callback = function()
+            return self:_startReading(function(complete) return view:select(item.position, complete) end)
+        end }
     end
     if #items == 0 then items[1] = { text = "目录为空", enabled = false } end
     return self:_show(construct(self.menu, { title = "目录", item_table = items }))
@@ -404,7 +447,9 @@ function Presenter:_detail(view)
         items[#items + 1] = { text = "详情加载中…", enabled = false }
     end
     local actions = {
-        { text = "开始阅读", callback = function() return self:_info(view:startReading()) end },
+        { text = "开始阅读", callback = function()
+            return self:_startReading(function(complete) return view:startReading(complete) end)
+        end },
         { text = "加入书架", callback = function() return view:addToShelf() end },
         { text = "移出书架", callback = function() return view:removeFromShelf() end },
         { text = "查看目录", callback = function()

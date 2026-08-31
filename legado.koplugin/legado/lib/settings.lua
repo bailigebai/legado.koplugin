@@ -23,6 +23,21 @@ local function copy(source)
     return result
 end
 
+local function normalized(key, value)
+    if key == "prefetch" then
+        return math.max(Settings.DEFAULTS.prefetch_min, math.min(Settings.DEFAULTS.prefetch_max,
+            math.floor(tonumber(value) or Settings.DEFAULTS.prefetch)))
+    elseif key == "concurrency" then
+        return math.max(2, math.min(Settings.DEFAULTS.max_concurrency,
+            math.floor(tonumber(value) or Settings.DEFAULTS.concurrency)))
+    elseif key == "timeout" then
+        return math.max(1, math.min(20, tonumber(value) or Settings.DEFAULTS.timeout))
+    elseif key == "shelf_page" then
+        return math.max(5, math.min(50, math.floor(tonumber(value) or Settings.DEFAULTS.shelf_page)))
+    end
+    return value
+end
+
 local function koreader_adapter()
     local loaded_settings, LuaSettings = pcall(require, "luasettings")
     local loaded_storage, DataStorage = pcall(require, "datastorage")
@@ -40,7 +55,7 @@ function Settings.new(adapter)
     adapter = adapter or koreader_adapter() or { read = function() return {} end, write = function() return true end }
     local stored = adapter.read and adapter.read() or {}
     local values = copy(Settings.DEFAULTS)
-    for key, value in pairs(stored or {}) do values[key] = value end
+    for key, value in pairs(stored or {}) do values[key] = normalized(key, value) end
     values.schema_version = Settings.SCHEMA_VERSION
     local self = setmetatable({ adapter = adapter, values = values }, Settings)
     self:_write()
@@ -57,13 +72,11 @@ function Settings:get(key)
 end
 
 function Settings:set(key, value)
-    if key == "prefetch" then
-        value = math.max(Settings.DEFAULTS.prefetch_min, math.min(Settings.DEFAULTS.prefetch_max, tonumber(value) or Settings.DEFAULTS.prefetch))
-    elseif key == "concurrency" then
-        value = math.max(1, math.min(Settings.DEFAULTS.max_concurrency, tonumber(value) or Settings.DEFAULTS.concurrency))
-    end
+    value = normalized(key, value)
     self.values[key] = value
-    return self:_write()
+    local written, err = self:_write()
+    if written == false or written == nil then return nil, err end
+    return value
 end
 
 function Settings:all()

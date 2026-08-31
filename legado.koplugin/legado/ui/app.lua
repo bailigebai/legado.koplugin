@@ -55,22 +55,27 @@ function App:openAbout() return self:_present(About) end
 function App:openSpeech()
     return self:_present({ kind = "speech_unavailable", title = "听书", text = "听书功能尚未配置" })
 end
-function App:startReading(book, chapters)
-    if self.reading_hook then return self.reading_hook(book, chapters) end
+function App:startReading(book, chapters, index, callback)
+    if self.reading_hook then return self.reading_hook(book, chapters, index, callback) end
     if not self.reader_session or not self.storage then return "阅读功能尚未初始化" end
     local source
     for _, candidate in ipairs(self.storage:listSources() or {}) do if Models.sourceId(candidate) == book.source_id then source = candidate; break end end
     if not source then return "书源不存在" end
     local function offline()
-        return self.reader_session:openOffline(source, book)
+        return self.reader_session:openOffline(source, book, index, callback)
     end
     if not self.service then return offline() end
-    if type(chapters) == "table" and #chapters > 0 then return self.reader_session:resume(source, book, chapters) end
+    if type(chapters) == "table" and #chapters > 0 then
+        if index then return self.reader_session:open(source, book, chapters, index, { on_complete = callback }) end
+        return self.reader_session:resume(source, book, chapters, callback)
+    end
     return self.service:getChapters(source, book, function(values, err)
-        if err or not values then offline(); return end
+        if err or not values then
+            return offline()
+        end
         if type(self.storage.replaceChapters) == "function" then self.storage:replaceChapters(book.id, values) end
         self.reader_session.cache:writeCatalog(book.source_id, book.id, { chapters = values })
-        self.reader_session:resume(source, book, values)
+        self.reader_session:resume(source, book, values, callback)
     end)
 end
 function App:startDownload(book)
@@ -100,7 +105,9 @@ function App:createBookDetail(book, alternatives)
         cache_lookup = self.reader_session and function(chapter, current_book)
             return self.reader_session.cache:readBody(current_book.source_id, current_book.id, chapter) ~= nil
         end or nil,
-        reading_hook = function(selected, selected_chapters) return self:startReading(selected, selected_chapters) end,
+        reading_hook = function(selected, selected_chapters, selected_index, selected_callback)
+            return self:startReading(selected, selected_chapters, selected_index, selected_callback)
+        end,
         download_hook = function(selected) return self:startDownload(selected) end,
     })
 end

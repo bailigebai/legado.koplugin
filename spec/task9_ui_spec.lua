@@ -98,4 +98,23 @@ local shown_after_cancel = #shown
 async_callback({ status = "completed", steps = {} })
 equal(shown_after_cancel, #shown, "late callback after progress close is ignored")
 
+local back_cancel_count = 0
+local back_view = {
+    kind = "compatibility_report", status = "usable", capabilities = {}, issues = {}, diagnostics = {},
+    run = function(_, _, callback)
+        return { cancel = function() back_cancel_count = back_cancel_count + 1; return true end }
+    end,
+    close = function() return true end,
+}
+local back_menu = presenter:show(back_view)
+back_menu.item_table[#back_menu.item_table].callback()
+back_menu.close_callback()
+shown[#shown].buttons[1][2].callback("probe")
+local back_progress = shown[#shown]
+local closed_before_back = #closed_widgets
+ui:close(back_progress) -- KOReader closes the widget before invoking close_callback on physical Back.
+back_progress.close_callback()
+equal(closed_before_back + 1, #closed_widgets, "physical Back does not close diagnostic progress a second time")
+equal(1, back_cancel_count, "physical Back cancels diagnostics exactly once")
+
 return count

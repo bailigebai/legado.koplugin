@@ -200,7 +200,7 @@ do
     equal("设置", labels[5], "main menu includes settings")
     equal("关于", labels[6], "main menu includes about")
     local settings = app:openSettings()
-    equal("阅读外观", settings.actions[1].text, "settings expose KOReader native appearance action")
+    equal("阅读外观（由 KOReader 管理）", settings.actions[1].text, "settings expose KOReader native appearance action")
     settings.actions[1].callback()
     equal(1, appearance_opened, "appearance action delegates to KOReader")
     equal("阅读功能将在下一阶段提供", app:startReading({}), "reading is an explicit Task 7 hook")
