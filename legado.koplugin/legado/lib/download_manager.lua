@@ -71,6 +71,27 @@ local function sorted_queued_tasks(tasks)
     return queued
 end
 
+function DownloadManager:_migrateAndRebuildQueue()
+    local maximum = tonumber(self.queue_sequence) or 0
+    for _, task in pairs(self.tasks) do
+        maximum = math.max(maximum, valid_queue_sequence(task.queue_sequence) or 0)
+    end
+    self.queue_sequence = maximum
+    for _, task in ipairs(sorted_queued_tasks(self.tasks)) do
+        if valid_queue_sequence(task.queue_sequence) == nil then
+            local next_sequence = maximum + 1
+            local saved, err = self:_transition(task, { queue_sequence = next_sequence })
+            if not saved then return nil, err end
+            maximum = next_sequence
+            self.queue_sequence = maximum
+        end
+    end
+    self.queue_sequence = maximum
+    self.queue = {}
+    for _, task in ipairs(sorted_queued_tasks(self.tasks)) do self.queue[#self.queue + 1] = task.id end
+    return true
+end
+
 function DownloadManager.new(options)
     options = options or {}
     assert(options.storage, "DownloadManager requires storage")
@@ -109,11 +130,12 @@ function DownloadManager.new(options)
         end
     end
     if recovered and type(self.standby.releaseAll) == "function" then self.standby:releaseAll() end
-    for _, task in pairs(self.tasks) do
-        self.queue_sequence = math.max(self.queue_sequence, valid_queue_sequence(task.queue_sequence) or 0)
+    local migrated, migration_error = self:_migrateAndRebuildQueue()
+    if not migrated then
+        self.persistence_blocked = true
+        self.init_error = error_value(migration_error, "legacy download queue migration failed")
+        self.queue = {}
     end
-    local queued = sorted_queued_tasks(self.tasks)
-    for _, task in ipairs(queued) do self.queue[#self.queue + 1] = task.id end
     if #self.queue > 0 and not self.persistence_blocked then self:_schedulePump() end
     return self
 end
@@ -361,6 +383,7 @@ end
 
 function DownloadManager:enqueue(book, chapters, callback)
     if type(chapters) == "function" then callback, chapters = chapters, nil end
+    if self.persistence_blocked then return nil, self.init_error end
     if type(book) ~= "table" or type(book.id) ~= "string" or type(book.source_id) ~= "string" then
         return nil, Errors.new(Errors.INVALID_INPUT, "download requires a normalized book")
     end
@@ -450,9 +473,11 @@ function DownloadManager:recoverPersistence()
             end
         end
     end
-    local queued = sorted_queued_tasks(self.tasks)
-    self.queue = {}
-    for _, task in ipairs(queued) do self.queue[#self.queue + 1] = task.id end
+    local migrated, migration_error = self:_migrateAndRebuildQueue()
+    if not migrated then
+        self.init_error = error_value(migration_error, "legacy download queue migration failed")
+        return nil, self.init_error
+    end
     self.persistence_blocked, self.init_error = false, nil
     self:_schedulePump()
     return true

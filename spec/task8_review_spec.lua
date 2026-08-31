@@ -165,6 +165,92 @@ do
     end
 end
 
+do
+    local scheduled = {}
+    local legacy = restored_task("legacy-before-recovery-new", nil, 1, "legacy-recovery")
+    local manager, state = fixture({ initial = { legacy }, preserve_initial_order = true,
+        scheduler = { scheduleIn = function(_, _, action) scheduled[#scheduled + 1] = action end },
+        fail_put = function(_, _, current) return current.storage_down end })
+    local later_book = book("new-before-recovery")
+    local later = assert(manager:enqueue(later_book, { chapter(later_book, 1) }))
+    state.storage_down = true
+    scheduled[1]()
+    truthy(manager.persistence_blocked, "running outage blocks migrated legacy queue")
+    equal(0, #state.pending, "running outage starts no network before durable running state")
+    state.storage_down = false
+    truthy(manager:recoverPersistence(), "migrated legacy queue recovers persistence")
+    equal("legacy-recovery," .. later.id, table.concat(manager.queue, ","),
+        "persistence recovery preserves legacy-before-later-enqueue FIFO")
+end
+
+-- A partial legacy migration is a persistence outage, not permission to accept
+-- or run newer work. Recovery must continue idempotently from durable progress.
+do
+    local valid = restored_task("migrate-valid", 2, 0, "migrate-valid")
+    local first_legacy = restored_task("migrate-a", nil, 1, "migrate-a")
+    local second_legacy = restored_task("migrate-b", "invalid", 2, "migrate-b")
+    local scheduled = {}
+    local manager, state = fixture({ initial = { second_legacy, valid, first_legacy }, preserve_initial_order = true,
+        scheduler = { scheduleIn = function(_, _, action) scheduled[#scheduled + 1] = action end },
+        fail_put = function(task, _, current)
+            if task.id == "migrate-b" and tonumber(task.queue_sequence)
+                and not current.migration_failed_once then
+                current.migration_failed_once = true
+                return true
+            end
+        end,
+    })
+    truthy(manager.persistence_blocked, "partial legacy migration blocks the manager")
+    equal("STORAGE_ERROR", manager.init_error and manager.init_error.code, "migration failure exposes structured init_error")
+    equal(0, #scheduled, "migration failure schedules no network work")
+    equal(0, #manager.queue, "failed migration exposes no partially ordered runnable queue")
+    equal("invalid", manager:get("migrate-b").queue_sequence,
+        "failed migration transition rolls its in-memory sequence back to durable state")
+    local migrated_sequence = state.tasks["migrate-a"].queue_sequence
+    truthy(type(migrated_sequence) == "number" and migrated_sequence > 2,
+        "successful prefix migration is durable before the later failure")
+    local rejected, reject_error = manager:enqueue(book("must-not-overtake"), {})
+    equal(nil, rejected, "blocked migration rejects newer enqueue")
+    equal("STORAGE_ERROR", reject_error and reject_error.code, "blocked enqueue returns the migration error")
+
+    truthy(manager:recoverPersistence(), "migration resumes after the one-shot storage failure")
+    equal(false, manager.persistence_blocked, "successful migration recovery clears persistence block")
+    equal(migrated_sequence, state.tasks["migrate-a"].queue_sequence,
+        "recovery never renumbers the already migrated prefix")
+    equal(2, state.tasks["migrate-valid"].queue_sequence,
+        "migration never renumbers an existing valid sequence")
+    truthy(tonumber(state.tasks["migrate-b"].queue_sequence) > migrated_sequence,
+        "remaining legacy task receives the next unique monotonic sequence")
+    equal("migrate-valid,migrate-a,migrate-b", table.concat(manager.queue, ","),
+        "recovered migration retains deterministic FIFO without loss or duplication")
+    local after_book = book("accepted-after-migration")
+    local after = assert(manager:enqueue(after_book, { chapter(after_book, 1) }))
+    truthy(state.tasks[after.id].queue_sequence > state.tasks["migrate-b"].queue_sequence,
+        "post-recovery enqueue continues after the migrated sequence counter")
+    equal("migrate-valid,migrate-a,migrate-b," .. after.id, table.concat(manager.queue, ","),
+        "post-recovery enqueue appends after every migrated legacy task")
+    scheduled[1]()
+    equal("migrate-valid", state.pending[1] and state.pending[1].book.id,
+        "network begins with the first durable queued task only after migration recovery")
+end
+
+-- Legacy queue entries must receive durable sequence numbers before newer work
+-- can be accepted, otherwise a restart moves the new task ahead of the old one.
+do
+    local first_scheduler = { actions = {}, scheduleIn = function(self, _, action) self.actions[#self.actions + 1] = action end }
+    local legacy = restored_task("legacy-before-new", nil, 1, "legacy-task")
+    local manager, state = fixture({ initial = { legacy }, preserve_initial_order = true, scheduler = first_scheduler })
+    local new_book = book("new-after-legacy")
+    local added = assert(manager:enqueue(new_book, { chapter(new_book, 1) }))
+    equal("legacy-task," .. added.id, table.concat(manager.queue, ","), "live queue keeps legacy before later enqueue")
+
+    local persisted = { clone(state.tasks[added.id]), clone(state.tasks["legacy-task"]) }
+    local restart_scheduler = { actions = {}, scheduleIn = function(self, _, action) self.actions[#self.actions + 1] = action end }
+    local restarted = fixture({ initial = persisted, preserve_initial_order = true, scheduler = restart_scheduler })
+    equal("legacy-task," .. added.id, table.concat(restarted.queue, ","),
+        "restart preserves legacy-before-new FIFO after durable migration")
+end
+
 -- A persistent storage outage is a circuit breaker: no unpersisted terminal
 -- result is announced and active network/standby resources are always released.
 do
