@@ -36,12 +36,13 @@
 
 运行数据根目录是 `${DataStorage:getDataDir()}/legado`，即 KOReader `DataStorage:getDataDir()` 返回目录下的 `legado/`。各路径与代码中的实际用途如下：
 
+- `${DataStorage:getDataDir()}/settings/legado.lua`：插件设置（请求限制、并发数、预取数量、书架显示等）；它不在 `legado/` 数据根目录内。
 - `${DataStorage:getDataDir()}/legado/legado.sqlite`：书源、书架、目录、阅读进度和下载任务；SQLite 不可用时同一路径保存 Lua 降级索引。
 - `${DataStorage:getDataDir()}/legado/cache/`：目录与章节正文缓存。
 - `${DataStorage:getDataDir()}/legado/covers/`：搜索/书架封面缓存。
 - `${DataStorage:getDataDir()}/legado/downloads/`：整本 EPUB、构建中的 `.part` 文件和更新版本。
 
-卸载时先完全退出 KOReader，再删除 `koreader/plugins/legado.koplugin/`。若还要删除个人数据，先备份需要保留的 EPUB，然后删除整个 `${DataStorage:getDataDir()}/legado/`。只想释放空间时，可在 KOReader 退出后单独删除 `/legado/cache/`、`/legado/covers/` 或 `/legado/downloads/`；下次使用会重新创建所需目录。删除 `legado.sqlite` 会同时清除书源、书架、进度和下载记录，无法由插件恢复。
+普通卸载时先完全退出 KOReader，再删除 `koreader/plugins/legado.koplugin/`；这不会自动删除个人数据或设置。若要完整清理，先备份需要保留的 EPUB，然后同时删除 `${DataStorage:getDataDir()}/legado/` 和 `${DataStorage:getDataDir()}/settings/legado.lua`。只删除 `legado/` 不会清除设置。只想释放空间时，可在 KOReader 退出后单独删除 `/legado/cache/`、`/legado/covers/` 或 `/legado/downloads/`；下次使用会重新创建所需目录。删除 `legado.sqlite` 会同时清除书源、书架、进度和下载记录，无法由插件恢复。
 
 ## 隐私与版权
 

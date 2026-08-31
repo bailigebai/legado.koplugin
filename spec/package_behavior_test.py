@@ -76,6 +76,46 @@ def main() -> int:
         sensitive_name.unlink()
     run(build, True, "package recovers after a credential-like file is removed")
 
+    accepted_sources: list[str] = []
+    extra_lua = root / "legado.koplugin" / "legado" / "lib" / "review_extra.lua"
+    extra_lua.write_text("return {}", encoding="utf-8")
+    try:
+        result = subprocess.run(build, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        if result.returncode == 0:
+            accepted_sources.append("ordinary extra Lua")
+    finally:
+        extra_lua.unlink()
+
+    decomposed = root / "legado.koplugin" / "legado" / "lib" / "revie\u0301w.lua"
+    decomposed.write_text("return {}", encoding="utf-8")
+    try:
+        result = subprocess.run(build, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        if result.returncode == 0:
+            accepted_sources.append("decomposed Unicode filename")
+    finally:
+        decomposed.unlink()
+
+    oversized = root / "legado.koplugin" / "legado" / "lib" / "diagnostics.lua"
+    original_diagnostics = oversized.read_bytes()
+    oversized.write_bytes(b"-- oversized source probe\n" + b" " * (9 * 1024 * 1024))
+    try:
+        result = subprocess.run(build, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        if result.returncode == 0:
+            accepted_sources.append("oversized manifest file")
+    finally:
+        oversized.write_bytes(original_diagnostics)
+    if accepted_sources:
+        raise AssertionError("builder accepted forbidden source entries: " + ", ".join(accepted_sources))
+    run(build, True, "package recovers after source-boundary probes are removed")
+
+    import sys
+    sys.path.insert(0, str(root / "scripts"))
+    from release_policy import ARCHIVE_FILES
+    with zipfile.ZipFile(artifact) as archive:
+        actual_names = {info.filename for info in archive.infolist()}
+    if actual_names != ARCHIVE_FILES:
+        raise AssertionError("valid package entries do not exactly match the reviewed release manifest")
+
     def verify_command(path: Path) -> list[str]:
         return [powershell, "-ExecutionPolicy", "Bypass", "-File", str(verify), "-Archive", str(path), "-Version", "0.1.0"]
     run(verify_command(artifact), True, "valid package verifies")
@@ -84,6 +124,7 @@ def main() -> int:
         temporary_path = Path(temporary)
         attacks: list[tuple[str, list[tuple[zipfile.ZipInfo | str, bytes]]]] = [
             ("forbidden directory", [("legado.koplugin/spec/forbidden.lua", b"return true")]),
+            ("ordinary extra Lua", [("legado.koplugin/legado/lib/review_extra.lua", b"return true")]),
             ("unexpected root file", [("legado.koplugin/notes.txt", b"notes")]),
             ("nested wrapper", [("wrapper/legado.koplugin/main.lua", b"return {}")]),
             ("nested plugin segment", [("legado.koplugin/docs/legado.koplugin/readme.md", b"nested")]),

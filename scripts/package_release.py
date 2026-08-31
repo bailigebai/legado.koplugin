@@ -6,7 +6,7 @@ import re
 import zipfile
 from pathlib import Path
 
-from release_policy import DOCUMENTS, TOP, collect_runtime, read_document
+from release_policy import DOCUMENTS, TOP, collect_runtime, read_document, validate_release_entries
 
 
 FIXED_TIME = (1980, 1, 1, 0, 0, 0)
@@ -24,10 +24,12 @@ def collect(root: Path) -> dict[str, bytes]:
     entries = collect_runtime(plugin)
     for relative in DOCUMENTS:
         entries[f"{TOP}/{relative}"] = read_document(root, relative)
+    validate_release_entries(entries)
     return entries
 
 
 def write_archive(entries: dict[str, bytes], output: Path) -> None:
+    validate_release_entries(entries)
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_suffix(output.suffix + ".part")
     if temporary.exists():
