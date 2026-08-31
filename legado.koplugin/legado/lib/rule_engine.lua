@@ -259,6 +259,52 @@ local function validate_markup(input)
     return true
 end
 
+local function mask_raw_text_markup(input)
+    local placeholders = {}
+    for byte = 1, 31 do
+        local candidate = string.char(byte)
+        if not input:find(candidate, 1, true) then
+            placeholders[#placeholders + 1] = candidate
+            if #placeholders == 2 then break end
+        end
+    end
+    if #placeholders < 2 then return nil end
+    local masked_less, masked_greater = placeholders[1], placeholders[2]
+    local output, cursor, index, lower = {}, 1, 1, input:lower()
+    local masked = false
+    while index <= #input do
+        local start = input:find("<", index, true)
+        if not start then break end
+        if input:sub(start, start + 3) == "<!--" then
+            local close = input:find("-->", start + 4, true)
+            if not close then break end
+            index = close + 3
+        else
+            local open_end = markup_tag_end(input, start)
+            if not open_end then break end
+            local contents = input:sub(start + 1, open_end - 1)
+            local slash, name, tail = contents:match("^%s*(/?)%s*([%w%-]+)(.*)$")
+            name = name and name:lower() or nil
+            if slash == "" and raw_text_elements[name] and not tail:match("/%s*$") then
+                local close_start, close_end = lower:find("</%s*" .. name .. "%s*>", open_end + 1)
+                if not close_start then break end
+                output[#output + 1] = input:sub(cursor, open_end)
+                output[#output + 1] = (input:sub(open_end + 1, close_start - 1):gsub("[<>]", function(character)
+                    masked = true
+                    return character == "<" and masked_less or masked_greater
+                end))
+                output[#output + 1] = input:sub(close_start, close_end)
+                cursor, index = close_end + 1, close_end + 1
+            else
+                index = open_end + 1
+            end
+        end
+    end
+    output[#output + 1] = input:sub(cursor)
+    if not masked then return input end
+    return table.concat(output), masked_less, masked_greater
+end
+
 function RuleEngine:_html_root(input, context)
     local root = type(context.current) == "table" and context.current or type(context.node) == "table" and context.node
     if not root then
@@ -268,10 +314,19 @@ function RuleEngine:_html_root(input, context)
         local parser = self.html_parser
         local parse = type(parser) == "function" and parser or type(parser) == "table" and parser.parse
         if type(parse) ~= "function" then return parse_failure("HTML parser is unavailable") end
+        local parser_input, masked_less, masked_greater = mask_raw_text_markup(input)
+        if not parser_input then return parse_failure("HTML input cannot be safely masked") end
         local ok
-        ok, root = pcall(parse, input, Capabilities.LIMITS.MAX_HTML_NODES)
+        ok, root = pcall(parse, parser_input, Capabilities.LIMITS.MAX_HTML_NODES)
         if not ok or type(root) ~= "table" or type(root.nodes) ~= "table" then
             return parse_failure("malformed HTML input", { cause = tostring(root) })
+        end
+        if masked_less and type(root._text) == "string" then
+            root._text = root._text:gsub(".", function(character)
+                if character == masked_less then return "<" end
+                if character == masked_greater then return ">" end
+                return character
+            end)
         end
     end
 
@@ -910,6 +965,52 @@ local function valid_expanded_css(rule)
     return true
 end
 
+local numeric_template_pseudos = { "eq", "gt", "lt", "nth-child", "nth-of-type" }
+
+local function replace_numeric_template_slots(selector)
+    local output, index, quote, square, parentheses, replacements = {}, 1, nil, 0, 0, 0
+    while index <= #selector do
+        local character = selector:sub(index, index)
+        if quote then
+            output[#output + 1] = character
+            if character == "\\" then
+                index = index + 1
+                output[#output + 1] = selector:sub(index, index)
+            elseif character == quote then quote = nil end
+            index = index + 1
+        elseif character == "\\" then
+            output[#output + 1] = character
+            index = index + 1
+            output[#output + 1] = selector:sub(index, index)
+            index = index + 1
+        elseif character == "'" or character == '"' then
+            quote = character
+            output[#output + 1] = character
+            index = index + 1
+        elseif character == "[" then square = square + 1; output[#output + 1] = character; index = index + 1
+        elseif character == "]" then square = square - 1; output[#output + 1] = character; index = index + 1
+        elseif character == "(" then parentheses = parentheses + 1; output[#output + 1] = character; index = index + 1
+        elseif character == ")" then parentheses = parentheses - 1; output[#output + 1] = character; index = index + 1
+        elseif character == ":" and square == 0 and parentheses == 0 then
+            local matched
+            for _, name in ipairs(numeric_template_pseudos) do
+                local pattern_name = name:gsub("%-", "%%-")
+                local value = selector:sub(index):match(
+                    "^:" .. pattern_name .. "%(%s*" .. TEMPLATE_MARKER .. "%s*%)")
+                if value then
+                    output[#output + 1] = ":" .. name .. "(1)"
+                    index = index + #value
+                    replacements = replacements + 1
+                    matched = true
+                    break
+                end
+            end
+            if not matched then output[#output + 1] = character; index = index + 1 end
+        else output[#output + 1] = character; index = index + 1 end
+    end
+    return table.concat(output), replacements
+end
+
 local function template_css_shell(rule)
     local selector, extractor, extractor_error, has_extractor = parse_extractor(rule)
     if not selector then return false, extractor_error end
@@ -925,14 +1026,8 @@ local function template_css_shell(rule)
         return value == TEMPLATE_MARKER
     end
     for _, step in ipairs(steps) do
-        local shell_selector = step.selector
-        for _, name in ipairs({ "eq", "gt", "lt", "nth-child", "nth-of-type" }) do
-            local replacements
-            local pattern_name = name:gsub("%-", "%%-")
-            shell_selector, replacements = shell_selector:gsub(
-                ":" .. pattern_name .. "%(%s*" .. TEMPLATE_MARKER .. "%s*%)", ":" .. name .. "(1)")
-            if replacements > 0 then marker_found = true end
-        end
+        local shell_selector, replacements = replace_numeric_template_slots(step.selector)
+        if replacements > 0 then marker_found = true end
         local parsed, simple_error = parse_simple_selector(shell_selector)
         if not parsed then return false, simple_error end
         if not complete_slot(parsed.tag) or not complete_slot(parsed.id) then

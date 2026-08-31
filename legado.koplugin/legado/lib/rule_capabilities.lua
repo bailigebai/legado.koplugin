@@ -47,17 +47,22 @@ local unsafe_constructs = {
 
 Capabilities.UNSAFE_CONSTRUCTS = unsafe_constructs
 
-local function decode_identifier_escapes(value)
-    value = value:gsub("\\u{(%x+)}", function(hex)
-        local codepoint = tonumber(hex, 16)
-        if codepoint and codepoint <= 0x7f then return string.char(codepoint) end
-        return "\\u{" .. hex .. "}"
-    end)
-    return (value:gsub("\\u(%x%x%x%x)", function(hex)
-        local codepoint = tonumber(hex, 16)
-        if codepoint and codepoint <= 0x7f then return string.char(codepoint) end
-        return "\\u" .. hex
-    end))
+local function identifier_escape_at(value, index)
+    if value:sub(index, index + 2) == "\\u{" then
+        local close = value:find("}", index + 3, true)
+        local hex = close and value:sub(index + 3, close - 1) or ""
+        if hex ~= "" and hex:match("^%x+$") then
+            local codepoint = tonumber(hex, 16)
+            if codepoint and codepoint <= 0x7f then return string.char(codepoint), close + 1 end
+        end
+    elseif value:sub(index, index + 1) == "\\u" then
+        local hex = value:sub(index + 2, index + 5)
+        if #hex == 4 and hex:match("^%x%x%x%x$") then
+            local codepoint = tonumber(hex, 16)
+            if codepoint and codepoint <= 0x7f then return string.char(codepoint), index + 6 end
+        end
+    end
+    return nil
 end
 
 local function normalize_tokens(value)
@@ -73,6 +78,10 @@ local function normalize_tokens(value)
             output[#output + 1] = " "
             quote = character
             index = index + 1
+        elseif character == "\\" then
+            local decoded, next_index = identifier_escape_at(value, index)
+            if decoded then output[#output + 1] = decoded:lower(); index = next_index
+            else output[#output + 1] = character; index = index + 1 end
         elseif pair == "/*" then
             output[#output + 1] = " "
             local depth = 1
@@ -94,8 +103,7 @@ local function normalize_tokens(value)
 end
 
 function Capabilities.findUnsupported(value)
-    local decoded = decode_identifier_escapes(type(value) == "string" and value or "")
-    local normalized = normalize_tokens(decoded)
+    local normalized = normalize_tokens(type(value) == "string" and value or "")
     local candidates = { normalized }
     for _, definition in ipairs(unsafe_constructs) do
         for _, candidate in ipairs(candidates) do

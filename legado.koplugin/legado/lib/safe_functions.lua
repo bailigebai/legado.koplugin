@@ -256,12 +256,19 @@ end
 local function resolve_url(base, relative)
     base, relative = tostring(base or ""), tostring(relative or "")
     local absolute_scheme, absolute_authority, absolute_remainder =
-        relative:match("^([%a][%w+.-]*):%/%/([^/?#]+)(.*)$")
+        relative:match("^([%a][%w+.-]*):%/%/([^/?#]*)(.*)$")
     if absolute_scheme then
         local absolute_suffix = absolute_remainder:match("([?#].*)$") or ""
         local absolute_path = absolute_remainder:gsub("[?#].*$", "")
         return absolute_scheme .. "://" .. absolute_authority
             .. (absolute_path == "" and "" or normalize_path(absolute_path)) .. absolute_suffix
+    end
+    local path_scheme, path_remainder = relative:match("^([%a][%w+.-]*):(/.*)$")
+    local opaque_scheme = path_scheme and ({ mailto=true, data=true, urn=true, tel=true, news=true })[path_scheme:lower()]
+    if path_scheme and not opaque_scheme then
+        local path_suffix = path_remainder:match("([?#].*)$") or ""
+        local absolute_path = path_remainder:gsub("[?#].*$", "")
+        return path_scheme .. ":" .. normalize_path(absolute_path) .. path_suffix
     end
     if relative:match("^[%a][%w+.-]*:") then return relative end
     local scheme, authority, remainder = base:match("^([%a][%w+.-]*):%/%/([^/?#]+)(.*)$")
