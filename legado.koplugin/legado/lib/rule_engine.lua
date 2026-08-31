@@ -199,16 +199,51 @@ local void_elements = {
     keygen=true,link=true,meta=true,param=true,source=true,track=true,wbr=true,
 }
 
+local function markup_tag_end(input, start)
+    local quote, index = nil, start + 1
+    while index <= #input do
+        local character = input:sub(index, index)
+        if quote then
+            if character == "\\" then index = index + 2
+            elseif character == quote then quote = nil; index = index + 1
+            else index = index + 1 end
+        elseif character == "'" or character == '"' then quote = character; index = index + 1
+        elseif character == ">" then return index
+        else index = index + 1 end
+    end
+    return nil
+end
+
 local function validate_markup(input)
-    local stack = {}
-    local scrubbed = tostring(input or ""):gsub("<!%-%-.-%-%->", "")
-    for slash, name, tail in scrubbed:gmatch("<%s*(/?)%s*([%w%-]+)([^>]*)>") do
-        name = name:lower()
-        if slash == "/" then
-            if stack[#stack] ~= name then return false, "mismatched closing tag " .. name end
-            stack[#stack] = nil
-        elseif not void_elements[name] and not tail:match("/%s*$") then
-            stack[#stack + 1] = name
+    input = tostring(input or "")
+    local stack, index = {}, 1
+    while index <= #input do
+        local start = input:find("<", index, true)
+        if not start then break end
+        if input:sub(start, start + 3) == "<!--" then
+            local close = input:find("-->", start + 4, true)
+            if not close then return false, "unterminated comment" end
+            index = close + 3
+        elseif input:sub(start):match("^<%s*[/]?%s*[%w%-]")
+            or input:sub(start):match("^<%s*[!?]") then
+            local close = markup_tag_end(input, start)
+            if not close then return false, "unterminated tag" end
+            local contents = input:sub(start + 1, close - 1)
+            if not contents:match("^%s*[!?]") then
+                local slash, name, tail = contents:match("^%s*(/?)%s*([%w%-]+)(.*)$")
+                if name then
+                    name = name:lower()
+                    if slash == "/" then
+                        if stack[#stack] ~= name then return false, "mismatched closing tag " .. name end
+                        stack[#stack] = nil
+                    elseif not void_elements[name] and not tail:match("/%s*$") then
+                        stack[#stack + 1] = name
+                    end
+                end
+            end
+            index = close + 1
+        else
+            index = start + 1
         end
     end
     if #stack > 0 then return false, "unclosed tag " .. stack[#stack] end
@@ -244,8 +279,14 @@ function RuleEngine:_html_root(input, context)
         count = count + 1
         if count > Capabilities.LIMITS.MAX_HTML_NODES then within, limit = false, "html_nodes"; break end
         for index = #item.node.nodes, 1, -1 do
-            stack[#stack + 1] = { node = item.node.nodes[index], depth = item.depth + 1 }
+            local child = item.node.nodes[index]
+            if type(child) ~= "table" or child.parent ~= item.node then
+                within, limit = false, "parent_mismatch"
+                break
+            end
+            stack[#stack + 1] = { node = child, depth = item.depth + 1 }
         end
+        if not within then break end
     end
     if not within then
         return parse_failure("HTML input exceeds a safe DOM limit", {
@@ -846,7 +887,56 @@ local function template_rule_shell(rule)
     return table.concat(output)
 end
 
-local function template_evaluation_mode(rule)
+local TEMPLATE_MARKER = "legadodynamic"
+
+local function valid_expanded_css(rule)
+    local selector, _, extractor_error = parse_extractor(rule)
+    if not selector then return false, extractor_error end
+    local steps, step_error = tokenize_css(selector)
+    if not steps then return false, step_error end
+    for _, step in ipairs(steps) do
+        local _, simple_error = parse_simple_selector(step.selector)
+        if simple_error then return false, simple_error end
+    end
+    return true
+end
+
+local function template_css_shell(rule)
+    local selector, extractor, extractor_error, has_extractor = parse_extractor(rule)
+    if not selector then return false, extractor_error end
+    local marker_found = has_extractor and extractor == TEMPLATE_MARKER
+    if has_extractor and extractor:find(TEMPLATE_MARKER, 1, true) and not marker_found then
+        return false, "template must occupy a complete extractor slot"
+    end
+    local steps, step_error = tokenize_css(selector)
+    if not steps then return false, step_error end
+    local function complete_slot(value)
+        if type(value) ~= "string" or not value:find(TEMPLATE_MARKER, 1, true) then return true end
+        marker_found = true
+        return value == TEMPLATE_MARKER
+    end
+    for _, step in ipairs(steps) do
+        local parsed, simple_error = parse_simple_selector(step.selector)
+        if not parsed then return false, simple_error end
+        if not complete_slot(parsed.tag) or not complete_slot(parsed.id) then
+            return false, "template must occupy a complete tag or id slot"
+        end
+        for _, class in ipairs(parsed.classes or {}) do
+            if not complete_slot(class) then return false, "template must occupy a complete class slot" end
+        end
+        for _, attribute in ipairs(parsed.attributes or {}) do
+            if not complete_slot(attribute.name) or not complete_slot(attribute.value) then
+                return false, "template must occupy a complete attribute slot"
+            end
+        end
+        for _, pseudo in ipairs(parsed.pseudos or {}) do
+            if not complete_slot(pseudo.argument) then return false, "template must occupy a complete pseudo slot" end
+        end
+    end
+    return marker_found
+end
+
+local function template_evaluation_mode(rule, expanded)
     if whole_template(rule) then return "literal" end
     local shell = template_rule_shell(rule)
     if not shell then return "invalid" end
@@ -854,22 +944,20 @@ local function template_evaluation_mode(rule)
     if stripped:match("^@json:") or stripped:sub(1, 1) == "$"
         or stripped:match("^@xpath:") or stripped:sub(1, 1) == "/"
         or stripped:sub(1, 2) == "./" then return "rule" end
-    local _, _, extractor_error, has_extractor = parse_extractor(shell)
-    if extractor_error then return "invalid" end
-    if has_extractor then return "rule" end
-    if not stripped:find("://", 1, true) and (stripped:find("#", 1, true)
-        or stripped:find("[", 1, true) or stripped:find(">", 1, true)
-        or stripped:match("^%s*%.") or stripped:find("%.[%w_%-]")
-        or stripped:find(":([%a_%-])")) then return "rule" end
+    local shell_is_css = template_css_shell(shell)
+    if shell_is_css then
+        local expanded_is_css = valid_expanded_css(expanded)
+        return expanded_is_css and "rule" or "invalid"
+    end
     return "literal"
 end
 
 function RuleEngine:_simple(input, rule, context, state, template_depth)
     if rule:find("{{", 1, true) then
-        local mode = template_evaluation_mode(rule)
-        if mode == "invalid" then return parse_failure("invalid templated rule") end
         local expanded, template_error = self:_expand_templates(input, rule, context, state, template_depth + 1)
         if template_error then return nil, template_error end
+        local mode = template_evaluation_mode(rule, expanded)
+        if mode == "invalid" then return parse_failure("invalid templated rule") end
         if mode == "literal" then return { expanded } end
         return self:_evaluate(input, expanded, context, state.want_list, state.depth + 1, template_depth)
     end

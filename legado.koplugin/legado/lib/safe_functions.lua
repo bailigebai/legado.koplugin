@@ -72,7 +72,7 @@ end
 local decode64 = {}
 for index = 1, #alphabet do decode64[alphabet:sub(index, index)] = index - 1 end
 local function base64_decode(value)
-    local input = tostring(value or ""):gsub("%s+", "")
+    local input = tostring(value or "")
     if #input % 4 ~= 0 or input:find("[^A-Za-z0-9+/=]") then error("invalid Base64") end
     local data, padding = input:match("^(.-)(=*)$")
     if #padding > 2 or data:find("=", 1, true) then error("invalid Base64 padding") end
@@ -226,15 +226,31 @@ local function sha256(value)
 end
 
 local function normalize_path(path)
-    local parts = {}
-    local trailing = path:sub(-1) == "/" or path:match("/%.%.?$") ~= nil
-    for part in path:gmatch("[^/]+") do
-        if part == ".." then if #parts > 0 then parts[#parts] = nil end
-        elseif part ~= "." and part ~= "" then parts[#parts + 1] = part end
+    local input, output = path, ""
+    while input ~= "" do
+        if input:sub(1, 3) == "../" then input = input:sub(4)
+        elseif input:sub(1, 2) == "./" then input = input:sub(3)
+        elseif input:sub(1, 3) == "/./" then input = "/" .. input:sub(4)
+        elseif input == "/." then input = "/"
+        elseif input:sub(1, 4) == "/../" then
+            input = "/" .. input:sub(5)
+            output = output:gsub("/[^/]*$", "")
+        elseif input == "/.." then
+            input = "/"
+            output = output:gsub("/[^/]*$", "")
+        elseif input == "." or input == ".." then input = ""
+        else
+            local next_slash = input:find("/", input:sub(1, 1) == "/" and 2 or 1, true)
+            if next_slash then
+                output = output .. input:sub(1, next_slash - 1)
+                input = input:sub(next_slash)
+            else
+                output = output .. input
+                input = ""
+            end
+        end
     end
-    local normalized = "/" .. table.concat(parts, "/")
-    if trailing and normalized ~= "/" then normalized = normalized .. "/" end
-    return normalized
+    return output
 end
 
 local function resolve_url(base, relative)
@@ -242,7 +258,14 @@ local function resolve_url(base, relative)
     if relative:match("^[%a][%w+.-]*:") then return relative end
     local scheme, authority, remainder = base:match("^([%a][%w+.-]*):%/%/([^/?#]+)(.*)$")
     if not scheme then return relative end
-    if relative:sub(1, 2) == "//" then return scheme .. ":" .. relative end
+    if relative:sub(1, 2) == "//" then
+        local network_authority, network_remainder = relative:match("^//([^/?#]+)(.*)$")
+        if not network_authority then return scheme .. ":" .. relative end
+        local network_suffix = network_remainder:match("([?#].*)$") or ""
+        local network_path = network_remainder:gsub("[?#].*$", "")
+        return scheme .. "://" .. network_authority
+            .. (network_path == "" and "" or normalize_path(network_path)) .. network_suffix
+    end
     local origin = scheme .. "://" .. authority
     local base_path = remainder:match("^([^?#]*)") or ""
     if base_path == "" then base_path = "/" end

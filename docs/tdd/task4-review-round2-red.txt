@@ -1,0 +1,35 @@
+Task 4 review fix round 2 RED evidence
+=====================================
+
+Command:
+  .tools\python\python.exe scripts\run_lua_specs.py --spec spec\rule_engine_review_round2_spec.lua
+
+Observed against commit fde6f97 before round-2 production edits:
+  [RED] DOM validation rejects external parent sibling scans and bounds positional pools:
+        expected nil, got target
+  [RED] unsafe keyword normalization preserves boundaries and decodes brace escapes:
+        expected UNSUPPORTED_RULE, got PARSE_ERROR for local function f() end
+  [RED] URL resolution preserves empty segments and normalizes network paths:
+        expected https://e/a//b/c, got https://e/a/b/c
+  [RED] markup validation scans quoted tag tails without mistaking slash greater-than:
+        expected successful div@text parse, got PARSE_ERROR: malformed HTML input
+  [RED] post-expansion CSS grammar recognizes dynamic selector slots:
+        expected Nested, got literal div span
+  [RED] strict Base64 rejects whitespace instead of silently normalizing it:
+        expected nil error result, got decoded A
+
+Runner summary:
+  Specs: 0 passed, 1 failed; Assertions: 0
+
+Every case exercised the public RuleEngine boundary (and the compatibility
+scanner for unsafe constructs) with hand-derived expected values. All six
+failures were behavior mismatches in the committed round-1 implementation.
+
+Self-review boundary RED:
+  After the first unsafe-token fix, a prefixed comment-obfuscated form
+  `return java/*x*/.lang.String` still returned PARSE_ERROR instead of
+  UNSUPPORTED_RULE because global whitespace compaction merged `return` and
+  `java`, defeating the frontier. Contextual Java/Android/Packages variants
+  were added before the production follow-up; the focused spec failed on that
+  exact value, then passed after compact candidates were replaced with
+  boundary-preserving token patterns.
