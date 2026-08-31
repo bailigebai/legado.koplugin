@@ -35,31 +35,111 @@ local function detect_http(headers)
     return content_type:match("[Cc][Hh][Aa][Rr][Ss][Ee][Tt]%s*=%s*['\"]?([%w._%-]+)")
 end
 
+local function find_tag_end(text, start)
+    local quote
+    for index = start, #text do
+        local character = text:sub(index, index)
+        if quote then
+            if character == quote then quote = nil end
+        elseif character == '"' or character == "'" then
+            quote = character
+        elseif character == ">" then
+            return index
+        end
+    end
+    return nil
+end
+
+local function attributes_of(tag, cursor)
+    local attributes = {}
+    while cursor <= #tag do
+        local whitespace = tag:sub(cursor):match("^(%s*)") or ""
+        cursor = cursor + #whitespace
+        local character = tag:sub(cursor, cursor)
+        if character == ">" or character == "/" or character == "" then break end
+        local name = tag:sub(cursor):match("^([%w:_%-]+)")
+        if not name then return nil end
+        cursor = cursor + #name
+        whitespace = tag:sub(cursor):match("^(%s*)") or ""
+        cursor = cursor + #whitespace
+        local has_value = tag:sub(cursor, cursor) == "="
+        if not has_value then
+            attributes[name:lower()] = ""
+        else
+            cursor = cursor + 1
+            whitespace = tag:sub(cursor):match("^(%s*)") or ""
+            cursor = cursor + #whitespace
+        end
+        local quote = tag:sub(cursor, cursor)
+        local value
+        if not has_value then
+            value = ""
+        elseif quote == '"' or quote == "'" then
+            local close = tag:find(quote, cursor + 1, true)
+            if not close then return nil end
+            value, cursor = tag:sub(cursor + 1, close - 1), close + 1
+        else
+            local value_finish = tag:find("[%s/>]", cursor) or (#tag + 1)
+            value, cursor = tag:sub(cursor, value_finish - 1), value_finish
+        end
+        attributes[name:lower()] = value
+    end
+    return attributes
+end
+
+local function raw_text_end(head, lower, name, start)
+    local needle, cursor = "</" .. name, start
+    while true do
+        local close = lower:find(needle, cursor, true)
+        if not close then return #head + 1 end
+        local boundary = lower:sub(close + #needle, close + #needle)
+        if boundary == "" or boundary:match("[%s/>]") then
+            local finish = find_tag_end(head, close + #needle)
+            return finish and finish + 1 or (#head + 1)
+        end
+        cursor = close + #needle
+    end
+end
+
 local function detect_meta(body)
     local head = body:sub(1, 8192)
-    for tag in head:gmatch("<[Mm][Ee][Tt][Aa][^>]*>") do
-        local attributes, cursor = {}, 6
-        while cursor <= #tag do
-            local _, finish, name = tag:find("%s*([%w:_%-]+)%s*=%s*", cursor)
-            if not finish then break end
-            cursor = finish + 1
-            local quote = tag:sub(cursor, cursor)
-            local value
-            if quote == '"' or quote == "'" then
-                local close = tag:find(quote, cursor + 1, true)
-                if not close then break end
-                value, cursor = tag:sub(cursor + 1, close - 1), close + 1
+    local lower, cursor = head:lower(), 1
+    while cursor <= #head do
+        local opening = head:find("<", cursor, true)
+        if not opening then break end
+        if head:sub(opening, opening + 3) == "<!--" then
+            local close = head:find("-->", opening + 4, true)
+            cursor = close and close + 3 or (#head + 1)
+        else
+            local prefix = head:sub(opening)
+            local slash, name = prefix:match("^<(%/?)([%a][%w:_%-]*)")
+            if not name then
+                cursor = opening + 1
             else
-                local value_finish = tag:find("[%s>]", cursor) or (#tag + 1)
-                value, cursor = tag:sub(cursor, value_finish - 1), value_finish
+                local finish = find_tag_end(head, opening + #name + #slash + 1)
+                if not finish then break end
+                name = name:lower()
+                local tag = head:sub(opening, finish)
+                if slash == "" and (name == "script" or name == "style") then
+                    cursor = raw_text_end(head, lower, name, finish + 1)
+                else
+                    if slash == "" and name == "meta" then
+                        local attributes = attributes_of(tag, 6)
+                        if attributes then
+                            if attributes.charset and attributes.charset:match("^[%w._%-]+$") then
+                                return attributes.charset
+                            end
+                            if attributes["http-equiv"]
+                                and attributes["http-equiv"]:lower() == "content-type" then
+                                local declared = attributes.content and attributes.content:match(
+                                    "[Cc][Hh][Aa][Rr][Ss][Ee][Tt]%s*=%s*([%w._%-]+)")
+                                if declared then return declared end
+                            end
+                        end
+                    end
+                    cursor = finish + 1
+                end
             end
-            attributes[name:lower()] = value
-        end
-        if attributes.charset and attributes.charset:match("^[%w._%-]+$") then return attributes.charset end
-        if attributes["http-equiv"] and attributes["http-equiv"]:lower() == "content-type" then
-            local declared = attributes.content and attributes.content:match(
-                "[Cc][Hh][Aa][Rr][Ss][Ee][Tt]%s*=%s*([%w._%-]+)")
-            if declared then return declared end
         end
     end
     return nil

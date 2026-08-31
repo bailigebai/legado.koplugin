@@ -38,6 +38,27 @@ local equiv_text, equiv_name = charset:decode(
 assertx.equal("中", equiv_text:sub(-#"中"), "http-equiv content-type charset is honored")
 assertx.equal("gbk", equiv_name, "http-equiv charset is normalized")
 
+local false_meta_inputs = {
+    '<metadata charset="gbk">\214\208',
+    '<metafoo charset="gbk">\214\208',
+    '<!-- <meta charset="gbk"> -->\214\208',
+    '<script>document.write("<meta charset=gbk>")</script>\214\208',
+    '<style>.x:after { content: "<meta charset=gbk>" }</style>\214\208',
+    '<script/><meta charset=gbk>\214\208',
+    '<meta "charset=gbk">\214\208',
+    '<meta ??? charset=gbk>\214\208',
+    '<meta charset="gbk>\214\208',
+}
+for _, input in ipairs(false_meta_inputs) do
+    local unchanged, detected = charset:decode(input, {})
+    assertx.truthy(unchanged == input, "pseudo, raw-text, comment, or malformed meta is ignored")
+    assertx.equal("utf-8", detected, "ignored meta leaves UTF-8 default")
+end
+
+local mixed_text, mixed_name = charset:decode("<MeTa \n\t ChArSeT = 'GBK' />\214\208", {})
+assertx.equal("中", mixed_text:sub(-#"中"), "real mixed-case meta with whitespace is recognized")
+assertx.equal("gbk", mixed_name, "mixed-case meta charset is normalized")
+
 local utf8_text, utf8_name = charset:decode("plain utf8", {})
 assertx.equal("plain utf8", utf8_text, "UTF-8 is left unchanged")
 assertx.equal("utf-8", utf8_name, "UTF-8 is the safe default")
@@ -57,4 +78,4 @@ assertx.equal(nil, failed_text, "decode failure returns no body")
 assertx.equal("gbk", failed_name, "decode failure preserves charset")
 assertx.equal("ENCODING_ERROR", failed_error.code, "decode failure is structured")
 
-return 18
+return 38

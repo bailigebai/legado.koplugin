@@ -13,7 +13,15 @@ end
 local function parse_url(url)
     local scheme, authority, path = tostring(url or ""):match("^([%a][%w+.-]*)://([^/?#]+)([^?#]*)")
     if not scheme then return nil end
-    local host = authority:match("^%[([^%]]+)%]") or authority:match("^([^:]+)")
+    local lower_authority = authority:lower()
+    if authority:find("@", 1, true) or lower_authority:find("%40", 1, true) then return nil end
+    local host, remainder
+    if authority:sub(1, 1) == "[" then
+        host, remainder = authority:match("^%[([^%]]+)%](.*)$")
+    else
+        host, remainder = authority:match("^([^:]+)(.*)$")
+    end
+    if not host or host == "" or (remainder ~= "" and not remainder:match("^:%d+$")) then return nil end
     path = path ~= "" and path or "/"
     return { scheme = scheme:lower(), host = tostring(host):lower(), path = path }
 end

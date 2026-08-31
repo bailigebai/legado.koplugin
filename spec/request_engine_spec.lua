@@ -563,4 +563,56 @@ do
     equal("INVALID_INPUT", callbacks[1].err.code, "only HTTP and HTTPS are accepted")
 end
 
+do
+    local deceptive_urls = {
+        "https://victim.test:pw@attacker.test/path",
+        "https://us%65r:p%40ss@books.test/path",
+        "https://victim.test%40attacker.test/path",
+    }
+    for _, url in ipairs(deceptive_urls) do
+        local _, scheduler, transport, callbacks = run_fallback({
+            { status = 200, chunks = { "must not run" } },
+        }, { url = url })
+        scheduler:runAll()
+        truthy(callbacks[1].err, "userinfo request returns a structured rejection")
+        equal("INVALID_INPUT", callbacks[1].err.code, "HTTP userinfo and encoded authority delimiters are rejected")
+        equal("url_userinfo", callbacks[1].err.details.reason, "userinfo rejection is diagnostic")
+        equal(0, #transport.requests, "rejected userinfo performs no network request")
+    end
+end
+
+do
+    local _, scheduler, transport, callbacks = run_fallback({
+        { status = 302, headers = { location = "https://victim.test:pw@attacker.test/final" }, chunks = {} },
+        { status = 200, chunks = { "must not follow" } },
+    }, { url = "https://books.test/start" })
+    scheduler:runAll()
+    truthy(callbacks[1].err, "userinfo redirect returns a structured rejection")
+    equal("NETWORK_ERROR", callbacks[1].err.code, "redirect userinfo is rejected")
+    equal("redirect_userinfo", callbacks[1].err.details.reason, "redirect userinfo rejection is diagnostic")
+    equal(1, #transport.requests, "userinfo redirect is never requested")
+end
+
+do
+    local _, scheduler, transport, callbacks = run_fallback({
+        { status = 200, chunks = { "ipv6" } },
+        { status = 200, chunks = { "port" } },
+    }, { url = "https://[2001:db8::1]:8443/books" })
+    scheduler:runAll()
+    equal(nil, callbacks[1].err, "IPv6 with port remains valid")
+    equal("https://[2001:db8::1]:8443/books", transport.requests[1].url, "IPv6 authority is preserved")
+
+    local second = {}
+    local engine = RequestEngine.new({
+        transport = transport, scheduler = scheduler,
+        subprocess = Fakes.subprocess({ enabled = false }), logger = silent_logger,
+    })
+    engine:execute({ url = "https://books.test:8443/path" }, function(response, err)
+        second[#second + 1] = { response, err }
+    end)
+    scheduler:runAll()
+    equal(nil, second[1][2], "host with port remains valid")
+    equal("https://books.test:8443/path", transport.requests[2].url, "port authority is preserved")
+end
+
 return assertions

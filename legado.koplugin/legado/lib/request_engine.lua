@@ -139,6 +139,13 @@ local function origin(url)
     return scheme:lower() .. "://" .. authority:lower()
 end
 
+local function has_url_userinfo(url)
+    local authority = tostring(url or ""):match("^[%a][%w+.-]*://([^/?#]*)")
+    if not authority then return false end
+    return authority:find("@", 1, true) ~= nil
+        or authority:lower():find("%40", 1, true) ~= nil
+end
+
 local function is_redirect(status)
     return status == 301 or status == 302 or status == 303 or status == 307 or status == 308
 end
@@ -249,6 +256,11 @@ function RequestEngine:_normalize(request)
     local scheme = request.url:match("^([%a][%w+.-]*):")
     if not scheme or (scheme:lower() ~= "http" and scheme:lower() ~= "https") then
         return nil, Errors.new(Errors.INVALID_INPUT, "request URL must use HTTP or HTTPS")
+    end
+    if has_url_userinfo(request.url) then
+        return nil, Errors.new(Errors.INVALID_INPUT, "request URL userinfo is forbidden", {
+            reason = "url_userinfo",
+        })
     end
     local normalized = shallow_copy(request)
     normalized.headers = shallow_copy(request.headers)
@@ -373,6 +385,11 @@ function RequestEngine:_perform(request, deadline)
             if not target_scheme or (target_scheme:lower() ~= "http" and target_scheme:lower() ~= "https") then
                 return outcome({ error = Errors.new(Errors.NETWORK_ERROR, "redirect target is unsupported", {
                     reason = "redirect_scheme", status = status,
+                }) })
+            end
+            if has_url_userinfo(target) then
+                return outcome({ error = Errors.new(Errors.NETWORK_ERROR, "redirect URL userinfo is forbidden", {
+                    reason = "redirect_userinfo", status = status,
                 }) })
             end
             if seen[target] then
