@@ -1,3 +1,5 @@
+local Errors = require("legado.lib.errors")
+
 local Settings = {}
 Settings.__index = Settings
 
@@ -47,23 +49,41 @@ local function koreader_adapter()
     local store = LuaSettings:open(path)
     return {
         read = function() return store:readSetting("legado_settings") or {} end,
-        write = function(value) store:saveSetting("legado_settings", value); store:flush() return true end,
+        write = function(value)
+            local saved = store:saveSetting("legado_settings", value)
+            if saved == false then return false end
+            local flushed = store:flush()
+            return flushed ~= false
+        end,
     }
 end
 
 function Settings.new(adapter)
     adapter = adapter or koreader_adapter() or { read = function() return {} end, write = function() return true end }
-    local stored = adapter.read and adapter.read() or {}
+    local read_ok, stored = true, {}
+    if adapter.read then read_ok, stored = pcall(adapter.read) end
     local values = copy(Settings.DEFAULTS)
-    for key, value in pairs(stored or {}) do values[key] = normalized(key, value) end
+    if read_ok and type(stored) == "table" then
+        for key, value in pairs(stored) do values[key] = normalized(key, value) end
+    end
     values.schema_version = Settings.SCHEMA_VERSION
     local self = setmetatable({ adapter = adapter, values = values }, Settings)
-    self:_write()
-    return self
+    if not read_ok or type(stored) ~= "table" then
+        self.init_error = Errors.new(Errors.STORAGE_ERROR, "settings could not be loaded")
+        return self, self.init_error
+    end
+    local written, write_error = self:_write(values)
+    if not written then self.init_error = write_error end
+    return self, self.init_error
 end
 
-function Settings:_write()
-    if self.adapter.write then return self.adapter.write(copy(self.values)) end
+function Settings:_write(values)
+    if self.adapter.write then
+        local ok, written = pcall(self.adapter.write, copy(values or self.values))
+        if not ok or written == false or written == nil then
+            return nil, Errors.new(Errors.STORAGE_ERROR, "settings could not be saved")
+        end
+    end
     return true
 end
 
@@ -72,11 +92,12 @@ function Settings:get(key)
 end
 
 function Settings:set(key, value)
-    value = normalized(key, value)
-    self.values[key] = value
-    local written, err = self:_write()
-    if written == false or written == nil then return nil, err end
-    return value
+    local candidate = copy(self.values)
+    candidate[key] = normalized(key, value)
+    local written, err = self:_write(candidate)
+    if not written then self.init_error = err; return nil, err end
+    self.values, self.init_error = candidate, nil
+    return candidate[key]
 end
 
 function Settings:all()

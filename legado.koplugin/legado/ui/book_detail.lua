@@ -2,6 +2,15 @@ local BookDetail = {}
 BookDetail.__index = BookDetail
 
 local Catalog = require("legado.ui.catalog")
+local unpack_values = table.unpack or unpack
+
+local function pack_values(...)
+    return { n = select("#", ...), ... }
+end
+
+local function cancel_handle(handle)
+    if handle and type(handle.cancel) == "function" then pcall(handle.cancel, handle) end
+end
 
 function BookDetail.new(options)
     options = options or {}
@@ -16,7 +25,50 @@ function BookDetail.new(options)
         info = nil, info_error = nil, catalog = nil, catalog_error = nil,
         info_request = nil, catalog_request = nil, generation = 0,
         info_generation = 0, catalog_generation = 0,
+        reading_request = nil, reading_generation = 0,
     }, BookDetail)
+end
+
+function BookDetail:_cancelReading()
+    self.reading_generation = self.reading_generation + 1
+    local request = self.reading_request
+    self.reading_request = nil
+    cancel_handle(request)
+end
+
+function BookDetail:_beginReading(chapters, index, callback, expected_book)
+    if not self.alive or (expected_book and self.book.id ~= expected_book.id) then
+        return nil, { code = "CANCELLED", message = "阅读请求已失效" }
+    end
+    if not self.reading_hook then return "阅读功能将在下一阶段提供" end
+    self:_cancelReading()
+    local generation, book = self.reading_generation, self.book
+    local request_complete, completion_delivered = false, false
+    local function current()
+        return self.alive and generation == self.reading_generation and self.book.id == book.id
+    end
+    local function complete(value, err)
+        if completion_delivered or not current() then return false end
+        completion_delivered = true
+        self.reading_request = nil
+        if type(callback) == "function" then return callback(value, err) end
+        return true
+    end
+    local intent = {
+        isCurrent = current,
+        markRequestComplete = function()
+            if request_complete then return false end
+            request_complete = true
+            if not current() then return false end
+            self.reading_request = nil
+            return true
+        end,
+    }
+    local values = pack_values(self.reading_hook(book, chapters, index, complete, intent))
+    local handle = values[1]
+    if current() and not request_complete and not completion_delivered
+        and handle and type(handle.cancel) == "function" then self.reading_request = handle end
+    return unpack_values(values, 1, values.n)
 end
 
 function BookDetail:addToShelf() return self.shelf and self.shelf:add(self.book) end
@@ -24,6 +76,7 @@ function BookDetail:removeFromShelf() return self.shelf and self.shelf:remove(se
 function BookDetail:switchSource(index)
     local selected = self.alternatives[index]
     if selected then
+        self:_cancelReading()
         self.generation = self.generation + 1
         if self.info_request and type(self.info_request.cancel) == "function" then self.info_request:cancel() end
         if self.catalog_request and type(self.catalog_request.cancel) == "function" then self.catalog_request:cancel() end
@@ -67,8 +120,7 @@ function BookDetail:loadCatalog(callback)
         if chapters then self.catalog = Catalog.new(chapters,
             self.cache_lookup and function(chapter) return self.cache_lookup(chapter, book) end or nil,
             function(_, index, selected_callback)
-                if self.reading_hook then return self.reading_hook(book, chapters, index, selected_callback) end
-                return nil, { code = "STORAGE_ERROR", message = "阅读功能尚未初始化" }
+                return self:_beginReading(chapters, index, selected_callback, book)
             end)
         end
         callback(self.catalog, err)
@@ -79,6 +131,7 @@ function BookDetail:close()
     if not self.alive then return false end
     self.alive = false
     self.generation = self.generation + 1
+    self:_cancelReading()
     if self.info_request and type(self.info_request.cancel) == "function" then self.info_request:cancel() end
     if self.catalog_request and type(self.catalog_request.cancel) == "function" then self.catalog_request:cancel() end
     return true
@@ -94,7 +147,7 @@ function BookDetail:startReading(callback)
         for index, item in ipairs(chapters) do values[index] = item.chapter end
         chapters = values
     end
-    return self.reading_hook and self.reading_hook(self.book, chapters, nil, callback) or "阅读功能将在下一阶段提供"
+    return self:_beginReading(chapters, nil, callback, self.book)
 end
 function BookDetail:startDownload() return self.download_hook and self.download_hook(self.book) or "下载功能将在下一阶段提供" end
 

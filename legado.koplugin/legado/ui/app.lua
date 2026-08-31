@@ -55,9 +55,20 @@ function App:openAbout() return self:_present(About) end
 function App:openSpeech()
     return self:_present({ kind = "speech_unavailable", title = "听书", text = "听书功能尚未配置" })
 end
-function App:startReading(book, chapters, index, callback)
-    if self.reading_hook then return self.reading_hook(book, chapters, index, callback) end
+function App:startReading(book, chapters, index, callback, intent)
+    if self.reading_hook then return self.reading_hook(book, chapters, index, callback, intent) end
     if not self.reader_session or not self.storage then return "阅读功能尚未初始化" end
+    local function current()
+        if not intent or type(intent.isCurrent) ~= "function" then return true end
+        local ok, value = pcall(intent.isCurrent)
+        return ok and value == true
+    end
+    local function request_complete()
+        if not intent or type(intent.markRequestComplete) ~= "function" then return true end
+        local ok, completed = pcall(intent.markRequestComplete)
+        return ok and completed ~= false
+    end
+    if not current() then return nil, { code = "CANCELLED", message = "阅读请求已失效" } end
     local source
     for _, candidate in ipairs(self.storage:listSources() or {}) do if Models.sourceId(candidate) == book.source_id then source = candidate; break end end
     if not source then return "书源不存在" end
@@ -70,6 +81,9 @@ function App:startReading(book, chapters, index, callback)
         return self.reader_session:resume(source, book, chapters, callback)
     end
     return self.service:getChapters(source, book, function(values, err)
+        if not current() then return end
+        if not request_complete() then return end
+        if not current() then return end
         if err or not values then
             return offline()
         end
@@ -105,8 +119,8 @@ function App:createBookDetail(book, alternatives)
         cache_lookup = self.reader_session and function(chapter, current_book)
             return self.reader_session.cache:readBody(current_book.source_id, current_book.id, chapter) ~= nil
         end or nil,
-        reading_hook = function(selected, selected_chapters, selected_index, selected_callback)
-            return self:startReading(selected, selected_chapters, selected_index, selected_callback)
+        reading_hook = function(selected, selected_chapters, selected_index, selected_callback, intent)
+            return self:startReading(selected, selected_chapters, selected_index, selected_callback, intent)
         end,
         download_hook = function(selected) return self:startDownload(selected) end,
     })

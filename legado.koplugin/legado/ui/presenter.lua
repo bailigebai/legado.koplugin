@@ -407,16 +407,19 @@ function Presenter:_readingResult(result, err)
 end
 
 function Presenter:_startReading(action)
-    local callback_called, callback_result = false, nil
+    local callback_called, callback_result, sealed = false, nil, false
     local function complete(value, err)
-        if callback_called then return callback_result end
+        if sealed or callback_called then return callback_result end
         callback_called = true
         callback_result = self:_readingResult(value, err)
         return callback_result
     end
     local result, err = action(complete)
     if callback_called then return callback_result or result end
-    return self:_readingResult(result, err)
+    local rendered = self:_readingResult(result, err)
+    if err ~= nil or type(result) == "string"
+        or (type(result) == "table" and type(result.code) == "string") then sealed = true end
+    return rendered
 end
 
 function Presenter:_catalog(view)
