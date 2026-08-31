@@ -30,9 +30,63 @@ local function bom(body)
     return nil, 1
 end
 
+local MIME_TOKEN = "^[%w!#$%%&'*+.^_`|~%-]+"
+
+local function skip_whitespace(value, cursor)
+    local whitespace = value:sub(cursor):match("^(%s*)") or ""
+    return cursor + #whitespace
+end
+
+local function charset_parameter(value)
+    value = tostring(value or "")
+    local cursor = value:find(";", 1, true)
+    if not cursor then return nil end
+    local detected
+    while cursor <= #value do
+        if value:sub(cursor, cursor) ~= ";" then return nil end
+        cursor = skip_whitespace(value, cursor + 1)
+        if cursor > #value then return nil end
+        local name = value:sub(cursor):match(MIME_TOKEN)
+        if not name then return nil end
+        cursor = skip_whitespace(value, cursor + #name)
+        if value:sub(cursor, cursor) ~= "=" then return nil end
+        cursor = skip_whitespace(value, cursor + 1)
+
+        local parameter_value
+        if value:sub(cursor, cursor) == '"' then
+            local output, closed = {}, false
+            cursor = cursor + 1
+            while cursor <= #value do
+                local character = value:sub(cursor, cursor)
+                local byte = character:byte()
+                if character == '"' then
+                    closed, cursor = true, cursor + 1
+                    break
+                end
+                if character == "\\" or not byte or byte < 32 or byte == 127 then return nil end
+                output[#output + 1] = character
+                cursor = cursor + 1
+            end
+            if not closed then return nil end
+            parameter_value = table.concat(output)
+        else
+            parameter_value = value:sub(cursor):match(MIME_TOKEN)
+            if not parameter_value then return nil end
+            cursor = cursor + #parameter_value
+        end
+
+        cursor = skip_whitespace(value, cursor)
+        if cursor <= #value and value:sub(cursor, cursor) ~= ";" then return nil end
+        if name:lower() == "charset" then
+            if detected ~= nil or not parameter_value:match("^[%w._%-]+$") then return nil end
+            detected = parameter_value
+        end
+    end
+    return detected
+end
+
 local function detect_http(headers)
-    local content_type = tostring(header_value(headers, "content-type") or "")
-    return content_type:match("[Cc][Hh][Aa][Rr][Ss][Ee][Tt]%s*=%s*['\"]?([%w._%-]+)")
+    return charset_parameter(header_value(headers, "content-type"))
 end
 
 local function find_tag_end(text, start)
@@ -63,9 +117,7 @@ local function attributes_of(tag, cursor)
         whitespace = tag:sub(cursor):match("^(%s*)") or ""
         cursor = cursor + #whitespace
         local has_value = tag:sub(cursor, cursor) == "="
-        if not has_value then
-            attributes[name:lower()] = ""
-        else
+        if has_value then
             cursor = cursor + 1
             whitespace = tag:sub(cursor):match("^(%s*)") or ""
             cursor = cursor + #whitespace
@@ -79,10 +131,12 @@ local function attributes_of(tag, cursor)
             if not close then return nil end
             value, cursor = tag:sub(cursor + 1, close - 1), close + 1
         else
-            local value_finish = tag:find("[%s/>]", cursor) or (#tag + 1)
+            local value_finish = tag:find("[%s>]", cursor) or (#tag + 1)
             value, cursor = tag:sub(cursor, value_finish - 1), value_finish
         end
-        attributes[name:lower()] = value
+        name = name:lower()
+        if attributes[name] ~= nil then return nil end
+        attributes[name] = value
     end
     return attributes
 end
@@ -131,8 +185,7 @@ local function detect_meta(body)
                             end
                             if attributes["http-equiv"]
                                 and attributes["http-equiv"]:lower() == "content-type" then
-                                local declared = attributes.content and attributes.content:match(
-                                    "[Cc][Hh][Aa][Rr][Ss][Ee][Tt]%s*=%s*([%w._%-]+)")
+                                local declared = charset_parameter(attributes.content)
                                 if declared then return declared end
                             end
                         end
