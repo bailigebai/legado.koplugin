@@ -147,6 +147,8 @@ do
     local late = state.service.pending[1].callback
     late({ content = "<p>fresh two</p>" }, nil)
     equal("completed", manager:get(first.id).status, "all non-VIP chapters complete the task")
+    equal(nil, manager:get(first.id).current, "terminal task clears the in-memory current chapter")
+    equal(nil, state.storage.tasks[first.id].current, "terminal task persists the cleared current chapter")
     equal(2, manager:get(first.id).completed, "completed counter includes cache and fetch")
     equal(0, manager:get(first.id).failed, "successful task has no failed chapters")
     equal(1, #state.builder.calls, "EPUB builder runs exactly once")

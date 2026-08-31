@@ -8,6 +8,7 @@ local DownloadManager = {}
 DownloadManager.__index = DownloadManager
 
 local terminal = { cancelled = true, failed = true, completed = true }
+local CLEAR = {}
 
 local function copy(value, seen)
     if type(value) ~= "table" then return value end
@@ -27,6 +28,12 @@ local function error_value(value, fallback)
     return Errors.new(Errors.STORAGE_ERROR, fallback or "download failed", value and { cause = tostring(value) } or nil)
 end
 
+local function durable_task(task)
+    local value = copy(task)
+    value.handle, value.request_slot = nil, nil
+    return value
+end
+
 function DownloadManager.new(options)
     options = options or {}
     assert(options.storage, "DownloadManager requires storage")
@@ -39,29 +46,90 @@ function DownloadManager.new(options)
         builder = options.builder, standby = options.standby, scheduler = options.scheduler,
         output_root = tostring(options.output_root or "downloads"):gsub("[/\\]+$", ""),
         now = options.now or os.time, open_final = options.open_final,
-        tasks = {}, order = {}, callbacks = {}, callback_delivered = {}, active = nil,
-        sequence = 0, pump_scheduled = false,
+        tasks = {}, order = {}, queue = {}, callbacks = {}, callback_delivered = {}, active = nil,
+        sequence = 0, queue_sequence = 0, pump_scheduled = false,
     }, DownloadManager)
     local recovered = false
     for _, task in ipairs(self.storage:listDownloadTasks() or {}) do
         if type(task) == "table" and type(task.id) == "string" then
-            if task.status == "running" or task.status == "cancelling" then
-                task.status, task.cancel_requested, task.current = "interrupted", false, nil
-                task.updated_at = self.now(); self.storage:putDownloadTask(task); recovered = true
-            end
             self.tasks[task.id] = task; self.order[#self.order + 1] = task.id
+            if task.status == "running" or task.status == "cancelling" then
+                local persisted, persist_error = self:_transition(task, {
+                    status = "interrupted", cancel_requested = false, current = CLEAR,
+                    error = { code = Errors.STORAGE_ERROR, message = "download interrupted by restart" },
+                })
+                if not persisted then
+                    self:_transition(task, { status = "failed", cancel_requested = false, current = CLEAR,
+                        error = { code = persist_error.code, message = persist_error.message } })
+                end
+                recovered = true
+            end
         end
     end
     if recovered and type(self.standby.releaseAll) == "function" then self.standby:releaseAll() end
+    local queued = {}
+    for _, task in pairs(self.tasks) do
+        self.queue_sequence = math.max(self.queue_sequence, tonumber(task.queue_sequence) or 0)
+        if task.status == "queued" then queued[#queued + 1] = task end
+    end
+    table.sort(queued, function(a, b)
+        local aq, bq = tonumber(a.queue_sequence), tonumber(b.queue_sequence)
+        if aq and bq and aq ~= bq then return aq < bq end
+        if (a.created_at or 0) ~= (b.created_at or 0) then return (a.created_at or 0) < (b.created_at or 0) end
+        return a.id < b.id
+    end)
+    for _, task in ipairs(queued) do self.queue[#self.queue + 1] = task.id end
+    if #self.queue > 0 then self:_schedulePump() end
     return self
 end
 
 function DownloadManager:_persist(task)
-    task.updated_at = self.now()
-    local saved, err = self.storage:putDownloadTask(task)
+    local saved, err = self.storage:putDownloadTask(durable_task(task))
     if not saved then return nil, error_value(err, "cannot persist download task") end
     self.tasks[task.id] = task
     return true
+end
+
+function DownloadManager:_transition(task, changes)
+    local previous = { updated_at = task.updated_at }
+    for key, value in pairs(changes or {}) do
+        previous[key] = task[key]
+        if value == CLEAR then task[key] = nil else task[key] = value end
+    end
+    task.updated_at = self.now()
+    local saved, err = self:_persist(task)
+    if saved then return true end
+    task.updated_at = previous.updated_at
+    for key in pairs(changes or {}) do task[key] = previous[key] end
+    return nil, err
+end
+
+function DownloadManager:_release_active(task)
+    if self.active == task.id then
+        self.active = nil
+        self.standby:release()
+    end
+end
+
+function DownloadManager:_interrupt_for_persistence(task, persist_error)
+    persist_error = error_value(persist_error, "cannot persist download transition")
+    self:_cancel_request(task)
+    local error_record = { code = persist_error.code, message = persist_error.message }
+    local saved, fallback_error = self:_transition(task, {
+        status = "interrupted", current = CLEAR, cancel_requested = false, error = error_record,
+    })
+    if not saved then
+        saved, fallback_error = self:_transition(task, {
+            status = "failed", current = CLEAR, cancel_requested = false,
+            error = { code = fallback_error.code, message = fallback_error.message },
+        })
+    end
+    if saved then
+        self:_release_active(task)
+        self:_notify_terminal(task, persist_error)
+        self:_schedulePump()
+    end
+    return nil, persist_error
 end
 
 function DownloadManager:_source(task)
@@ -81,25 +149,54 @@ function DownloadManager:_notify_terminal(task, err)
     if callback then pcall(callback, copy(task), err) end
 end
 
-function DownloadManager:_terminal(task, status, err)
+function DownloadManager:_terminal(task, status, err, changes)
     if terminal[task.status] and task.status == status then return true end
-    task.status, task.current, task.handle = status, nil, nil
-    task.cancel_requested = status == "cancelled"
-    task.error = err and { code = err.code or Errors.STORAGE_ERROR, message = err.message or tostring(err) } or nil
-    self:_persist(task)
-    if self.active == task.id then self.active = nil; self.standby:release() end
+    changes = changes or {}
+    changes.status, changes.current = status, CLEAR
+    changes.cancel_requested = status == "cancelled"
+    changes.error = err and { code = err.code or Errors.STORAGE_ERROR, message = err.message or tostring(err) } or CLEAR
+    local persisted, persist_error = self:_transition(task, changes)
+    if not persisted then return self:_interrupt_for_persistence(task, persist_error) end
+    task.handle, task.request_slot = nil, nil
+    self:_release_active(task)
     self:_notify_terminal(task, err)
     self:_schedulePump()
     return true
 end
 
 function DownloadManager:_fail(task, err, chapter_failed)
-    if chapter_failed then task.failed = (task.failed or 0) + 1 end
-    return self:_terminal(task, "failed", error_value(err, "download failed"))
+    return self:_terminal(task, "failed", error_value(err, "download failed"),
+        chapter_failed and { failed = (task.failed or 0) + 1 } or nil)
 end
 
-function DownloadManager:_set_handle(task, generation, handle)
-    if self:_valid_callback(task, generation) then task.handle = handle end
+function DownloadManager:_cancel_request(task)
+    local slot = task.request_slot
+    local handle = slot and slot.handle or task.handle
+    if slot then slot.active = false end
+    task.request_slot, task.handle = nil, nil
+    if handle and type(handle.cancel) == "function" then pcall(handle.cancel, handle) end
+end
+
+function DownloadManager:_request(task, generation, start, callback)
+    local slot = { generation = generation, active = true, completed = false }
+    task.request_slot, task.handle = slot, nil
+    local function deliver(...)
+        if task.request_slot ~= slot or not slot.active or not self:_valid_callback(task, generation) then return end
+        slot.active, slot.completed = false, true
+        task.request_slot, task.handle = nil, nil
+        return callback(...)
+    end
+    local ok, handle = pcall(start, deliver)
+    if not ok then
+        deliver(nil, error_value(handle, "download request failed"))
+        return nil
+    end
+    if task.request_slot == slot and slot.active and self:_valid_callback(task, generation) then
+        slot.handle, task.handle = handle, handle
+    elseif not slot.completed and handle and type(handle.cancel) == "function" then
+        pcall(handle.cancel, handle)
+    end
+    return handle
 end
 
 function DownloadManager:_build(task, source, chapters)
@@ -111,7 +208,7 @@ function DownloadManager:_build(task, source, chapters)
     end
     local cover = self.cache.readCover and self.cache:readCover(task.source_id, task.book_id) or nil
     local assets = { modified = timestamp(task.created_at), source = source }
-    if type(cover) == "string" and cover ~= "" then assets.cover = { data = cover, media_type = "image/jpeg" } end
+    if type(cover) == "string" and cover ~= "" then assets.cover = { data = cover } end
     local ok, path, build_error = pcall(self.builder.write, self.builder, task.final_path, task.book, chapters, bodies, assets)
     if not ok then return self:_fail(task, path) end
     if not path then return self:_fail(task, build_error) end
@@ -124,33 +221,37 @@ function DownloadManager:_download(task, source, chapters, index)
     if task.cancel_requested then return self:_terminal(task, "cancelled", Errors.new(Errors.CANCELLED, "download cancelled")) end
     if index > #chapters then return self:_build(task, source, chapters) end
     local chapter = chapters[index]
-    task.current = chapter.uid; self:_persist(task)
+    local current_saved, current_error = self:_transition(task, { current = chapter.uid })
+    if not current_saved then return self:_interrupt_for_persistence(task, current_error) end
     local cached = self.cache:readBody(task.source_id, task.book_id, chapter)
     if type(cached) == "string" and cached ~= "" then
-        task.completed = (task.completed or 0) + 1
+        local counter_saved, counter_error = self:_transition(task, { completed = (task.completed or 0) + 1 })
+        if not counter_saved then return self:_interrupt_for_persistence(task, counter_error) end
         return self:_download(task, source, chapters, index + 1)
     end
     local generation = task.generation
-    local handle = self.service:getContent(source, task.book, chapter, function(result, err)
-        if not self:_valid_callback(task, generation) then return end
-        task.handle = nil
+    return self:_request(task, generation, function(callback)
+        return self.service:getContent(source, task.book, chapter, callback)
+    end, function(result, err)
         if err or type(result) ~= "table" or type(result.content) ~= "string" then return self:_fail(task, err, true) end
         local cleaned, clean_error = Cleaner.normalize(result.content)
         if not cleaned then return self:_fail(task, clean_error, true) end
         local saved, save_error = self.cache:writeBody(task.source_id, task.book_id, chapter, cleaned)
         if not saved then return self:_fail(task, save_error, true) end
-        task.completed = (task.completed or 0) + 1
+        local counter_saved, counter_error = self:_transition(task, { completed = (task.completed or 0) + 1 })
+        if not counter_saved then return self:_interrupt_for_persistence(task, counter_error) end
         self:_download(task, source, chapters, index + 1)
     end)
-    self:_set_handle(task, generation, handle)
 end
 
 function DownloadManager:_with_chapters(task, source, values)
     local chapters = {}
     for _, chapter in ipairs(values or {}) do if type(chapter) == "table" and chapter.vip ~= true then chapters[#chapters + 1] = chapter end end
     if #chapters == 0 then return self:_fail(task, Errors.new(Errors.INVALID_INPUT, "download catalog has no non-VIP chapters")) end
-    task.chapters, task.total, task.completed, task.failed = copy(values), #chapters, 0, 0
-    self:_persist(task)
+    local catalog_saved, catalog_error = self:_transition(task, {
+        chapters = copy(values), total = #chapters, completed = 0, failed = 0,
+    })
+    if not catalog_saved then return self:_interrupt_for_persistence(task, catalog_error) end
     return self:_download(task, source, chapters, 1)
 end
 
@@ -162,9 +263,9 @@ function DownloadManager:_catalog(task, source)
     end
     if values then return self:_with_chapters(task, source, values) end
     local generation = task.generation
-    local handle = self.service:getChapters(source, task.book, function(chapters, err)
-        if not self:_valid_callback(task, generation) then return end
-        task.handle = nil
+    return self:_request(task, generation, function(callback)
+        return self.service:getChapters(source, task.book, callback)
+    end, function(chapters, err)
         if err or type(chapters) ~= "table" then return self:_fail(task, err) end
         local persisted, persist_error = self.storage:replaceChapters(task.book_id, chapters)
         if not persisted then return self:_fail(task, persist_error) end
@@ -172,19 +273,17 @@ function DownloadManager:_catalog(task, source)
             local cached, cache_error = self.cache:writeCatalog(task.source_id, task.book_id, { chapters = chapters })
             if not cached then return self:_fail(task, cache_error) end
         end
-        task.chapters = copy(chapters)
         self:_with_chapters(task, source, chapters)
     end)
-    self:_set_handle(task, generation, handle)
 end
 
 function DownloadManager:_start(task)
     self.active = task.id
-    task.status, task.cancel_requested = "running", false
-    task.generation = (task.generation or 0) + 1
-    task.current, task.completed, task.failed, task.error = nil, 0, 0, nil
-    local persisted, persist_error = self:_persist(task)
-    if not persisted then self.active = nil; self:_notify_terminal(task, persist_error); return self:_schedulePump() end
+    local persisted, persist_error = self:_transition(task, {
+        status = "running", cancel_requested = false, generation = (task.generation or 0) + 1,
+        current = CLEAR, completed = 0, failed = 0, error = CLEAR,
+    })
+    if not persisted then return self:_interrupt_for_persistence(task, persist_error) end
     self.standby:acquire()
     local source = self:_source(task)
     if not source then return self:_fail(task, Errors.new(Errors.INVALID_INPUT, "download source is unavailable")) end
@@ -194,7 +293,8 @@ end
 function DownloadManager:_pump()
     self.pump_scheduled = false
     if self.active then return end
-    for _, id in ipairs(self.order) do
+    while #self.queue > 0 do
+        local id = table.remove(self.queue, 1)
         local task = self.tasks[id]
         if task and task.status == "queued" then return self:_start(task) end
     end
@@ -218,14 +318,15 @@ function DownloadManager:enqueue(book, chapters, callback)
     local created = self.now()
     local id = "download-" .. Identity.hash(book.id .. "\n" .. tostring(created) .. "\n" .. tostring(self.sequence))
     while self.tasks[id] do self.sequence = self.sequence + 1; id = "download-" .. Identity.hash(id .. self.sequence) end
+    self.queue_sequence = self.queue_sequence + 1
     local task = { id = id, book_id = book.id, source_id = book.source_id, book = copy(book), chapters = copy(chapters),
         status = "queued", total = 0, completed = 0, failed = 0, current = nil, cancel_requested = false,
-        created_at = created, updated_at = created,
+        created_at = created, updated_at = created, queue_sequence = self.queue_sequence,
         final_path = self.output_root .. "/" .. EpubBuilder.exportFilename(book),
     }
     local saved, save_error = self:_persist(task)
     if not saved then return nil, save_error end
-    self.tasks[id], self.order[#self.order + 1] = task, id
+    self.tasks[id], self.order[#self.order + 1], self.queue[#self.queue + 1] = task, id, id
     if type(callback) == "function" then self.callbacks[id] = callback end
     self:_schedulePump()
     return copy(task)
@@ -255,10 +356,11 @@ function DownloadManager:cancel(id)
         task.generation = (task.generation or 0) + 1
         return self:_terminal(task, "cancelled", Errors.new(Errors.CANCELLED, "download cancelled"))
     end
-    task.status, task.cancel_requested = "cancelling", true
-    task.generation = (task.generation or 0) + 1
-    self:_persist(task)
-    if task.handle and type(task.handle.cancel) == "function" then pcall(task.handle.cancel, task.handle) end
+    local persisted, persist_error = self:_transition(task, {
+        status = "cancelling", cancel_requested = true, generation = (task.generation or 0) + 1,
+    })
+    if not persisted then return self:_interrupt_for_persistence(task, persist_error) end
+    self:_cancel_request(task)
     return self:_terminal(task, "cancelled", Errors.new(Errors.CANCELLED, "download cancelled"))
 end
 
@@ -266,10 +368,14 @@ function DownloadManager:_requeue(id, allowed)
     local task = self.tasks[id]
     if not task then return nil, Errors.new(Errors.INVALID_INPUT, "download task does not exist") end
     if not allowed[task.status] then return false end
-    task.status, task.cancel_requested, task.current = "queued", false, nil
-    task.completed, task.failed, task.error = 0, 0, nil
+    self.queue_sequence = self.queue_sequence + 1
+    local saved, save_error = self:_transition(task, {
+        status = "queued", cancel_requested = false, current = CLEAR, completed = 0, failed = 0,
+        error = CLEAR, queue_sequence = self.queue_sequence,
+    })
+    if not saved then return nil, save_error end
     self.callback_delivered[id] = nil
-    local saved, save_error = self:_persist(task); if not saved then return nil, save_error end
+    self.queue[#self.queue + 1] = id
     self:_schedulePump(); return true
 end
 

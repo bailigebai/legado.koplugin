@@ -314,8 +314,7 @@ function Presenter:_detail(view)
     }))
 end
 
-function Presenter:_downloads(view)
-    view:refresh()
+local function download_items(self, view)
     local items = {}
     for _, row in ipairs(view.items or {}) do
         local task = row.task
@@ -337,8 +336,24 @@ function Presenter:_downloads(view)
     end
     if #items == 0 then items[1] = { text = "暂无下载记录", enabled = false } end
     items[#items + 1] = { text = "刷新", callback = function() return self:_downloads(view) end }
-    return self:_show(construct(self.menu, { title = "下载管理", item_table = items,
-        close_callback = function() return view:close() end }))
+    return items
+end
+
+function Presenter:_downloads(view)
+    view:refresh()
+    local widget = construct(self.menu, { title = "下载管理", item_table = download_items(self, view),
+        close_callback = function() return view:close() end })
+    view.on_refresh = function(current)
+        if not current.alive then return end
+        local items = download_items(self, current)
+        if type(widget.switchItemTable) == "function" then
+            pcall(widget.switchItemTable, widget, "下载管理", items, current.navigation:index())
+        else
+            widget.item_table = items
+            if type(widget.updateItems) == "function" then pcall(widget.updateItems, widget) end
+        end
+    end
+    return self:_show(widget)
 end
 
 function Presenter:show(view)

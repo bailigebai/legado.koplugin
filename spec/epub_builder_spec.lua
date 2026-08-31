@@ -26,7 +26,7 @@ local bodies = {
 
 local entries = assert(EpubBuilder.buildEntries(book, chapters, bodies, {
     modified = "2026-08-31T00:00:00Z",
-    cover = { data = "jpeg-bytes", media_type = "image/jpeg" },
+    cover = { data = "\255\216\255\224jpeg-bytes", media_type = "image/jpeg" },
     source = { id = "raw-id", bookSourceName = "测试 & 书源", header = "Cookie: secret-cookie",
         loginUrl = "https://user:pass@example.test/login?token=secret-token" },
 }))
@@ -75,10 +75,42 @@ equal(nil, archive_text:find("secret-cookie", 1, true), "source manifest omits c
 equal(nil, archive_text:find("secret-auth", 1, true), "source manifest omits chapter credentials")
 equal(nil, archive_text:find("user:pass", 1, true), "source manifest omits URL userinfo")
 
+do
+    local credential_book = {}
+    for key, value in pairs(book) do credential_book[key] = value end
+    credential_book.source_name = "Authorization: Bearer secret-source-name"
+    local credential_entries = assert(EpubBuilder.buildEntries(credential_book, chapters, bodies, {}))
+    local text = {}; for _, entry in ipairs(credential_entries) do text[#text + 1] = entry.data end
+    equal(nil, table.concat(text, "\n"):find("secret-source-name", 1, true),
+        "source display names cannot smuggle credentials into the source manifest")
+end
+
 local without_cover = assert(EpubBuilder.buildEntries(book, chapters, bodies, { modified = "2026-08-31T00:00:00Z" }))
 local cover_found = false
 for _, entry in ipairs(without_cover) do if entry.path:find("cover", 1, true) then cover_found = true end end
 equal(false, cover_found, "cover entries and metadata are absent when no cover is available")
+
+for _, unsafe_cover in ipairs({
+    { data = "<svg xmlns='http://www.w3.org/2000/svg'/>", media_type = "image/svg+xml" },
+    { data = "\137PNG\13\10\26\10payload", media_type = "image/jpeg" },
+    { url = "https://example.invalid/cover.jpg", media_type = "image/jpeg" },
+}) do
+    local unsafe_entries = assert(EpubBuilder.buildEntries(book, chapters, bodies, { cover = unsafe_cover }))
+    local found = false
+    for _, entry in ipairs(unsafe_entries) do if entry.path:find("cover", 1, true) then found = true end end
+    equal(false, found, "unsafe, mismatched, or external covers are omitted")
+end
+
+do
+    local multibyte = EpubBuilder.exportFilename({ id = "utf8-book", name = string.rep("书", 27) })
+    truthy(multibyte:find(string.rep("书", 26) .. "-", 1, true) == 1,
+        "export filename truncates only at a complete UTF-8 codepoint boundary")
+    local shared = string.rep("same-prefix-", 12)
+    local first_name = EpubBuilder.exportFilename({ id = shared .. "A", name = "同名" })
+    local second_name = EpubBuilder.exportFilename({ id = shared .. "B", name = "同名" })
+    truthy(first_name ~= second_name, "sanitized/truncated identifiers retain a deterministic uniqueness hash")
+    equal(first_name, EpubBuilder.exportFilename({ id = shared .. "A", name = "同名" }), "export filenames are deterministic")
+end
 
 local missing, missing_error = EpubBuilder.buildEntries(book, chapters, { ["chapter-safe-one"] = bodies["chapter-safe-one"] }, {})
 equal(nil, missing, "complete EPUB refuses a missing non-VIP chapter")
@@ -108,9 +140,8 @@ local function fake_archiver(behavior)
         end
         function writer:close()
             capture.closed = (capture.closed or 0) + 1
-            if behavior.commit_failure then self.err = "commit failed"; return false end
+            if behavior.commit_failure then self.err = "commit failed" end
             capture.committed = true
-            return true
         end
         return writer
     end
@@ -129,7 +160,22 @@ local function fake_archiver(behavior)
                 return entry and { path = entry.path, mode = "file", size = #entry.data } or nil
             end, self
         end
-        function reader:close() capture.reader_closed = true end
+        function reader:extractToMemory(path)
+            if behavior.read_failure then self.err = "read failed"; return nil end
+            for _, entry in ipairs(capture.entries) do
+                if entry.path == path then
+                    if behavior.corrupt_same_size and path == capture.entries[2].path then
+                        return (entry.data:sub(1, 1) == "X" and "Y" or "X") .. entry.data:sub(2)
+                    end
+                    return entry.data
+                end
+            end
+            self.err = "missing"; return nil
+        end
+        function reader:close()
+            capture.reader_closed = true
+            if behavior.reader_close_failure then self.err = "reader close failed" end
+        end
         return reader
     end
     return { Writer = Writer, Reader = Reader }, capture
@@ -152,6 +198,9 @@ for _, case in ipairs({
     { name = "write", behavior = { write_failure = 3 } },
     { name = "commit", behavior = { commit_failure = true } },
     { name = "verify", behavior = { verify_failure = true } },
+    { name = "corrupt", behavior = { corrupt_same_size = true } },
+    { name = "read", behavior = { read_failure = true } },
+    { name = "reader-close", behavior = { reader_close_failure = true } },
 }) do
     local module, capture = fake_archiver(case.behavior)
     local ok, err = ArchiveWriter.new({ archiver = module }):write("failed.epub.part", entries)
@@ -165,7 +214,7 @@ local function memory_fs(initial, behavior)
     behavior = behavior or {}
     local fs = {}
     function fs:removeFile(path) files[path] = nil; return true end
-    function fs:atomicReplaceFile(part, final)
+    function fs:atomicReplacePreparedFile(part, final)
         if behavior.replace_failure then return nil, { code = "STORAGE_ERROR", message = "replace failed" } end
         if not files[part] then return nil, { code = "STORAGE_ERROR", message = "part missing" } end
         files[final], files[part] = files[part], nil
@@ -212,7 +261,9 @@ do
     put(target, "old-real-epub")
     put(prepared, "new-real-epub")
     local fs = Fs.new()
-    truthy(fs:atomicReplaceFile(prepared, target), "shared Fs atomically publishes a prepared archive")
+    fs.read = function() error("prepared EPUB publication must never read archive bytes into Lua") end
+    local real_published, real_error = fs:atomicReplacePreparedFile(prepared, target)
+    truthy(real_published, "shared Fs atomically publishes a prepared archive: " .. tostring(real_error and real_error.message))
     local handle = assert(io.open(target, "rb"))
     equal("new-real-epub", handle:read("*a"), "shared Fs publishes exact prepared bytes")
     handle:close()
@@ -226,6 +277,26 @@ do
     truthy(ok, "malformed chapter identifiers return a structured result instead of throwing")
     equal(nil, invalid, "empty chapter UID is rejected")
     equal("INVALID_INPUT", invalid_error and invalid_error.code, "empty chapter UID failure is structured")
+end
+
+do
+    local malformed_bodies = {
+        ["chapter-safe-one"] = "<p>&copy;<strong>broken</p>",
+        ["chapter-safe-two"] = "<blockquote>A&nbsp;B &unknown;</blockquote>",
+    }
+    local repaired = assert(EpubBuilder.buildEntries(book, chapters, malformed_bodies, {}))
+    local repaired_by_path = {}; for _, entry in ipairs(repaired) do repaired_by_path[entry.path] = entry.data end
+    local first = repaired_by_path["OEBPS/text/chapter-0001.xhtml"]
+    truthy(first:find("<p>©<strong>broken</strong></p>", 1, true), "malformed semantic HTML is balanced by the safe XHTML serializer")
+    equal(nil, first:find("&copy;", 1, true), "HTML-only named entities never leak into XML")
+    local second = repaired_by_path["OEBPS/text/chapter-0002.xhtml"]
+    truthy(second:find("A B &amp;unknown;", 1, true), "entities become Unicode/XML5 or safely escaped text")
+    local invalid_utf8 = assert(EpubBuilder.buildEntries(book, chapters, {
+        ["chapter-safe-one"] = "<p>bad\255text</p>", ["chapter-safe-two"] = "<p>ok</p>",
+    }, {}))
+    local invalid_text; for _, entry in ipairs(invalid_utf8) do if entry.path:find("chapter%-0001%.xhtml$") then invalid_text = entry.data end end
+    equal(nil, invalid_text:find("\255", 1, true), "invalid UTF-8 bytes never enter XHTML")
+    truthy(invalid_text:find("�", 1, true), "invalid UTF-8 bytes become a valid replacement character")
 end
 
 return count

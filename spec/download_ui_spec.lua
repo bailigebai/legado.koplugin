@@ -87,4 +87,47 @@ do
     equal("string", type(shown[#shown].text), "queued task result is rendered as a user-facing message, not a table")
 end
 
+do
+    local scheduled, unscheduled, list_calls = {}, {}, 0
+    local scheduler = {
+        scheduleIn = function(_, delay, callback)
+            local token = { delay = delay, callback = callback }
+            scheduled[#scheduled + 1] = token; return token
+        end,
+        unschedule = function(_, token) unscheduled[#unscheduled + 1] = token end,
+    }
+    local live_task = { id = "live", book = { name = "实时" }, status = "running", completed = 0, total = 2 }
+    local live_manager = { list = function() list_calls = list_calls + 1; return { live_task } end }
+    local view = Downloads.new({ manager = live_manager, scheduler = scheduler, refresh_interval = 3 })
+    equal(1, #scheduled, "active download schedules one low-frequency refresh")
+    equal(3, scheduled[1].delay, "download refresh uses the configured low-frequency interval")
+    live_task.completed = 1
+    scheduled[1].callback()
+    truthy(view.items[1].text:find("1/2", 1, true), "scheduled refresh updates active progress")
+    equal(2, #scheduled, "active progress schedules the next refresh only after the prior callback")
+    local stale = scheduled[2].callback
+    local calls_before_close = list_calls
+    truthy(view:close(), "closing a live download view succeeds")
+    equal(1, #unscheduled, "close unschedules the outstanding refresh token")
+    stale()
+    equal(calls_before_close, list_calls, "stale scheduled callbacks cannot refresh after close/back")
+end
+
+do
+    local scheduled, shown = {}, {}
+    local scheduler = { scheduleIn = function(_, _, callback)
+        local token = { callback = callback }; scheduled[#scheduled + 1] = token; return token
+    end, unschedule = function() end }
+    local task = { id = "presented-live", book = { name = "菜单实时" }, status = "running", completed = 0, total = 2 }
+    local view = Downloads.new({ manager = { list = function() return { task } end }, scheduler = scheduler })
+    local presenter = Presenter.new({ menu = { new = function(_, options) return options end },
+        ui_manager = { show = function(_, widget) shown[#shown + 1] = widget end } })
+    local menu = presenter:show(view)
+    task.completed = 1
+    scheduled[1].callback()
+    truthy(menu.item_table[1].text:find("1/2", 1, true), "scheduled refresh updates the existing menu in place")
+    equal(1, #shown, "scheduled refresh never opens a background popup")
+    menu.close_callback()
+end
+
 return count

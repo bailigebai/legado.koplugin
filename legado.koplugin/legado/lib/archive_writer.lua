@@ -21,7 +21,7 @@ local function close_writer(writer)
     if not writer or type(writer.close) ~= "function" then return true end
     local ok, result = pcall(writer.close, writer)
     if not ok then return nil, result end
-    if result == false then return nil, writer.err or "archive commit failed" end
+    if result == false or writer.err then return nil, writer.err or "archive commit failed" end
     return true
 end
 
@@ -53,11 +53,29 @@ function ArchiveWriter:_verify(path, entries)
                 verify_error = storage_error("archive verification mismatch")
                 break
             end
+            if type(reader.extractToMemory) ~= "function" then
+                verify_error = storage_error("archive verification extraction is unavailable")
+                break
+            end
+            local extract_ok, extracted = pcall(reader.extractToMemory, reader, entry.path)
+            if not extract_ok or type(extracted) ~= "string" then
+                verify_error = storage_error("archive verification extraction failed", extract_ok and reader.err or extracted)
+                break
+            end
+            if extracted ~= expected.data then
+                verify_error = storage_error("archive verification content mismatch")
+                break
+            end
             seen[entry.path] = true
         end
         if not verify_error and index ~= #entries then verify_error = storage_error("archive verification entry count mismatch") end
     end
-    if type(reader.close) == "function" then pcall(reader.close, reader) end
+    if not verify_error and reader.err then verify_error = storage_error("archive verification reader failed", reader.err) end
+    if type(reader.close) == "function" then
+        local close_ok = pcall(reader.close, reader)
+        if not close_ok and not verify_error then verify_error = storage_error("archive verification close failed") end
+        if reader.err and not verify_error then verify_error = storage_error("archive verification close failed", reader.err) end
+    end
     if verify_error then return nil, verify_error end
     return true
 end

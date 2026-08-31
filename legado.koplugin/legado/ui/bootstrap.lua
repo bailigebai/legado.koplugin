@@ -106,6 +106,7 @@ function Bootstrap.build(plugin)
         cover_loader = cover_loader,
         reader_session = reader_session,
         download_manager = download_manager,
+        scheduler = UIManager,
         show = presenter and function(view) return presenter:show(view) end or nil,
     })
     if presenter then presenter.detail_factory = function(book, alternatives) return app:createBookDetail(book, alternatives) end end

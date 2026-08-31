@@ -39,6 +39,14 @@ def verify_epub(path: Path) -> int:
         if len(names) != len(set(names)):
             raise ValueError("duplicate EPUB entry names")
 
+        for name in names:
+            if name.endswith((".xml", ".xhtml")):
+                xml_text = archive.read(name).decode("utf-8", errors="strict")
+                try:
+                    ElementTree.fromstring(xml_text)
+                except ElementTree.ParseError as error:
+                    raise ValueError(f"malformed XML/XHTML entry: {name}") from error
+
         container = ElementTree.fromstring(archive.read("META-INF/container.xml"))
         rootfile = container.find("{urn:oasis:names:tc:opendocument:xmlns:container}rootfiles/{urn:oasis:names:tc:opendocument:xmlns:container}rootfile")
         if rootfile is None or rootfile.attrib.get("full-path") != "OEBPS/content.opf":
@@ -148,8 +156,21 @@ def main() -> int:
     if args.self_test:
         with tempfile.TemporaryDirectory(prefix="legado-epub-") as directory:
             path = Path(directory) / "synthetic.epub"
-            write_synthetic(path, production_entries(args.repository_root.resolve()))
+            entries = production_entries(args.repository_root.resolve())
+            write_synthetic(path, entries)
             count = verify_epub(path)
+            malformed = [dict(entry) for entry in entries]
+            for entry in malformed:
+                if entry["path"].endswith("chapter-0001.xhtml"):
+                    entry["data"] = "<html><body><p>broken</body></html>"
+            malformed_path = Path(directory) / "malformed.epub"
+            write_synthetic(malformed_path, malformed)
+            try:
+                verify_epub(malformed_path)
+            except (ElementTree.ParseError, ValueError):
+                pass
+            else:
+                raise RuntimeError("EPUB verifier accepted malformed chapter XHTML")
         print(f"Synthetic EPUB ZIP structure passed ({count} entries).")
         return 0
     if not args.path:

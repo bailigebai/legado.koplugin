@@ -17,6 +17,7 @@ function App.new(options)
         reading_hook = options.reading_hook, download_hook = options.download_hook,
         reader_session = options.reader_session,
         download_manager = options.download_manager,
+        scheduler = options.scheduler,
         cover_loader = options.cover_loader,
         show = options.show,
     }, App)
@@ -43,7 +44,7 @@ end
 function App:openSources() return self:_present(self.source_manager or { title = "书源管理", empty_text = "暂无书源" }) end
 function App:openDownloads()
     if not self.download_manager then return self:_present({ title = "下载管理", empty_text = "下载功能尚未初始化" }) end
-    return self:_present(Downloads.new({ manager = self.download_manager }))
+    return self:_present(Downloads.new({ manager = self.download_manager, scheduler = self.scheduler }))
 end
 function App:openSettings() return self:_present(SettingsView.new({ settings = self.settings, appearance = self.appearance })) end
 function App:openAbout() return self:_present(About) end

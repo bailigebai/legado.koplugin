@@ -4,6 +4,7 @@ local Errors = require("legado.lib.errors")
 local Fs = require("legado.lib.fs")
 local Identity = require("legado.lib.identity")
 local Json = require("legado.lib.json_codec")
+local XhtmlSerializer = require("legado.lib.xhtml_serializer")
 
 local EpubBuilder = {}
 EpubBuilder.__index = EpubBuilder
@@ -28,6 +29,27 @@ local function valid_modified(value)
     return "1970-01-01T00:00:00Z"
 end
 
+local function utf8_prefix(value, maximum)
+    local output, used, index = {}, 0, 1
+    while index <= #value do
+        local first = value:byte(index)
+        local length = first < 0x80 and 1 or (first >= 0xC2 and first <= 0xDF and 2
+            or first >= 0xE0 and first <= 0xEF and 3 or first >= 0xF0 and first <= 0xF4 and 4 or 0)
+        local valid = length > 0 and index + length - 1 <= #value
+        if valid and length > 1 then
+            for offset = 1, length - 1 do
+                local byte = value:byte(index + offset)
+                if not byte or byte < 0x80 or byte > 0xBF then valid = false; break end
+            end
+        end
+        local piece = valid and value:sub(index, index + length - 1) or "-"
+        if used + #piece > maximum then break end
+        output[#output + 1], used = piece, used + #piece
+        index = index + (valid and length or 1)
+    end
+    return table.concat(output)
+end
+
 local function xhtml(title, body, kind)
     return '<?xml version="1.0" encoding="UTF-8"?>\n'
         .. '<!DOCTYPE html>\n<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="zh-CN" lang="zh-CN">\n'
@@ -48,13 +70,14 @@ end
 
 local function cover_info(cover)
     if type(cover) ~= "table" or type(cover.data) ~= "string" or cover.data == "" then return nil end
-    local formats = {
-        ["image/jpeg"] = { "jpg", "image/jpeg" }, ["image/png"] = { "png", "image/png" },
-        ["image/gif"] = { "gif", "image/gif" }, ["image/svg+xml"] = { "svg", "image/svg+xml" },
-    }
-    local value = formats[tostring(cover.media_type or "image/jpeg"):lower()]
-    if not value then return nil end
-    return { data = cover.data, extension = value[1], media_type = value[2] }
+    local detected
+    if cover.data:sub(1, 3) == "\255\216\255" then detected = { "jpg", "image/jpeg" }
+    elseif cover.data:sub(1, 8) == "\137PNG\13\10\26\10" then detected = { "png", "image/png" }
+    elseif cover.data:sub(1, 6) == "GIF87a" or cover.data:sub(1, 6) == "GIF89a" then detected = { "gif", "image/gif" } end
+    if not detected then return nil end
+    local declared = type(cover.media_type) == "string" and cover.media_type:lower() or nil
+    if declared and declared ~= detected[2] then return nil end
+    return { data = cover.data, extension = detected[1], media_type = detected[2] }
 end
 
 function EpubBuilder.buildEntries(book, chapters, bodies, assets)
@@ -74,8 +97,10 @@ function EpubBuilder.buildEntries(book, chapters, bodies, assets)
             end
             local cleaned, clean_error = Cleaner.normalize(body)
             if not cleaned then return nil, clean_error end
+            local serialized, serialize_error = XhtmlSerializer.fragment(cleaned)
+            if not serialized then return nil, serialize_error end
             seen[uid] = true
-            included[#included + 1] = { chapter = chapter, uid = uid, body = cleaned,
+            included[#included + 1] = { chapter = chapter, uid = uid, body = serialized,
                 filename = string.format("chapter-%04d.xhtml", #included + 1), item_id = "chapter-" .. tostring(#included + 1) }
         end
     end
@@ -116,9 +141,8 @@ function EpubBuilder.buildEntries(book, chapters, bodies, assets)
         .. xml(title) .. '</title><link rel="stylesheet" type="text/css" href="styles/structure.css"/></head><body><nav epub:type="toc" id="toc"><h1>目录</h1><ol>'
         .. table.concat(nav_items) .. '</ol></nav></body></html>\n'
     local container = '<?xml version="1.0" encoding="UTF-8"?>\n<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>\n'
-    local source_name = book.source_name or (type(assets.source) == "table" and assets.source.bookSourceName) or ""
     local source_id = book.source_id or (type(assets.source) == "table" and assets.source.id) or ""
-    local sources = Json.array({ { id = safe_token(source_id, "unknown-source"), name = tostring(source_name) } })
+    local sources = Json.array({ { id = safe_token(source_id, "unknown-source") } })
     local manifest = Json.encode({ version = 1, generated_by = "legado.koplugin", book = {
         id = identifier, name = title, author = author,
     }, chapter_count = #included, sources = sources })
@@ -148,8 +172,10 @@ function EpubBuilder.exportFilename(book)
         :gsub("[%z\1-\31<>:\"/\\|?*]", "-"):gsub("%s+", " "):match("^%s*(.-)%s*$")
         :gsub("[. ]+$", "")
     if name == "" then name = "book" end
-    name = name:sub(1, 80)
-    return name .. "-" .. safe_token(type(book) == "table" and book.id, "book") .. ".epub"
+    name = utf8_prefix(name, 80)
+    local raw_id = tostring(type(book) == "table" and book.id or "book")
+    local readable_id = safe_token(raw_id, "book"):sub(1, 48)
+    return name .. "-" .. readable_id .. "-" .. Identity.hash(raw_id) .. ".epub"
 end
 
 function EpubBuilder:write(path, book, chapters, bodies, assets)
@@ -165,11 +191,11 @@ function EpubBuilder:write(path, book, chapters, bodies, assets)
         self.fs:removeFile(part)
         return nil, size_error or Errors.new(Errors.STORAGE_ERROR, "EPUB archive part is empty")
     end
-    if type(self.fs.atomicReplaceFile) ~= "function" then
+    if type(self.fs.atomicReplacePreparedFile) ~= "function" then
         self.fs:removeFile(part)
         return nil, Errors.new(Errors.STORAGE_ERROR, "atomic EPUB publication is unavailable")
     end
-    local published, publish_error = self.fs:atomicReplaceFile(part, path)
+    local published, publish_error = self.fs:atomicReplacePreparedFile(part, path, { expected_size = size })
     if not published then self.fs:removeFile(part); return nil, publish_error end
     return path
 end

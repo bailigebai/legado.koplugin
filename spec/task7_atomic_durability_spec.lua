@@ -53,7 +53,7 @@ local function posix_fake(initial, behavior)
             state.files[path] = inode("")
         end
         local file = state.files[path]; if not file then return fail(2) end
-        return alloc({ kind = "file", file = file, offset = 1 })
+        return alloc({ kind = "file", file = file, path = path, offset = 1 })
     end
     function sys:mkdirat(fd, name)
         local path = child(fd, name); if not path then return fail(9) end
@@ -73,6 +73,10 @@ local function posix_fake(initial, behavior)
     function sys:identity(fd)
         local item = state.fds[fd]; if not item then return nil end
         return { dev = "1", ino = tostring(item.kind == "file" and item.file.ino or (item.path == "" and 1 or 2)) }
+    end
+    function sys:size(fd)
+        local item = state.fds[fd]
+        return item and item.kind == "file" and #item.file.content or nil
     end
     function sys:renameat(oldfd, oldname, newfd, newname)
         local oldpath, newpath = child(oldfd, oldname), child(newfd, newname)
@@ -101,6 +105,18 @@ local function posix_fake(initial, behavior)
     function sys:close(fd)
         state.close_calls = state.close_calls + 1
         state.close_by_fd[fd] = (state.close_by_fd[fd] or 0) + 1
+        local item = state.fds[fd]
+        if item and behavior.close_eio_path and item.path == behavior.close_eio_path then
+            state.close_eio_matches = (state.close_eio_matches or 0) + 1
+            if state.close_eio_matches == (behavior.close_eio_occurrence or 1) then
+                state.fds[fd] = nil
+                return fail(5)
+            end
+        end
+        if item and behavior.close_eio_pattern and tostring(item.path):find(behavior.close_eio_pattern) then
+            state.fds[fd] = nil
+            return fail(5)
+        end
         if behavior.close_eintr_reuse_once and not state.reused_fd then
             if not state.fds[fd] then return fail(9) end
             state.reused_fd = fd
@@ -120,6 +136,61 @@ local function injected_fs(sys)
         posixArch = sys.arch,
         lfs = { attributes = function() return { dev = 1, ino = 1 } end },
     })
+end
+
+-- Non-EINTR close failures are transaction failures. Before commit they abort;
+-- after commit they roll back while the backup is still retained.
+do
+    local pre_sys, pre_state = posix_fake({ ["root/target"] = "old" }, { close_eio_pattern = ".temp-" })
+    local saved, err = injected_fs(pre_sys):atomicWrite("root/target", "new", { root = "root", root_identity = { dev = "1", ino = "2" } })
+    equal(nil, saved, "pre-commit close EIO aborts publication")
+    equal("STORAGE_ERROR", err and err.code, "pre-commit close EIO is structured")
+    equal("old", pre_state.files["root/target"] and pre_state.files["root/target"].content, "pre-commit close EIO preserves old bytes")
+    equal(nil, next(pre_state.fds), "pre-commit close EIO leaves no tracked descriptors")
+
+    local post_sys, post_state = posix_fake({ ["root/target"] = "old" }, {
+        close_eio_path = "root/target", close_eio_occurrence = 2,
+    })
+    local replaced, replace_error = injected_fs(post_sys):atomicWrite("root/target", "new", { root = "root", root_identity = { dev = "1", ino = "2" } })
+    equal(nil, replaced, "post-commit close EIO is not reported as success")
+    equal("STORAGE_ERROR", replace_error and replace_error.code, "post-commit close EIO is structured")
+    equal("old", post_state.files["root/target"] and post_state.files["root/target"].content, "post-commit close EIO restores old bytes")
+    equal(nil, next(post_state.fds), "post-commit close EIO leaves no tracked descriptors")
+
+    local dir_sys, dir_state = posix_fake({ ["root/target"] = "old" }, { close_eio_path = "root" })
+    local committed, diagnostic = injected_fs(dir_sys):atomicWrite("root/target", "new", {
+        root = "root", root_identity = { dev = "1", ino = "2" },
+    })
+    truthy(committed, "final parent close EIO reports the already-published state truthfully")
+    equal("STORAGE_ERROR", diagnostic and diagnostic.code, "final parent close EIO returns a structured diagnostic")
+    equal("new", dir_state.files["root/target"] and dir_state.files["root/target"].content,
+        "final parent close diagnostic retains the published atomic bytes")
+end
+
+do
+    local sys, state = posix_fake({ ["root/book.epub.part"] = string.rep("N", 1024), ["root/book.epub"] = "old" })
+    local fs = injected_fs(sys)
+    fs.read = function() error("prepared archive bytes must not be read through Fs:read") end
+    local published, err = fs:atomicReplacePreparedFile("root/book.epub.part", "root/book.epub", {
+        root = "root", root_identity = { dev = "1", ino = "2" }, expected_size = 1024,
+    })
+    truthy(published, "prepared dirfd transaction publishes without Lua archive buffering: " .. tostring(err and err.message))
+    equal(string.rep("N", 1024), state.files["root/book.epub"] and state.files["root/book.epub"].content,
+        "prepared dirfd transaction publishes exact inode bytes")
+    equal(nil, state.files["root/book.epub.part"], "prepared rename consumes the part path at commit")
+    equal(nil, next(state.fds), "prepared publication closes every descriptor")
+
+    local close_sys, close_state = posix_fake({ ["root/book.epub.part"] = "new", ["root/book.epub"] = "old" }, {
+        close_eio_path = "root",
+    })
+    local committed, diagnostic = injected_fs(close_sys):atomicReplacePreparedFile("root/book.epub.part", "root/book.epub", {
+        root = "root", root_identity = { dev = "1", ino = "2" }, expected_size = 3,
+    })
+    truthy(committed, "post-commit parent close EIO does not lie that the prepared rename was unpublished")
+    equal("STORAGE_ERROR", diagnostic and diagnostic.code, "post-commit close EIO is returned as a publication diagnostic")
+    equal("new", close_state.files["root/book.epub"] and close_state.files["root/book.epub"].content,
+        "post-commit close diagnostic retains the committed final EPUB")
+    equal(nil, close_state.files["root/book.epub.part"], "post-commit close diagnostic observes consumed part path")
 end
 
 -- The Windows test runtime drives the production dirfd transaction through an
