@@ -26,7 +26,7 @@ end, rename = function(from, to) files[to] = files[from]; files[from] = nil; ret
 
 do
     local cache = CacheStore.new({ fs = fs, root = "cache-root" })
-    local source, book, chapter = "source-abc", "book-def", { uid = "chapter-ghi", index = 1, title = "One", url = "https://example.test/one" }
+    local source, book, chapter = "source-abc", "book-def", { uid = "chapter-ghi", index = 1, title = "One", url = "https://example.test/one", source_id = "source-abc", book_id = "book-def" }
     local body_path = assert(cache:writeBody(source, book, chapter, "<p>Hello</p>"))
     truthy(body_path:match("source%-abc"), "opaque source id remains visible only as a path segment")
     equal("<p>Hello</p>", assert(cache:readBody(source, book, chapter)), "body cache round trips through an atomic file")
@@ -42,12 +42,50 @@ do
     equal("STORAGE_ERROR", corrupt_error.code, "corrupt cache has structured diagnostics")
     truthy(cache:readCatalog(source, book), "catalog survives isolated chapter corruption")
     assert(cache:writeBody(source, book, chapter, "<p>fixed</p>"))
-    files[corrupt_path .. ".meta"] = "{bad"
+    files[corrupt_path] = "{bad"
     local invalid_manifest, manifest_error = cache:readBody(source, book, chapter)
     equal(nil, invalid_manifest, "malformed cache manifests are rejected rather than thrown")
     equal("STORAGE_ERROR", manifest_error.code, "malformed manifests return structured errors")
     assert(cache:writeCover(source, book, "\137PNG\r\n\26\n\255"))
     equal("\137PNG\r\n\26\n\255", assert(cache:readCover(source, book)), "binary cover bytes remain cacheable")
+end
+
+do
+    local cache = CacheStore.new({ fs = fs, root = "lifecycle-order" })
+    local source, book = { id = "s" }, { id = "life-book", source_id = "source-s" }
+    local chapters = { { uid = "life-1", index = 1, title = "One", url = "https://s/1", source_id = "source-s", book_id = book.id }, { uid = "life-2", index = 2, title = "Two", url = "https://s/2", source_id = "source-s", book_id = book.id } }
+    assert(cache:writeBody("source-s", book.id, chapters[1], "<p>1</p>")); assert(cache:writeBody("source-s", book.id, chapters[2], "<p>2</p>"))
+    local saved, previous = {}, nil
+    local ui = { openDocument = function(_, _, callbacks)
+        if previous then callbacks.close(previous) end
+        local doc = { getProgressFraction = function() return 0.4 end }; previous = doc; return doc
+    end }
+    local session = ReaderSession.new({ cache = cache, storage = { putProgress = function(_, p) saved[#saved + 1] = p end }, ui = ui })
+    assert(session:open(source, book, chapters, 1)); assert(session:_open_cached(session.active, 2, nil))
+    equal("life-1", saved[1].chapter_uid, "synchronous ShowingReader close saves the immutable old chapter")
+end
+
+do
+    -- A cached catalog must never turn an offline open into a network request,
+    -- even when its chapter body disappears between selection and open.
+    local cache = CacheStore.new({ fs = fs, root = "strict-offline" })
+    local source, book = { id = "s" }, { id = "offline-book", source_id = "source-s" }
+    local chapter = { uid = "offline-chapter", index = 1, title = "Only", url = "https://s.test/1", source_id = "source-s", book_id = book.id }
+    assert(cache:writeCatalog("source-s", book.id, { chapters = { chapter } }))
+    local calls = 0
+    local session = ReaderSession.new({ cache = cache, storage = { putProgress = function() end }, ui = { openDocument = function() return {} end }, service = { getContent = function() calls = calls + 1 end } })
+    local opened, err = session:openOffline(source, book, 1)
+    equal(nil, opened, "offline open rejects a catalog whose body vanished")
+    equal("STORAGE_ERROR", err.code, "offline miss is structured")
+    equal(0, calls, "offline open makes zero network calls")
+end
+
+do
+    local unsafe = Cleaner.normalize('<a href="jav&#x61;\nscript:alert(1)">x</a><img src="data:image/svg+xml;base64,PHN2Zz4=">')
+    equal("<a>x</a><img>", unsafe, "decoded and whitespace-obfuscated unsafe schemes are removed")
+    local invalid, err = Cleaner.normalize("<p>x</p>", { replaceRegex = { "@js:evil" } })
+    equal(nil, invalid, "executable replaceRegex is rejected")
+    equal("UNSUPPORTED_RULE", err.code, "invalid replaceRegex is structured")
 end
 
 do

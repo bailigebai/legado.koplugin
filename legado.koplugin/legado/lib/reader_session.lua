@@ -72,11 +72,14 @@ function ReaderSession:_open_cached(state, index, restore_fraction)
     local page = html_document(chapter.title, body)
     local path, write_error = self.cache:writeHtml(source_id(state.source, state.book), state.book.id, chapter, page)
     if not path then return nil, write_error end
-    state.index, state.restore_fraction, state.end_handled = index, restore_fraction, false
+    -- ReaderUI synchronously closes the old document while showReader runs.
+    -- Keep its chapter/index/document installed until openDocument succeeds.
+    state.restore_fraction = restore_fraction
     local document = self.ui:openDocument(path, self:_callbacks(state))
-    if not document then return nil, Errors.new(Errors.STORAGE_ERROR, "KOReader could not open cached chapter") end
-    state.document = document
+    if not document then state.restore_fraction = nil; return nil, Errors.new(Errors.STORAGE_ERROR, "KOReader could not open cached chapter") end
+    state.index, state.document, state.end_handled, state.active = index, document, false, true
     self.active = state
+    if restore_fraction ~= nil and type(document.setProgressFraction) == "function" then document:setProgressFraction(restore_fraction); state.restore_fraction = nil end
     self:_prefetch(state)
     return document
 end
@@ -88,11 +91,11 @@ function ReaderSession:_fetch_then_open(state, index, restore_fraction)
     state.fetch_handle = self.service:getContent(state.source, state.book, chapter, function(content, request_error)
         if self.active ~= state or not state.active then return end
         state.fetching = false
-        if request_error or not content then self.diagnostics("read", request_error or Errors.new(Errors.NETWORK_ERROR, "empty content")); return end
+        if request_error or not content then state.end_handled = false; self.diagnostics("read", request_error or Errors.new(Errors.NETWORK_ERROR, "empty content")); return end
         local body, clean_error = Cleaner.normalize(content.content or content, { replaceRegex = state.source.replaceRegex })
-        if not body then self.diagnostics("read", clean_error); return end
+        if not body then state.end_handled = false; self.diagnostics("read", clean_error); return end
         local saved, save_error = self.cache:writeBody(source_id(state.source, state.book), state.book.id, chapter, body)
-        if not saved then self.diagnostics("read", save_error); return end
+        if not saved then state.end_handled = false; self.diagnostics("read", save_error); return end
         self:_open_cached(state, index, restore_fraction)
     end)
     return state.fetch_handle
@@ -169,7 +172,13 @@ function ReaderSession:openOffline(source, book, index)
     for candidate = wanted, 1, -1 do
         if self.cache:readBody(source_id(source, book), book.id, chapters[candidate]) then
             self.last_offline_chapter = { index = candidate, chapter_uid = chapters[candidate].uid }
-            return self:open(source, book, chapters, candidate)
+            self:close()
+            local state = { source = source, book = book, chapters = chapters, index = candidate, active = true, offline = true }
+            self.active = state
+            local document, open_error = self:_open_cached(state, candidate, nil)
+            if document then return document end
+            self.active = nil
+            return nil, open_error
         end
     end
     return nil, Errors.new(Errors.STORAGE_ERROR, "no readable cached chapter", { last_readable = 0 })

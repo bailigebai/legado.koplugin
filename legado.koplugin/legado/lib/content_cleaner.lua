@@ -18,14 +18,21 @@ local function escape_text(value)
     return value:gsub("\1E(%d+)\2", function(number) return entities[tonumber(number)] or "" end)
 end
 local function escape_attr(value) return escape_text(value):gsub('"', "&quot;") end
+local function decode_attr(value)
+    value = tostring(value or "")
+    local names = { Tab = "\t", NewLine = "\n", colon = ":" }
+    value = value:gsub("&#x([%da-fA-F]+);", function(number) local n = tonumber(number, 16); return n and n <= 0x7F and string.char(n) or "" end)
+    value = value:gsub("&#(%d+);", function(number) local n = tonumber(number); return n and n <= 0x7F and string.char(n) or "" end)
+    value = value:gsub("&([%a]+);", function(name) return names[name] or "" end)
+    return value:gsub("[%c%s]", "")
+end
 local function safe_url(value, image)
-    value = tostring(value or ""):match("^%s*(.-)%s*$")
+    value = decode_attr(value)
     if value == "" then return nil end
     local scheme = value:match("^([%a][%w+.-]*):")
     if not scheme then return value end
     scheme = scheme:lower()
     if scheme == "http" or scheme == "https" then return value end
-    if image and scheme == "data" and value:match("^data:image/[%w+.-]+;base64,[A-Za-z0-9+/=]+$") then return value end
     return nil
 end
 local function stripped(value, regexes)
@@ -33,7 +40,13 @@ local function stripped(value, regexes)
     value = value:gsub("<[sS][tT][yY][lL][eE][^>]*>.-</[sS][tT][yY][lL][eE]%s*>", "")
     value = value:gsub("<[iI][fF][rR][aA][mM][eE][^>]*>.-</[iI][fF][rR][aA][mM][eE]%s*>", "")
     value = value:gsub("<[fF][oO][rR][mM][^>]*>.-</[fF][oO][rR][mM]%s*>", "")
-    for _, regex in ipairs(regexes or {}) do if type(regex) == "string" and regex ~= "" then value = value:gsub(regex, "") end end
+    if #regexes > 16 then return nil, Errors.new(Errors.INVALID_INPUT, "too many replaceRegex rules") end
+    for _, regex in ipairs(regexes or {}) do
+        if type(regex) ~= "string" or #regex > 512 or regex:find("@js:", 1, true) or regex:find("<js", 1, true) or regex:find("%%b") then return nil, Errors.new(Errors.UNSUPPORTED_RULE, "unsafe replaceRegex") end
+        local ok, result = pcall(string.gsub, value, regex, "")
+        if not ok then return nil, Errors.new(Errors.PARSE_ERROR, "invalid replaceRegex") end
+        value = result
+    end
     return value
 end
 local function attrs(tag, source)
@@ -58,7 +71,9 @@ function Cleaner.normalize(input, options)
     options = options or {}
     local regexes = options.replaceRegex or options.replace_regex or {}
     if type(regexes) == "string" then regexes = { regexes } end
-    input = stripped(input, regexes)
+    local stripped_value, stripped_error = stripped(input, regexes)
+    if not stripped_value then return nil, stripped_error end
+    input = stripped_value
     local out, cursor = {}, 1
     for raw, closing, tag, attributes in input:gmatch("()<(%/?)([%a%d]+)(.-)>") do
         local text = input:sub(cursor, raw - 1)

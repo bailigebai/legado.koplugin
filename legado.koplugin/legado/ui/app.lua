@@ -49,9 +49,15 @@ function App:startReading(book, chapters)
     for _, candidate in ipairs(self.storage:listSources() or {}) do if Models.sourceId(candidate) == book.source_id then source = candidate; break end end
     if not source then return "书源不存在" end
     if type(chapters) == "table" and #chapters > 0 then return self.reader_session:resume(source, book, chapters) end
+    local function offline()
+        local catalog = self.reader_session.cache:readCatalog(book.source_id, book.id)
+        local cached = catalog and (catalog.chapters or catalog) or nil
+        if cached and #cached > 0 then return self.reader_session:resume(source, book, cached) end
+    end
     if not self.service then return "阅读服务尚未初始化" end
     return self.service:getChapters(source, book, function(values, err)
-        if err or not values then return end
+        if err or not values then offline(); return end
+        if type(self.storage.replaceChapters) == "function" then self.storage:replaceChapters(book.id, values) end
         self.reader_session.cache:writeCatalog(book.source_id, book.id, { chapters = values })
         self.reader_session:resume(source, book, values)
     end)
@@ -76,8 +82,8 @@ function App:createBookDetail(book, alternatives)
             end)()
             return source and self.source_manager:compatibility(source.id) or nil
         end,
-        cache_lookup = self.reader_session and function(chapter)
-            return self.reader_session.cache:readBody(book.source_id, book.id, chapter) ~= nil
+        cache_lookup = self.reader_session and function(chapter, current_book)
+            return self.reader_session.cache:readBody(current_book.source_id, current_book.id, chapter) ~= nil
         end or nil,
         reading_hook = function(selected, selected_chapters) return self:startReading(selected, selected_chapters) end,
         download_hook = function(selected) return self:startDownload(selected) end,

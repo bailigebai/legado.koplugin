@@ -3,130 +3,61 @@ local Fs = require("legado.lib.fs")
 local Identity = require("legado.lib.identity")
 local Json = require("legado.lib.json_codec")
 
-local CacheStore = {}
-CacheStore.__index = CacheStore
-CacheStore.VERSION = 1
-CacheStore.MAX_BODY_BYTES = 4 * 1024 * 1024
-
-local function safe_id(value)
-    return type(value) == "string" and value:match("^[%w_-]+$") and value or nil
-end
-
-local function utf8(value)
-    local index, length = 1, #value
-    while index <= length do
-        local byte = value:byte(index)
-        local width = byte < 0x80 and 1 or (byte >= 0xC2 and byte <= 0xDF and 2 or (byte >= 0xE0 and byte <= 0xEF and 3 or (byte >= 0xF0 and byte <= 0xF4 and 4 or 0)))
-        if width == 0 or index + width - 1 > length then return false end
-        for offset = 2, width do if value:byte(index + offset - 1) < 0x80 or value:byte(index + offset - 1) > 0xBF then return false end end
-        index = index + width
+local CacheStore = {}; CacheStore.__index = CacheStore
+CacheStore.VERSION, CacheStore.MAX_BODY_BYTES = 2, 4 * 1024 * 1024
+local extensions = { chapters = ".body", html = ".html", catalog = ".json", cover = ".img" }
+local function safe_id(v) return type(v) == "string" and v:match("^[%w_-]+$") and v or nil end
+local function utf8(v)
+    local i, n = 1, #v
+    while i <= n do
+        local b = v:byte(i); local w = b < 0x80 and 1 or (b >= 0xC2 and b <= 0xDF and 2 or (b >= 0xE0 and b <= 0xEF and 3 or (b >= 0xF0 and b <= 0xF4 and 4 or 0)))
+        if w == 0 or i + w - 1 > n then return false end
+        local c = w > 1 and v:byte(i + 1) or 0
+        if (w == 3 and ((b == 0xE0 and c < 0xA0) or (b == 0xED and c > 0x9F))) or (w == 4 and ((b == 0xF0 and c < 0x90) or (b == 0xF4 and c > 0x8F))) then return false end
+        for j = 2, w do c = v:byte(i + j - 1); if c < 0x80 or c > 0xBF then return false end end
+        i = i + w
     end
     return true
 end
-
-local function encode(value)
-    local value_type = type(value)
-    if value_type == "nil" then return "null" end
-    if value_type == "boolean" then return value and "true" or "false" end
-    if value_type == "number" then return tostring(value) end
-    if value_type == "string" then return '"' .. value:gsub('\\', '\\\\'):gsub('"', '\\"'):gsub('\n', '\\n'):gsub('\r', '\\r'):gsub('\t', '\\t') .. '"' end
-    local is_array, count = true, 0
-    for key in pairs(value) do count = count + 1; if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then is_array = false end end
-    if is_array then
-        local chunks = {}; for index = 1, count do chunks[index] = encode(value[index]) end
-        return "[" .. table.concat(chunks, ",") .. "]"
-    end
-    local keys = {}; for key in pairs(value) do keys[#keys + 1] = key end; table.sort(keys)
-    local chunks = {}; for _, key in ipairs(keys) do chunks[#chunks + 1] = encode(tostring(key)) .. ":" .. encode(value[key]) end
-    return "{" .. table.concat(chunks, ",") .. "}"
+local function hex(v) return (v:gsub(".", function(c) return string.format("%02x", c:byte()) end)) end
+local function unhex(v) if type(v) ~= "string" or #v % 2 ~= 0 or v:find("[^%da-fA-F]") then return nil end return (v:gsub("..", function(p) return string.char(tonumber(p, 16)) end)) end
+local function encode(v)
+    if v == nil then return "null" elseif type(v) == "boolean" then return v and "true" or "false" elseif type(v) == "number" then return tostring(v) elseif type(v) == "string" then return '"' .. v:gsub('\\', '\\\\'):gsub('"', '\\"'):gsub('\n', '\\n'):gsub('\r', '\\r'):gsub('\t', '\\t') .. '"' end
+    local array, count = true, 0; for k in pairs(v) do count = count + 1; if type(k) ~= "number" or k < 1 or k % 1 ~= 0 then array = false end end
+    local out = {}; if array then for i = 1, count do out[i] = encode(v[i]) end; return "[" .. table.concat(out, ",") .. "]" end
+    local keys = {}; for k in pairs(v) do keys[#keys + 1] = k end; table.sort(keys); for _, k in ipairs(keys) do out[#out + 1] = encode(tostring(k)) .. ":" .. encode(v[k]) end
+    return "{" .. table.concat(out, ",") .. "}"
 end
-
-function CacheStore.new(options)
-    options = options or {}
-    assert(type(options.root) == "string" and options.root ~= "", "CacheStore requires root")
-    local self = setmetatable({ fs = options.fs or Fs.new(), root = options.root:gsub("[/\\]+$", ""), quarantine = options.quarantine ~= false }, CacheStore)
-    self.fs:ensureDirectory(self.root)
-    return self
-end
-
-function CacheStore:_path(source_id, book_id, kind, chapter)
-    source_id, book_id = safe_id(source_id), safe_id(book_id)
-    if not source_id or not book_id then return nil, Errors.new(Errors.INVALID_INPUT, "cache ids must be opaque path-safe identifiers") end
-    local pieces = { source_id, book_id, kind }
-    if chapter then
-        local uid = safe_id(type(chapter) == "table" and chapter.uid or chapter)
-        if not uid then return nil, Errors.new(Errors.INVALID_INPUT, "chapter uid must be an opaque path-safe identifier") end
-        pieces[#pieces + 1] = uid
-    end
-    local path, err = self.fs:join(self.root, unpack(pieces))
-    if not path then return nil, err end
-    -- `join` rejects separators; this second check catches non-conforming FS adapters.
-    local canonical_root = self.root:gsub("\\", "/") .. "/"
-    if path:gsub("\\", "/"):sub(1, #canonical_root) ~= canonical_root then return nil, Errors.new(Errors.INVALID_INPUT, "cache path escapes root") end
-    local lfs, ancestor = self.fs.lfs, self.root
-    if lfs and type(lfs.symlinkattributes) == "function" then
-        local info = lfs.symlinkattributes(ancestor)
-        if info and info.mode == "link" then return nil, Errors.new(Errors.INVALID_INPUT, "cache root must not be a symlink") end
-        for _, piece in ipairs(pieces) do
-            ancestor = ancestor .. "/" .. piece
-            info = lfs.symlinkattributes(ancestor)
-            if info and info.mode == "link" then return nil, Errors.new(Errors.INVALID_INPUT, "cache path contains a symlink") end
-        end
-    end
+function CacheStore.new(o) o = o or {}; assert(type(o.root) == "string" and o.root ~= "", "CacheStore requires root"); local self = setmetatable({ fs = o.fs or Fs.new(), root = o.root:gsub("[/\\]+$", ""), quarantine = o.quarantine ~= false }, CacheStore); self.fs:ensureDirectory(self.root); return self end
+function CacheStore:_path(s,b,kind,chapter)
+    if not extensions[kind] then return nil, Errors.new(Errors.INVALID_INPUT, "unknown cache kind") end; s,b = safe_id(s),safe_id(b); if not s or not b then return nil, Errors.new(Errors.INVALID_INPUT, "cache ids must be opaque") end
+    local pieces={s,b,kind}; if chapter then local uid=safe_id(type(chapter)=="table" and chapter.uid or chapter); if not uid then return nil, Errors.new(Errors.INVALID_INPUT,"chapter uid must be opaque") end; pieces[#pieces+1]=uid end
+    local path,err=self.fs:join(self.root,unpack(pieces)); if not path then return nil,err end; path=path..extensions[kind]
+    local root=self.root:gsub("\\","/").."/"; if path:gsub("\\","/"):sub(1,#root)~=root then return nil,Errors.new(Errors.INVALID_INPUT,"cache path escapes root") end
+    local lfs=self.fs.lfs; if lfs and type(lfs.symlinkattributes)=="function" then local ancestor=self.root; local info=lfs.symlinkattributes(ancestor); if info and info.mode=="link" then return nil,Errors.new(Errors.INVALID_INPUT,"cache root is a symlink") end; for _,piece in ipairs(pieces) do ancestor=ancestor.."/"..piece; info=lfs.symlinkattributes(ancestor); if info and info.mode=="link" then return nil,Errors.new(Errors.INVALID_INPUT,"cache path contains symlink") end end end
     return path
 end
-
-function CacheStore:path(source_id, book_id, kind, chapter, extension)
-    local base, err = self:_path(source_id, book_id, kind, chapter)
-    if not base then return nil, err end
-    if extension then base = base .. extension end
-    return base
+function CacheStore:path(s,b,k,c,e) if e and e~=extensions[k] then return nil,Errors.new(Errors.INVALID_INPUT,"cache extension is fixed") end return self:_path(s,b,k,c) end
+function CacheStore:_write(s,b,k,c,content)
+    if type(content)~="string" or #content>self.MAX_BODY_BYTES then return nil,Errors.new(Errors.RESPONSE_TOO_LARGE,"invalid cache payload") end; if k~="cover" and not utf8(content) then return nil,Errors.new(Errors.ENCODING_ERROR,"cache payload is not UTF-8") end
+    local path,err=self:_path(s,b,k,c); if not path then return nil,err end; local stored=k=="cover" and hex(content) or content
+    local envelope=encode({version=self.VERSION,kind=k,source_id=s,book_id=b,chapter_uid=c and c.uid or nil,bytes=#content,checksum=Identity.hash(content),content=stored})
+    local ok,write_err=self.fs:atomicWrite(path,envelope); if not ok then return nil,write_err end; return path
 end
-
-function CacheStore:_write(source_id, book_id, kind, chapter, value, extension)
-    if type(value) ~= "string" or #value > self.MAX_BODY_BYTES then return nil, Errors.new(Errors.RESPONSE_TOO_LARGE, "invalid cache payload") end
-    if kind ~= "cover" and not utf8(value) then return nil, Errors.new(Errors.ENCODING_ERROR, "cache payload is not UTF-8") end
-    local path, err = self:path(source_id, book_id, kind, chapter, extension)
-    if not path then return nil, err end
-    local saved, save_error = self.fs:atomicWrite(path, value)
-    if not saved then return nil, save_error end
-    local manifest = encode({ version = self.VERSION, bytes = #value, checksum = Identity.hash(value) })
-    saved, save_error = self.fs:atomicWrite(path .. ".meta", manifest)
-    if not saved then return nil, save_error end
-    return path
+function CacheStore:_read(s,b,k,c)
+    local path,err=self:_path(s,b,k,c); if not path then return nil,err end; local raw=self.fs:readBounded(path,self.MAX_BODY_BYTES*3); if not raw then return nil,Errors.new(Errors.STORAGE_ERROR,"cache entry unavailable",{path=path}) end
+    local ok,entry=pcall(Json.decode,raw); local content=ok and type(entry)=="table" and entry.content or nil; if k=="cover" then content=unhex(content) end
+    if type(content)~="string" or entry.version~=self.VERSION or entry.kind~=k or entry.source_id~=s or entry.book_id~=b or entry.chapter_uid~=(c and c.uid or nil) or entry.bytes~=#content or entry.checksum~=Identity.hash(content) or (k~="cover" and not utf8(content)) then if self.quarantine then self.fs:removeFile(path) end; return nil,Errors.new(Errors.STORAGE_ERROR,"cache entry failed integrity validation",{path=path}) end
+    return content,path
 end
-
-function CacheStore:_read(source_id, book_id, kind, chapter, extension)
-    local path, err = self:path(source_id, book_id, kind, chapter, extension)
-    if not path then return nil, err end
-    local value, read_error = self.fs:readBounded(path, self.MAX_BODY_BYTES)
-    if not value then return nil, read_error end
-    local manifest = self.fs:readBounded(path .. ".meta", 4096)
-    local decoded = nil
-    if manifest then
-        local decoded_ok, decoded_value = pcall(Json.decode, manifest)
-        if decoded_ok then decoded = decoded_value end
-    end
-    if type(decoded) ~= "table" or decoded.version ~= self.VERSION or decoded.bytes ~= #value or decoded.checksum ~= Identity.hash(value) or (kind ~= "cover" and not utf8(value)) then
-        if self.quarantine then self.fs:removeFile(path .. ".meta") end
-        return nil, Errors.new(Errors.STORAGE_ERROR, "cache entry failed integrity validation", { path = path })
-    end
-    return value, path
+function CacheStore:writeBody(s,b,c,v) return self:_write(s,b,"chapters",c,v) end; function CacheStore:readBody(s,b,c) return self:_read(s,b,"chapters",c) end
+function CacheStore:writeHtml(s,b,c,v) return self:_write(s,b,"html",c,v) end; function CacheStore:readHtml(s,b,c) return self:_read(s,b,"html",c) end
+function CacheStore:writeCover(s,b,v) return self:_write(s,b,"cover",nil,v) end; function CacheStore:readCover(s,b) return self:_read(s,b,"cover",nil) end
+function CacheStore:writeCatalog(s,b,catalog) return self:_write(s,b,"catalog",nil,encode(catalog)) end
+function CacheStore:readCatalog(s,b)
+    local value,err=self:_read(s,b,"catalog",nil); if not value then return nil,err end; local ok,catalog=pcall(Json.decode,value); local chapters=ok and type(catalog)=="table" and (catalog.chapters or catalog) or nil
+    if type(chapters)~="table" or #chapters>100000 then return nil,Errors.new(Errors.STORAGE_ERROR,"invalid cached catalog") end
+    for i,ch in ipairs(chapters) do if type(ch)~="table" or not safe_id(ch.uid) or ch.source_id~=s or ch.book_id~=b or type(ch.url)~="string" or type(ch.title)~="string" then return nil,Errors.new(Errors.STORAGE_ERROR,"cached catalog ownership mismatch",{index=i}) end end
+    return catalog
 end
-
-function CacheStore:writeBody(source, book, chapter, value) return self:_write(source, book, "chapters", chapter, value, ".body") end
-function CacheStore:readBody(source, book, chapter) return self:_read(source, book, "chapters", chapter, ".body") end
-function CacheStore:writeHtml(source, book, chapter, value) return self:_write(source, book, "html", chapter, value, ".html") end
-function CacheStore:readHtml(source, book, chapter) return self:_read(source, book, "html", chapter, ".html") end
-function CacheStore:writeCover(source, book, value) return self:_write(source, book, "cover", nil, value, ".img") end
-function CacheStore:readCover(source, book) return self:_read(source, book, "cover", nil, ".img") end
-function CacheStore:writeCatalog(source, book, catalog) return self:_write(source, book, "catalog", nil, encode(catalog), ".json") end
-function CacheStore:readCatalog(source, book)
-    local value, err = self:_read(source, book, "catalog", nil, ".json")
-    if not value then return nil, err end
-    local decoded_ok, decoded = pcall(Json.decode, value)
-    if not decoded_ok or type(decoded) ~= "table" then return nil, Errors.new(Errors.STORAGE_ERROR, "invalid cached catalog") end
-    return decoded
-end
-
 return CacheStore

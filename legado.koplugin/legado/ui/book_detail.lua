@@ -64,7 +64,7 @@ function BookDetail:loadCatalog(callback)
         if not self.alive or generation ~= self.generation or request_generation ~= self.catalog_generation or self.book.id ~= book.id then return end
         self.loading_catalog, self.catalog_request = false, nil
         self.catalog_error = err
-        if chapters then self.catalog = Catalog.new(chapters, self.cache_lookup) end
+        if chapters then self.catalog = Catalog.new(chapters, self.cache_lookup and function(chapter) return self.cache_lookup(chapter, book) end or nil) end
         callback(self.catalog, err)
     end)
     return self.catalog_request
