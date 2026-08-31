@@ -5,12 +5,17 @@ local Legado = WidgetContainer:extend({
     is_doc_only = false,
 })
 
+function Legado:_getApp()
+    if not self._app then self._app = require("legado.ui.bootstrap").build(self) end
+    return self._app
+end
+
 function Legado:launch()
-    return true
+    return self:_getApp():openBookshelf()
 end
 
 function Legado:openBookshelf()
-    return self:launch()
+    return self:_getApp():openBookshelf()
 end
 
 function Legado:addToMainMenu(menu_items)
@@ -18,17 +23,11 @@ function Legado:addToMainMenu(menu_items)
         return
     end
 
+    local app = self:_getApp()
     menu_items.legado = {
         text = "书源阅读",
         sorting_hint = "network",
-        sub_item_table = {
-            { text = "书架", callback = function() return self:openBookshelf() end },
-            { text = "搜索", callback = function() return self:launch() end },
-            { text = "书源管理", callback = function() return self:launch() end },
-            { text = "下载管理", callback = function() return self:launch() end },
-            { text = "设置", callback = function() return self:launch() end },
-            { text = "关于", callback = function() return self:launch() end },
-        },
+        sub_item_table = app:menuItems(),
     }
 end
 
