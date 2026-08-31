@@ -111,10 +111,11 @@ local function builder_fake(behavior)
     function builder:write(path, book, chapters, bodies, assets)
         state.calls[#state.calls + 1] = { path = path, book = book, chapters = chapters, bodies = bodies, assets = assets }
         if behavior.failure then return nil, { code = "STORAGE_ERROR", message = "builder failed" } end
-        return path
+        return path, behavior.diagnostic
     end
     return builder, state
 end
+
 
 local function manager_fixture(options)
     options = options or {}
@@ -128,6 +129,19 @@ local function manager_fixture(options)
         builder = builder, standby = standby, output_root = "downloads", now = function() return 1788134400 end,
         open_final = function(path) opened[#opened + 1] = path; return "opened:" .. path end })
     return manager, { storage = stored, cache = cached, key = key, service = served, standby = awake, builder = built, opened = opened }
+end
+
+do
+    local manager, state = manager_fixture({ builder = {
+        diagnostic = { code = "STORAGE_ERROR", message = "secret path .backup-random", details = { published = true } },
+    } })
+    local task = assert(manager:enqueue(book_two, chapters_two))
+    state.service.pending[1].callback({ content = "<p>done</p>" }, nil)
+    local done = manager:get(task.id)
+    equal("completed", done.status, "published cleanup diagnostic does not turn completion into failure")
+    truthy(done.warning and done.published_diagnostic, "published diagnostic is persisted as a visible warning")
+    equal(nil, tostring(done.published_diagnostic.message):find("secret", 1, true), "published diagnostic is redacted")
+    truthy(state.storage.tasks[task.id].published_diagnostic, "redacted published diagnostic is durable")
 end
 
 -- Valid cached chapters are skipped, missing chapters fetch sequentially, and

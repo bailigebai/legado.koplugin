@@ -10,7 +10,8 @@ local function truthy(value, message) count = count + 1; assertx.truthy(value, m
 local tasks = {
     { id = "active", book = { name = "下载中" }, status = "running", completed = 2, total = 5, current = "c2" },
     { id = "failed", book = { name = "失败书" }, status = "failed", completed = 1, total = 3, failed = 1 },
-    { id = "done", book = { name = "完成书" }, status = "completed", completed = 4, total = 4, final_path = "downloads/done.epub" },
+    { id = "done", book = { name = "完成书" }, status = "completed", completed = 4, total = 4, final_path = "downloads/done.epub",
+      published_diagnostic = { code = "STORAGE_ERROR", message = "EPUB published with a cleanup warning" } },
     { id = "old", book = { name = "中断书" }, status = "interrupted", completed = 1, total = 2 },
 }
 local calls = {}
@@ -30,6 +31,7 @@ do
     truthy(view.items[1].text:find("2/5", 1, true), "active progress is visible")
     truthy(view.items[2].text:find("失败", 1, true), "failure state is visible")
     truthy(view.items[3].text:find("完成", 1, true), "completion state is visible")
+    truthy(view.items[3].text:find("警告", 1, true), "published cleanup diagnostic is visible without marking failure")
     equal("active", view:focused().task.id, "physical focus starts at first task")
     truthy(view:onKey("Down"), "physical down key is handled")
     equal("failed", view:focused().task.id, "physical focus moves through download history")
@@ -92,7 +94,7 @@ do
     local scheduler = {
         scheduleIn = function(_, delay, callback)
             local token = { delay = delay, callback = callback }
-            scheduled[#scheduled + 1] = token; return token
+            scheduled[#scheduled + 1] = token; return nil
         end,
         unschedule = function(_, token) unscheduled[#unscheduled + 1] = token end,
     }
@@ -108,7 +110,8 @@ do
     local stale = scheduled[2].callback
     local calls_before_close = list_calls
     truthy(view:close(), "closing a live download view succeeds")
-    equal(1, #unscheduled, "close unschedules the outstanding refresh token")
+    equal(1, #unscheduled, "close unschedules the outstanding refresh action even when scheduleIn returns nil")
+    equal(scheduled[2].callback, unscheduled[1], "KOReader unschedule receives the exact scheduled action function")
     stale()
     equal(calls_before_close, list_calls, "stale scheduled callbacks cannot refresh after close/back")
 end

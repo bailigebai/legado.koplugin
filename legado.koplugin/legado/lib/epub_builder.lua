@@ -5,14 +5,13 @@ local Fs = require("legado.lib.fs")
 local Identity = require("legado.lib.identity")
 local Json = require("legado.lib.json_codec")
 local XhtmlSerializer = require("legado.lib.xhtml_serializer")
+local XmlText = require("legado.lib.xml_text")
 
 local EpubBuilder = {}
 EpubBuilder.__index = EpubBuilder
 
 local function xml(value)
-    value = tostring(value or ""):gsub("[%z\1-\8\11\12\14-\31]", "")
-    return value:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")
-        :gsub('"', "&quot;"):gsub("'", "&apos;")
+    return XmlText.escape(value)
 end
 
 local function safe_token(value, fallback)
@@ -107,9 +106,9 @@ function EpubBuilder.buildEntries(book, chapters, bodies, assets)
     if #included == 0 then return nil, Errors.new(Errors.INVALID_INPUT, "complete EPUB requires at least one non-VIP chapter") end
 
     local identifier = safe_token(book.id, "book-" .. Identity.hash((book.name or "") .. "\n" .. (book.author or "")))
-    local title = tostring(book.name or "未命名")
-    local author = tostring(book.author or "")
-    local description = tostring(book.intro or "")
+    local title = XmlText.sanitize(book.name or "未命名")
+    local author = XmlText.sanitize(book.author or "")
+    local description = XmlText.sanitize(book.intro or "")
     local modified = valid_modified(assets.modified or book.modified)
     local cover = cover_info(assets.cover)
 
@@ -197,7 +196,7 @@ function EpubBuilder:write(path, book, chapters, bodies, assets)
     end
     local published, publish_error = self.fs:atomicReplacePreparedFile(part, path, { expected_size = size })
     if not published then self.fs:removeFile(part); return nil, publish_error end
-    return path
+    return path, publish_error
 end
 
 return EpubBuilder

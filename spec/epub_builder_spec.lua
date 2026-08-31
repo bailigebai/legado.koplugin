@@ -2,6 +2,7 @@ local assertx = require("assertions")
 local EpubBuilder = require("legado.lib.epub_builder")
 local ArchiveWriter = require("legado.lib.archive_writer")
 local Fs = require("legado.lib.fs")
+local Json = require("legado.lib.json_codec")
 
 local count = 0
 local function equal(expected, actual, message) count = count + 1; assertx.equal(expected, actual, message) end
@@ -218,10 +219,21 @@ local function memory_fs(initial, behavior)
         if behavior.replace_failure then return nil, { code = "STORAGE_ERROR", message = "replace failed" } end
         if not files[part] then return nil, { code = "STORAGE_ERROR", message = "part missing" } end
         files[final], files[part] = files[part], nil
-        return true
+        return true, behavior.published_diagnostic
     end
     function fs:size(path) return files[path] and #files[path] or nil end
     return fs, files
+end
+
+
+do
+    local diagnostic = { code = "STORAGE_ERROR", message = "cleanup failed at .backup-secret", details = { published = true } }
+    local fs, files = memory_fs({}, { published_diagnostic = diagnostic })
+    local adapter = { write = function(_, path) files[path] = "published"; return true end }
+    local path, returned_diagnostic = EpubBuilder.new({ archive_writer = adapter, fs = fs })
+        :write("warning.epub", book, chapters, bodies, {})
+    equal("warning.epub", path, "published EPUB remains successful when cleanup has a diagnostic")
+    equal(diagnostic, returned_diagnostic, "builder returns the published diagnostic to its caller")
 end
 
 do
@@ -297,6 +309,36 @@ do
     local invalid_text; for _, entry in ipairs(invalid_utf8) do if entry.path:find("chapter%-0001%.xhtml$") then invalid_text = entry.data end end
     equal(nil, invalid_text:find("\255", 1, true), "invalid UTF-8 bytes never enter XHTML")
     truthy(invalid_text:find("�", 1, true), "invalid UTF-8 bytes become a valid replacement character")
+end
+
+do
+    local xml_noncharacter = "\239\191\190" -- U+FFFE is valid UTF-8 but forbidden by XML 1.0.
+    local unsafe_book = {
+        id = "unsafe-text", source_id = "source-safe-id", name = "bad\255title",
+        author = "author" .. xml_noncharacter, intro = "intro\1keeps\tline\n",
+    }
+    local unsafe_chapters = {
+        { uid = "unsafe-one", index = 1, title = "chapter" .. xml_noncharacter, vip = false },
+    }
+    local sanitized = assert(EpubBuilder.buildEntries(unsafe_book, unsafe_chapters, {
+        ["unsafe-one"] = "<p>body" .. xml_noncharacter .. "\1end</p>",
+    }, {}))
+    local replacement = "\239\191\189"
+    local source_json
+    for _, entry in ipairs(sanitized) do
+        if entry.path:match("%.xml$") or entry.path:match("%.xhtml$") or entry.path:match("%.opf$") then
+            equal(nil, entry.data:find("\255", 1, true), entry.path .. " rejects invalid UTF-8 bytes")
+            equal(nil, entry.data:find(xml_noncharacter, 1, true), entry.path .. " rejects XML noncharacters")
+            equal(nil, entry.data:find("\1", 1, true), entry.path .. " replaces forbidden XML controls")
+        elseif entry.path == "META-INF/legado-source.json" then source_json = entry.data end
+    end
+    truthy(source_json and source_json:find(replacement, 1, true), "source manifest uses the unified replacement policy")
+    local decoded, decode_error = Json.decode(source_json)
+    truthy(decoded ~= nil, "sanitized source manifest remains valid JSON: " .. tostring(decode_error and decode_error.message))
+    equal("bad�title", decoded and decoded.book and decoded.book.name, "metadata invalid bytes become U+FFFD")
+    local intro
+    for _, entry in ipairs(sanitized) do if entry.path == "OEBPS/intro.xhtml" then intro = entry.data end end
+    truthy(intro and intro:find("keeps\tline\n", 1, true), "XML permits and preserves TAB and LF")
 end
 
 return count

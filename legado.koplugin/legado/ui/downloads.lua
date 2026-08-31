@@ -13,7 +13,7 @@ function Downloads.new(options)
     assert(options.manager, "Downloads view requires manager")
     local self = setmetatable({ kind = "downloads", title = "下载管理", manager = options.manager,
         scheduler = options.scheduler, refresh_interval = tonumber(options.refresh_interval) or 3,
-        on_refresh = options.on_refresh, refresh_token = nil,
+        on_refresh = options.on_refresh, refresh_action = nil,
         items = {}, alive = true, generation = 0, navigation = Navigation.new({ count = 0, columns = 1 }) }, Downloads)
     self:refresh()
     self:_scheduleRefresh()
@@ -29,19 +29,21 @@ function Downloads:_hasActive()
 end
 
 function Downloads:_scheduleRefresh()
-    if not self.alive or self.refresh_token or not self:_hasActive()
+    if not self.alive or self.refresh_action or not self:_hasActive()
         or not self.scheduler or type(self.scheduler.scheduleIn) ~= "function" then return false end
     local generation = self.generation
-    local token
-    token = self.scheduler:scheduleIn(self.refresh_interval, function()
-        if not self.alive or generation ~= self.generation or self.refresh_token ~= token then return end
-        self.refresh_token = nil
+    local action
+    action = function()
+        if not self.alive or generation ~= self.generation or self.refresh_action ~= action then return end
+        self.refresh_action = nil
         local items = self:refresh()
         if type(self.on_refresh) == "function" then pcall(self.on_refresh, self, items) end
         self:_scheduleRefresh()
-    end)
-    self.refresh_token = token
-    return token ~= nil
+    end
+    self.refresh_action = action
+    local scheduled = pcall(self.scheduler.scheduleIn, self.scheduler, self.refresh_interval, action)
+    if not scheduled and self.refresh_action == action then self.refresh_action = nil; return false end
+    return true
 end
 
 function Downloads:refresh()
@@ -51,8 +53,9 @@ function Downloads:refresh()
         local completed, total = tonumber(task.completed) or 0, tonumber(task.total) or 0
         local progress = total > 0 and (" · " .. completed .. "/" .. total) or ""
         local failures = (tonumber(task.failed) or 0) > 0 and (" · 失败 " .. tostring(task.failed)) or ""
+        local warning = (task.warning or task.published_diagnostic) and " · 警告" or ""
         items[#items + 1] = { task = task, text = tostring(task.book and task.book.name or task.book_id or "未命名")
-            .. " · " .. (labels[task.status] or tostring(task.status or "未知")) .. progress .. failures }
+            .. " · " .. (labels[task.status] or tostring(task.status or "未知")) .. progress .. failures .. warning }
     end
     self.items = items
     self.navigation:setCount(#items)
@@ -77,10 +80,10 @@ function Downloads:open(id) return action(self, "open", id) end
 function Downloads:close()
     if not self.alive then return false end
     self.alive = false; self.generation = self.generation + 1
-    if self.refresh_token and self.scheduler and type(self.scheduler.unschedule) == "function" then
-        pcall(self.scheduler.unschedule, self.scheduler, self.refresh_token)
+    if self.refresh_action and self.scheduler and type(self.scheduler.unschedule) == "function" then
+        pcall(self.scheduler.unschedule, self.scheduler, self.refresh_action)
     end
-    self.refresh_token, self.on_refresh = nil, nil
+    self.refresh_action, self.on_refresh = nil, nil
     return true
 end
 

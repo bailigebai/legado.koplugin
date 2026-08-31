@@ -23,7 +23,7 @@ local function fixture(options)
     local storage = {}
     function storage:putDownloadTask(task)
         state.puts[#state.puts + 1] = clone(task)
-        if options.fail_put and options.fail_put(task, #state.puts) then
+        if options.fail_put and options.fail_put(task, #state.puts, state) then
             return nil, { code = "STORAGE_ERROR", message = "synthetic persist failure" }
         end
         state.tasks[task.id] = clone(task); return task
@@ -69,10 +69,85 @@ local function fixture(options)
         release = function() if state.refs > 0 then state.refs = state.refs - 1 end; return true end,
         releaseAll = function() state.refs = 0; state.release_all = state.release_all + 1; return true end,
     }
-    local builder = { write = function(_, path) return path end }
+    local builder = { write = function(_, path)
+        if options.builder_write then return options.builder_write(path, state) end
+        return path
+    end }
     local manager = DownloadManager.new({ storage = storage, cache = cache, book_service = service,
-        standby = standby, builder = builder, output_root = "downloads", now = function() return 10 end })
+        standby = standby, builder = builder, scheduler = options.scheduler,
+        output_root = "downloads", now = function() return 10 end })
     return manager, state
+end
+
+-- A persistent storage outage is a circuit breaker: no unpersisted terminal
+-- result is announced and active network/standby resources are always released.
+do
+    local scheduled = {}
+    local scheduler = { scheduleIn = function(_, _, action) scheduled[#scheduled + 1] = action end }
+    local value = book("persist-outage-running")
+    local manager, state = fixture({ scheduler = scheduler,
+        fail_put = function(_, _, current) return current.storage_down end })
+    local task = assert(manager:enqueue(value, { chapter(value, 1) }))
+    state.storage_down = true
+    scheduled[1]()
+    truthy(manager.persistence_blocked, "running transition persistent outage blocks the manager")
+    equal("queued", state.tasks[task.id].status, "failed running transition leaves queued durable truth")
+    equal(0, #state.pending, "failed running persistence starts no network request")
+    equal(0, state.refs, "failed running persistence holds no standby reference")
+end
+
+do
+    local value = book("persist-outage-terminal")
+    local values = { chapter(value, 1) }
+    local callback_status
+    local manager, state = fixture({
+        fail_put = function(_, _, current) return current.storage_down end,
+        builder_write = function(path, current)
+            if not current.outage_triggered then current.outage_triggered = true; current.storage_down = true end
+            return path
+        end,
+    })
+    local task = assert(manager:enqueue(value, values, function(done) callback_status = done.status end))
+    state.pending[1].callback({ content = "<p>done</p>" }, nil)
+    truthy(manager.persistence_blocked, "repeated terminal persistence failure blocks the manager")
+    equal("STORAGE_ERROR", manager.init_error and manager.init_error.code, "persistence outage is exposed structurally")
+    equal(nil, callback_status, "unpersisted completion is never delivered")
+    equal(0, state.refs, "persistent terminal outage releases standby")
+    equal("running", state.tasks[task.id].status, "disk retains the last recoverable running truth")
+    state.storage_down = false
+    truthy(manager:recoverPersistence(), "explicit recovery succeeds after storage returns")
+    equal(false, manager.persistence_blocked, "successful explicit recovery clears the circuit breaker")
+    equal("interrupted", state.tasks[task.id].status, "recovery persists an interrupted resumable state")
+    truthy(manager:resume(task.id), "recovered storage permits an explicit resume")
+    equal("completed", manager:get(task.id).status, "explicit resume reuses cache and completes after persistence recovery")
+    equal("completed", callback_status, "only the later persisted completion is delivered")
+end
+
+do
+    local value = book("persist-outage-cancel")
+    local values = { chapter(value, 1) }
+    local manager, state = fixture({ fail_put = function(_, _, current) return current.storage_down end })
+    local task = assert(manager:enqueue(value, values))
+    state.storage_down = true
+    local cancelled, err = manager:cancel(task.id)
+    equal(nil, cancelled, "persistent cancel outage is not reported as cancelled")
+    equal("STORAGE_ERROR", err and err.code, "persistent cancel outage is structured")
+    truthy(manager.persistence_blocked, "cancel persistence outage blocks further pumping")
+    equal(0, state.refs, "cancel persistence outage releases standby")
+    equal(1, state.cancellations[values[1].uid], "cancel outage still cancels the active request")
+    equal("running", state.tasks[task.id].status, "cancel outage preserves recoverable disk truth")
+end
+
+do
+    local value = book("persist-outage-startup")
+    local initial = { { id = "startup-outage", book_id = value.id, source_id = value.source_id, book = value,
+        status = "running", current = "old", cancel_requested = false } }
+    local manager, state = fixture({ initial = initial, fail_put = function() return true end })
+    truthy(manager.persistence_blocked, "startup recovery outage blocks the manager")
+    equal("STORAGE_ERROR", manager.init_error and manager.init_error.code, "startup outage exposes initialization error")
+    equal("running", manager:get("startup-outage").status, "startup outage keeps in-memory recoverable truth")
+    equal("running", state.tasks["startup-outage"].status, "startup outage leaves durable truth untouched")
+    equal(1, state.release_all, "startup outage unconditionally releases inherited standby")
 end
 
 -- A synchronously completed request must not overwrite the handle for the

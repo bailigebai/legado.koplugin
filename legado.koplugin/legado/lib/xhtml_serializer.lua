@@ -1,4 +1,5 @@
 local Errors = require("legado.lib.errors")
+local XmlText = require("legado.lib.xml_text")
 
 local Serializer = {}
 
@@ -35,39 +36,8 @@ local function decode_entities(value)
     end)
 end
 
-local function normalize_utf8(value)
-    local output, index = {}, 1
-    while index <= #value do
-        local first = value:byte(index)
-        local length, codepoint, minimum
-        if first < 0x80 then length, codepoint, minimum = 1, first, 0
-        elseif first >= 0xC2 and first <= 0xDF then length, codepoint, minimum = 2, first - 0xC0, 0x80
-        elseif first >= 0xE0 and first <= 0xEF then length, codepoint, minimum = 3, first - 0xE0, 0x800
-        elseif first >= 0xF0 and first <= 0xF4 then length, codepoint, minimum = 4, first - 0xF0, 0x10000 end
-        local valid = length ~= nil and index + length - 1 <= #value
-        if valid then
-            for offset = 1, length - 1 do
-                local byte = value:byte(index + offset)
-                if not byte or byte < 0x80 or byte > 0xBF then valid = false; break end
-                codepoint = codepoint * 0x40 + byte - 0x80
-            end
-        end
-        if valid and (codepoint < minimum or codepoint > 0x10FFFF or (codepoint >= 0xD800 and codepoint <= 0xDFFF)) then valid = false end
-        if valid then
-            output[#output + 1] = value:sub(index, index + length - 1)
-            index = index + length
-        else
-            output[#output + 1] = "�"
-            index = index + 1
-        end
-    end
-    return table.concat(output)
-end
-
 local function escape(value)
-    value = normalize_utf8(decode_entities(value)):gsub("[%z\1-\8\11\12\14-\31]", "")
-    return value:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")
-        :gsub('"', "&quot;"):gsub("'", "&apos;")
+    return XmlText.escape(decode_entities(value))
 end
 
 local function safe_url(value)

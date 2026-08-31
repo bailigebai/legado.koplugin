@@ -86,6 +86,8 @@ def verify_epub(path: Path) -> int:
         if set(source_manifest) != {"book", "chapter_count", "generated_by", "sources", "version"}:
             raise ValueError("source manifest exposes unexpected fields")
         archive_text = b"\n".join(archive.read(name) for name in names if not name.endswith((".jpg", ".png", ".gif")))
+        if b"\xef\xbf\xbe" in archive_text or b"\xef\xbf\xbf" in archive_text:
+            raise ValueError("XML noncharacters leaked into textual EPUB entries")
         for secret in (b"secret-token", b"secret-cookie", b"Authorization", b"user:pass"):
             if secret in archive_text:
                 raise ValueError("source manifest or EPUB leaked credential material")
@@ -106,7 +108,7 @@ def production_entries(repository_root: Path):
         "id": "synthetic-book",
         "source_id": "synthetic-source",
         "source_name": "合成书源",
-        "name": "合成测试书",
+        "name": "合成测试书\ufffe",
         "author": "测试作者",
         "intro": "仅用于结构验证",
         "url": "https://user:pass@example.invalid/book?token=secret-token",
@@ -116,7 +118,7 @@ def production_entries(repository_root: Path):
         runtime.table_from({"uid": "synthetic-chapter-2", "index": 2, "title": "第二章", "vip": False}),
     ])
     bodies = runtime.table_from({
-        "synthetic-chapter-1": "<p>这是无版权的合成正文一。</p>",
+        "synthetic-chapter-1": "<p>这是无版权的合成正文一。\ufffe</p>",
         "synthetic-chapter-2": "<p>这是无版权的合成正文二。</p>",
     })
     assets = runtime.table_from({"modified": "2026-08-31T00:00:00Z"})

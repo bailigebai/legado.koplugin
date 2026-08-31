@@ -34,6 +34,15 @@ local function durable_task(task)
     return value
 end
 
+local function published_diagnostic(value)
+    if type(value) ~= "table" then return nil end
+    return {
+        code = value.code or Errors.STORAGE_ERROR,
+        message = "EPUB published with a cleanup warning",
+        published = true,
+    }
+end
+
 function DownloadManager.new(options)
     options = options or {}
     assert(options.storage, "DownloadManager requires storage")
@@ -48,6 +57,7 @@ function DownloadManager.new(options)
         now = options.now or os.time, open_final = options.open_final,
         tasks = {}, order = {}, queue = {}, callbacks = {}, callback_delivered = {}, active = nil,
         sequence = 0, queue_sequence = 0, pump_scheduled = false,
+        persistence_blocked = false, init_error = nil,
     }, DownloadManager)
     local recovered = false
     for _, task in ipairs(self.storage:listDownloadTasks() or {}) do
@@ -59,8 +69,12 @@ function DownloadManager.new(options)
                     error = { code = Errors.STORAGE_ERROR, message = "download interrupted by restart" },
                 })
                 if not persisted then
-                    self:_transition(task, { status = "failed", cancel_requested = false, current = CLEAR,
+                    local fallback_saved, fallback_error = self:_transition(task, { status = "failed", cancel_requested = false, current = CLEAR,
                         error = { code = persist_error.code, message = persist_error.message } })
+                    if not fallback_saved then
+                        self.persistence_blocked = true
+                        self.init_error = error_value(fallback_error or persist_error, "startup persistence recovery failed")
+                    end
                 end
                 recovered = true
             end
@@ -79,7 +93,7 @@ function DownloadManager.new(options)
         return a.id < b.id
     end)
     for _, task in ipairs(queued) do self.queue[#self.queue + 1] = task.id end
-    if #self.queue > 0 then self:_schedulePump() end
+    if #self.queue > 0 and not self.persistence_blocked then self:_schedulePump() end
     return self
 end
 
@@ -111,6 +125,15 @@ function DownloadManager:_release_active(task)
     end
 end
 
+function DownloadManager:_block_persistence(task, err)
+    err = error_value(err, "download persistence is unavailable")
+    self.persistence_blocked, self.init_error = true, err
+    self:_cancel_request(task)
+    self:_release_active(task)
+    self.pump_scheduled = false
+    return nil, err
+end
+
 function DownloadManager:_interrupt_for_persistence(task, persist_error)
     persist_error = error_value(persist_error, "cannot persist download transition")
     self:_cancel_request(task)
@@ -128,6 +151,8 @@ function DownloadManager:_interrupt_for_persistence(task, persist_error)
         self:_release_active(task)
         self:_notify_terminal(task, persist_error)
         self:_schedulePump()
+    else
+        self:_block_persistence(task, fallback_error or persist_error)
     end
     return nil, persist_error
 end
@@ -213,7 +238,10 @@ function DownloadManager:_build(task, source, chapters)
     if not ok then return self:_fail(task, path) end
     if not path then return self:_fail(task, build_error) end
     task.final_path = path
-    return self:_terminal(task, "completed")
+    local warning = published_diagnostic(build_error)
+    return self:_terminal(task, "completed", nil, warning and {
+        warning = warning, published_diagnostic = warning,
+    } or nil)
 end
 
 function DownloadManager:_download(task, source, chapters, index)
@@ -282,6 +310,7 @@ function DownloadManager:_start(task)
     local persisted, persist_error = self:_transition(task, {
         status = "running", cancel_requested = false, generation = (task.generation or 0) + 1,
         current = CLEAR, completed = 0, failed = 0, error = CLEAR,
+        warning = CLEAR, published_diagnostic = CLEAR,
     })
     if not persisted then return self:_interrupt_for_persistence(task, persist_error) end
     self.standby:acquire()
@@ -292,6 +321,7 @@ end
 
 function DownloadManager:_pump()
     self.pump_scheduled = false
+    if self.persistence_blocked then return end
     if self.active then return end
     while #self.queue > 0 do
         local id = table.remove(self.queue, 1)
@@ -301,7 +331,7 @@ function DownloadManager:_pump()
 end
 
 function DownloadManager:_schedulePump()
-    if self.active or self.pump_scheduled then return end
+    if self.persistence_blocked or self.active or self.pump_scheduled then return end
     if self.scheduler and type(self.scheduler.scheduleIn) == "function" then
         self.pump_scheduled = true
         self.scheduler:scheduleIn(0, function() self:_pump() end)
@@ -350,6 +380,7 @@ end
 function DownloadManager:cancel(id)
     local task = self.tasks[id]
     if not task then return nil, Errors.new(Errors.INVALID_INPUT, "download task does not exist") end
+    if self.persistence_blocked then return nil, self.init_error end
     if task.status == "cancelled" or task.status == "cancelling" then return true end
     if terminal[task.status] then return false end
     if task.status == "queued" or task.status == "interrupted" then
@@ -367,11 +398,12 @@ end
 function DownloadManager:_requeue(id, allowed)
     local task = self.tasks[id]
     if not task then return nil, Errors.new(Errors.INVALID_INPUT, "download task does not exist") end
+    if self.persistence_blocked then return nil, self.init_error end
     if not allowed[task.status] then return false end
     self.queue_sequence = self.queue_sequence + 1
     local saved, save_error = self:_transition(task, {
         status = "queued", cancel_requested = false, current = CLEAR, completed = 0, failed = 0,
-        error = CLEAR, queue_sequence = self.queue_sequence,
+        error = CLEAR, warning = CLEAR, published_diagnostic = CLEAR, queue_sequence = self.queue_sequence,
     })
     if not saved then return nil, save_error end
     self.callback_delivered[id] = nil
@@ -381,6 +413,28 @@ end
 
 function DownloadManager:retry(id) return self:_requeue(id, { failed = true, cancelled = true }) end
 function DownloadManager:resume(id) return self:_requeue(id, { interrupted = true }) end
+
+function DownloadManager:recoverPersistence()
+    if not self.persistence_blocked then return true end
+    for _, id in ipairs(self.order) do
+        local task = self.tasks[id]
+        if task and (task.status == "running" or task.status == "cancelling") then
+            local saved, err = self:_transition(task, {
+                status = "interrupted", current = CLEAR, cancel_requested = false,
+                error = { code = Errors.STORAGE_ERROR, message = "download interrupted while persistence was unavailable" },
+            })
+            if not saved then
+                self.init_error = error_value(err, "download persistence is unavailable")
+                return nil, self.init_error
+            end
+        end
+    end
+    self.persistence_blocked, self.init_error = false, nil
+    self:_schedulePump()
+    return true
+end
+
+DownloadManager.retryPersistence = DownloadManager.recoverPersistence
 
 function DownloadManager:open(id)
     local task = self.tasks[id]

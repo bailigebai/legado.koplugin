@@ -8,6 +8,7 @@ function Fs.posixFlags(arch)
     return {
         O_RDONLY = 0,
         O_WRONLY = 1,
+        O_RDWR = 2,
         O_CREAT = 64,
         O_EXCL = 128,
         O_DIRECTORY = arm and 16384 or 65536,
@@ -189,8 +190,9 @@ local function posix_dirfd_atomic(self, path, data, options)
     local flags = Fs.posixFlags(self.posix_arch or native_arch or sys.arch)
     local directory_flags = bit.bor(flags.O_RDONLY, flags.O_DIRECTORY, flags.O_NOFOLLOW, flags.O_CLOEXEC)
     local read_flags = bit.bor(flags.O_RDONLY, flags.O_NOFOLLOW, flags.O_CLOEXEC)
+    local prepared_flags = bit.bor(flags.O_RDWR, flags.O_NOFOLLOW, flags.O_CLOEXEC)
     local create_flags = bit.bor(flags.O_WRONLY, flags.O_CREAT, flags.O_EXCL, flags.O_NOFOLLOW, flags.O_CLOEXEC)
-    local opened, names = {}, {}
+    local opened, names, protected_names = {}, {}, {}
     local parent_fd
     local function retry(call)
         while true do
@@ -214,7 +216,11 @@ local function posix_dirfd_atomic(self, path, data, options)
     local function cleanup()
         local cleanup_error
         if parent_fd then
-            for name in pairs(names) do local ok, err = unlink_name(name); if not ok then cleanup_error = cleanup_error or err end end
+            for name in pairs(names) do
+                if not protected_names[name] then
+                    local ok, err = unlink_name(name); if not ok then cleanup_error = cleanup_error or err end
+                end
+            end
         end
         for fd in pairs(opened) do local ok, err = close_fd(fd); if not ok then cleanup_error = cleanup_error or err end end
         if cleanup_error then return nil, cleanup_error end
@@ -363,7 +369,7 @@ local function posix_dirfd_atomic(self, path, data, options)
         if not temp_name or temp_name == target_name or temp_name == "." or temp_name == ".." then
             return failure("invalid prepared file name")
         end
-        temp_fd = remember(retry(function() return sys:openat(parent_fd, temp_name, read_flags, 0) end))
+        temp_fd = remember(retry(function() return sys:openat(parent_fd, temp_name, prepared_flags, 0) end))
         if temp_fd < 0 then return failure("cannot open prepared atomic file") end
         temp_identity = fd_identity(temp_fd)
         expected_size = tonumber(options.expected_size) or (type(sys.size) == "function" and tonumber(sys:size(temp_fd)))
@@ -372,6 +378,9 @@ local function posix_dirfd_atomic(self, path, data, options)
             return failure("prepared atomic file size or identity mismatch")
         end
         names[temp_name] = true
+        if retry(function() return sys:fsync(temp_fd) end) ~= 0 then
+            return failure("cannot fsync prepared atomic file")
+        end
     else
         temp_name, temp_fd, temp_identity = create_name("temp")
         expected_size = #data
@@ -454,7 +463,13 @@ local function posix_dirfd_atomic(self, path, data, options)
         details = details or {}
         local restored, restore_error = restore_previous()
         local synced, sync_error = sync_parent()
-        if not restored then details.restore_cause = restore_error end
+        if not restored then
+            details.restore_cause = restore_error
+            if backup_name and names[backup_name] then
+                protected_names[backup_name] = true
+                details.recoverable_backup = true
+            end
+        end
         if not synced then details.restore_fsync_cause = sync_error end
         return failure(message, details)
     end
@@ -502,7 +517,12 @@ local function posix_dirfd_atomic(self, path, data, options)
         local restored, restore_error = restore_previous()
         local synced, sync_error = sync_parent()
         if not restored or not synced then
-            return failure("validation and recovery failed", { cause = tostring(validation_error), restore_cause = restore_error, restore_fsync_cause = sync_error })
+            local details = { cause = tostring(validation_error), restore_cause = restore_error, restore_fsync_cause = sync_error }
+            if not restored and backup_name and names[backup_name] then
+                protected_names[backup_name] = true
+                details.recoverable_backup = true
+            end
+            return failure("validation and recovery failed", details)
         end
         local cleaned, cleanup_error = cleanup()
         if not cleaned then return true, nil, Errors.new(Errors.STORAGE_ERROR, "validation recovery cleanup failed", { cause = tostring(validation_error), cleanup_cause = cleanup_error }) end

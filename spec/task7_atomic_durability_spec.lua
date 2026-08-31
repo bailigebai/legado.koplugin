@@ -21,7 +21,7 @@ local function posix_fake(initial, behavior)
     behavior = behavior or {}
     local state = { files = {}, dirs = { [""] = true, root = true }, fds = {}, next_fd = 9, next_ino = 100,
         errno_value = 0, directory_flags = {}, fsync_dir_calls = 0, backup_unlink_calls = 0, close_calls = 0,
-        close_by_fd = {} }
+        close_by_fd = {}, operations = {}, file_open_flags = {}, prepared_fsync_calls = 0 }
     local function inode(content)
         state.next_ino = state.next_ino + 1
         return { ino = state.next_ino, content = content or "" }
@@ -43,6 +43,7 @@ local function posix_fake(initial, behavior)
     end
     function sys:openat(fd, name, flags)
         local path = child(fd, name); if not path then return fail(9) end
+        state.operations[#state.operations + 1] = "open:" .. path
         if bit.band(flags, 16384) ~= 0 or bit.band(flags, 65536) ~= 0 then
             state.directory_flags[#state.directory_flags + 1] = flags
             if not state.dirs[path] then return fail(2) end
@@ -53,6 +54,7 @@ local function posix_fake(initial, behavior)
             state.files[path] = inode("")
         end
         local file = state.files[path]; if not file then return fail(2) end
+        if state.file_open_flags[path] == nil then state.file_open_flags[path] = flags end
         return alloc({ kind = "file", file = file, path = path, offset = 1 })
     end
     function sys:mkdirat(fd, name)
@@ -80,7 +82,9 @@ local function posix_fake(initial, behavior)
     end
     function sys:renameat(oldfd, oldname, newfd, newname)
         local oldpath, newpath = child(oldfd, oldname), child(newfd, newname)
+        state.operations[#state.operations + 1] = "rename:" .. tostring(oldpath) .. ">" .. tostring(newpath)
         if not oldpath or not newpath or not state.files[oldpath] then return fail(2) end
+        if behavior.backup_restore_rename_failure and oldname:find("^.backup%-") then return fail(5) end
         state.files[newpath], state.files[oldpath] = state.files[oldpath], nil; return 0
     end
     function sys:unlinkat(fd, name)
@@ -95,6 +99,12 @@ local function posix_fake(initial, behavior)
     end
     function sys:fsync(fd)
         local item = state.fds[fd]; if not item then return fail(9) end
+        state.operations[#state.operations + 1] = "fsync:" .. tostring(item.path)
+        if item.kind == "file" and item.path and item.path:find("%.part$") then
+            state.prepared_fsync_calls = state.prepared_fsync_calls + 1
+            if behavior.prepared_fsync_eintr_once and state.prepared_fsync_calls == 1 then return fail(4) end
+            if behavior.prepared_fsync_permanent then return fail(5) end
+        end
         if item.kind == "dir" then
             state.fsync_dir_calls = state.fsync_dir_calls + 1
             if behavior.fsync_dir_eintr_once and state.fsync_dir_calls == 1 then return fail(4) end
@@ -136,6 +146,47 @@ local function injected_fs(sys)
         posixArch = sys.arch,
         lfs = { attributes = function() return { dev = 1, ino = 1 } end },
     })
+end
+
+-- A prepared archive is durability-anchored through the same descriptor whose
+-- identity and size were checked.  Publication cannot precede that fsync.
+do
+    local failed_sys, failed_state = posix_fake({ ["root/book.epub.part"] = "new", ["root/book.epub"] = "old" }, {
+        prepared_fsync_permanent = true,
+    })
+    local published, err = injected_fs(failed_sys):atomicReplacePreparedFile("root/book.epub.part", "root/book.epub", {
+        root = "root", root_identity = { dev = "1", ino = "2" }, expected_size = 3,
+    })
+    equal(nil, published, "permanent prepared inode fsync failure prevents publication")
+    equal("STORAGE_ERROR", err and err.code, "prepared fsync failure is structured")
+    equal("old", failed_state.files["root/book.epub"] and failed_state.files["root/book.epub"].content,
+        "prepared fsync failure preserves the old target")
+    equal(nil, failed_state.files["root/book.epub.part"], "failed owned prepared file is cleaned before commit")
+    local renamed = false
+    for _, operation in ipairs(failed_state.operations) do
+        if operation == "rename:root/book.epub.part>root/book.epub" then renamed = true end
+    end
+    equal(false, renamed, "prepared file is never renamed when its inode fsync fails")
+
+    local retry_sys, retry_state = posix_fake({ ["root/book.epub.part"] = "new", ["root/book.epub"] = "old" }, {
+        prepared_fsync_eintr_once = true,
+    })
+    local committed, diagnostic = injected_fs(retry_sys):atomicReplacePreparedFile("root/book.epub.part", "root/book.epub", {
+        root = "root", root_identity = { dev = "1", ino = "2" }, expected_size = 3,
+    })
+    truthy(committed, "EINTR while syncing the prepared inode is retried: " .. tostring(diagnostic and diagnostic.message))
+    equal(2, retry_state.prepared_fsync_calls, "prepared inode fsync retries EINTR exactly once")
+    truthy(bit.band(retry_state.file_open_flags["root/book.epub.part"] or 0, 3) == 2,
+        "prepared inode is anchored with O_RDWR")
+    truthy(bit.band(retry_state.file_open_flags["root/book.epub.part"] or 0, Fs.posixFlags("arm").O_NOFOLLOW) ~= 0,
+        "prepared inode anchor refuses symlink traversal")
+    local fsync_index, rename_index
+    for index, operation in ipairs(retry_state.operations) do
+        if operation == "fsync:root/book.epub.part" then fsync_index = index end
+        if operation == "rename:root/book.epub.part>root/book.epub" then rename_index = index end
+    end
+    truthy(fsync_index and rename_index and fsync_index < rename_index,
+        "prepared inode fsync completes before publication rename")
 end
 
 -- Non-EINTR close failures are transaction failures. Before commit they abort;
@@ -191,6 +242,32 @@ do
     equal("new", close_state.files["root/book.epub"] and close_state.files["root/book.epub"].content,
         "post-commit close diagnostic retains the committed final EPUB")
     equal(nil, close_state.files["root/book.epub.part"], "post-commit close diagnostic observes consumed part path")
+end
+
+do
+    local sys, state = posix_fake({ ["root/book.epub.part"] = "new", ["root/book.epub"] = "old" }, {
+        backup_restore_rename_failure = true,
+    })
+    local published, err = injected_fs(sys):atomicReplacePreparedFile("root/book.epub.part", "root/book.epub", {
+        root = "root", root_identity = { dev = "1", ino = "2" }, expected_size = 3,
+        validate = function(_, phase)
+            if phase == "after_replace" then return nil, { code = "INVALID_INPUT", message = "reject" } end
+            return true
+        end,
+    })
+    equal(nil, published, "failed prepared rollback is never reported as published")
+    equal("STORAGE_ERROR", err and err.code, "failed prepared rollback is structured")
+    equal(true, err and err.details and err.details.recoverable_backup,
+        "failed prepared rollback reports that the old backup is recoverable")
+    equal("new", state.files["root/book.epub"] and state.files["root/book.epub"].content,
+        "failed rollback leaves the committed target state explicit")
+    local backups = {}
+    for path, value in pairs(state.files) do
+        if path:find("/%.backup%-") then backups[#backups + 1] = value.content end
+    end
+    equal(1, #backups, "generic cleanup protects the sole recoverable backup")
+    equal("old", backups[1], "recoverable backup retains the exact old bytes")
+    equal(nil, tostring(err):find(".backup-", 1, true), "structured rollback error never leaks the random backup path")
 end
 
 -- The Windows test runtime drives the production dirfd transaction through an
