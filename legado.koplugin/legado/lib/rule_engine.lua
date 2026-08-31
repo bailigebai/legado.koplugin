@@ -966,6 +966,8 @@ local function valid_expanded_css(rule)
 end
 
 local numeric_template_pseudos = { "eq", "gt", "lt", "nth-child", "nth-of-type" }
+local numeric_template_pseudo_set = {}
+for _, name in ipairs(numeric_template_pseudos) do numeric_template_pseudo_set[name] = true end
 
 local function replace_numeric_template_slots(selector)
     local output, index, quote, square, parentheses, replacements = {}, 1, nil, 0, 0, 0
@@ -992,20 +994,18 @@ local function replace_numeric_template_slots(selector)
         elseif character == "(" then parentheses = parentheses + 1; output[#output + 1] = character; index = index + 1
         elseif character == ")" then parentheses = parentheses - 1; output[#output + 1] = character; index = index + 1
         elseif character == ":" and square == 0 and parentheses == 0 then
-            local matched
-            for _, name in ipairs(numeric_template_pseudos) do
-                local pattern_name = name:gsub("%-", "%%-")
-                local value = selector:sub(index):match(
-                    "^:" .. pattern_name .. "%(%s*" .. TEMPLATE_MARKER .. "%s*%)")
-                if value then
-                    output[#output + 1] = ":" .. name .. "(1)"
-                    index = index + #value
-                    replacements = replacements + 1
-                    matched = true
-                    break
-                end
+            local name = selector:sub(index + 1):match("^([%w_%-]+)")
+            local normalized_name = name and name:lower()
+            local value
+            if normalized_name and numeric_template_pseudo_set[normalized_name] then
+                value = selector:sub(index + #name + 1):match(
+                    "^%(%s*" .. TEMPLATE_MARKER .. "%s*%)")
             end
-            if not matched then output[#output + 1] = character; index = index + 1 end
+            if value then
+                output[#output + 1] = ":" .. normalized_name .. "(1)"
+                index = index + #name + #value + 1
+                replacements = replacements + 1
+            else output[#output + 1] = character; index = index + 1 end
         else output[#output + 1] = character; index = index + 1 end
     end
     return table.concat(output), replacements

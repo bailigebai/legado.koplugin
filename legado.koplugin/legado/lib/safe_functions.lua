@@ -253,6 +253,8 @@ local function normalize_path(path)
     return output
 end
 
+local opaque_schemes = { mailto=true, data=true, urn=true, tel=true, news=true }
+
 local function resolve_url(base, relative)
     base, relative = tostring(base or ""), tostring(relative or "")
     local absolute_scheme, absolute_authority, absolute_remainder =
@@ -264,15 +266,22 @@ local function resolve_url(base, relative)
             .. (absolute_path == "" and "" or normalize_path(absolute_path)) .. absolute_suffix
     end
     local path_scheme, path_remainder = relative:match("^([%a][%w+.-]*):(/.*)$")
-    local opaque_scheme = path_scheme and ({ mailto=true, data=true, urn=true, tel=true, news=true })[path_scheme:lower()]
+    local opaque_scheme = path_scheme and opaque_schemes[path_scheme:lower()]
     if path_scheme and not opaque_scheme then
         local path_suffix = path_remainder:match("([?#].*)$") or ""
         local absolute_path = path_remainder:gsub("[?#].*$", "")
         return path_scheme .. ":" .. normalize_path(absolute_path) .. path_suffix
     end
     if relative:match("^[%a][%w+.-]*:") then return relative end
-    local scheme, authority, remainder = base:match("^([%a][%w+.-]*):%/%/([^/?#]+)(.*)$")
-    if not scheme then return relative end
+    local scheme, authority, remainder = base:match("^([%a][%w+.-]*):%/%/([^/?#]*)(.*)$")
+    local origin
+    if scheme then
+        origin = scheme .. "://" .. authority
+    else
+        scheme, remainder = base:match("^([%a][%w+.-]*):(/.*)$")
+        if not scheme or opaque_schemes[scheme:lower()] then return relative end
+        origin = scheme .. ":"
+    end
     if relative:sub(1, 2) == "//" then
         local network_authority, network_remainder = relative:match("^//([^/?#]+)(.*)$")
         if not network_authority then return scheme .. ":" .. relative end
@@ -281,7 +290,6 @@ local function resolve_url(base, relative)
         return scheme .. "://" .. network_authority
             .. (network_path == "" and "" or normalize_path(network_path)) .. network_suffix
     end
-    local origin = scheme .. "://" .. authority
     local base_path = remainder:match("^([^?#]*)") or ""
     if base_path == "" then base_path = "/" end
     local base_query = remainder:match("(%?[^#]*)") or ""

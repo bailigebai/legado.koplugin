@@ -31,6 +31,7 @@ Capabilities.SAFE_FUNCTIONS = {
 }
 
 local unsafe_constructs = {
+    { literal = "*/", code = "MALFORMED_COMMENT", message = "malformed block comments are unsupported" },
     { pattern = "@%s*j%s*s%s*:", code = "EXECUTABLE_JS", message = "JavaScript rules are never executed" },
     { pattern = "<%s*j%s*s%f[^%w_]", code = "EXECUTABLE_JS", message = "JavaScript rules are never executed" },
     { pattern = "<%s*/%s*j%s*s%s*>", code = "EXECUTABLE_JS", message = "JavaScript rules are never executed" },
@@ -84,14 +85,9 @@ local function normalize_tokens(value)
             else output[#output + 1] = character; index = index + 1 end
         elseif pair == "/*" then
             output[#output + 1] = " "
-            local depth = 1
             index = index + 2
-            while index <= #value and depth > 0 do
-                pair = value:sub(index, index + 1)
-                if pair == "/*" then depth = depth + 1; index = index + 2
-                elseif pair == "*/" then depth = depth - 1; index = index + 2
-                else index = index + 1 end
-            end
+            local close = value:find("*/", index, true)
+            index = close and close + 2 or #value + 1
         elseif pair == "--" or pair == "//" then
             output[#output + 1] = " "
             index = index + 2

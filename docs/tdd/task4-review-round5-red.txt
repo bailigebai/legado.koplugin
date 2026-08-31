@@ -1,0 +1,22 @@
+Task 4 review fix round 5 RED evidence
+=====================================
+
+Command:
+  .tools\python\python.exe scripts\run_lua_specs.py --spec spec\rule_engine_review_round5_spec.lua
+
+Observed against commit 5a9adec before round-5 production edits:
+  [RED] block comments use JavaScript and Java non-nesting boundaries:
+        /*/*/eval(x) returned PARSE_ERROR instead of UNSUPPORTED_RULE
+  [RED] hierarchical bases resolve relatives with empty authority or one slash:
+        expected file:///a/d, got ../d
+  [RED] numeric pseudo template slots are case-insensitive outside literals:
+        expected B, got the literal li:EQ(1)@text
+
+Runner summary:
+  Specs: 0 passed, 1 failed; Assertions: 0
+
+The regression uses public RuleEngine and compatibility-scanner behavior.
+Unsafe inputs have parser/decoder spies to prove pre-parser rejection. URL cases
+cover empty authority, scheme:/path, query/fragment, dot segments, empty path
+segments, network-path references, and opaque bases. Numeric pseudo cases cover
+upper/mixed case plus quoted, nested, and partial template markers.
