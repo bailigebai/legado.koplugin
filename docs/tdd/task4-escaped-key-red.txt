@@ -1,0 +1,16 @@
+Task 4 escaped-key RED evidence
+===============================
+
+Command:
+  .tools\python\python.exe scripts\run_lua_specs.py --spec spec\rule_engine_spec.lua
+
+Observed for `$['quote\'key']`:
+  [FAIL] spec\rule_engine_spec.lua
+  [RED] jsonpath properties, indexes, wildcards, filters, and copies
+  expected success, got PARSE_ERROR: unterminated JSONPath bracket
+  Specs: 0 passed, 1 failed; Assertions: 0
+
+Root cause: the balanced-bracket scanner used a numeric `for` loop, whose
+control variable cannot be advanced to skip an escaped quote in Lua. The
+minimal fix uses an explicit bounded cursor so the escaped byte is skipped
+without changing the accepted JSONPath grammar.

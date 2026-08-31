@@ -1,0 +1,21 @@
+Task 4 RED evidence
+===================
+
+Command:
+  .tools\python\python.exe scripts\run_lua_specs.py --spec spec\rule_engine_spec.lua
+
+Observed before any Task 4 runtime implementation or vendored parser was
+loadable:
+  [FAIL] spec\rule_engine_spec.lua
+  [RED] css selectors, positional filters, and extraction
+  [RED] jsonpath properties, indexes, wildcards, filters, and copies
+  [RED] xpath axes, values, and approved predicates
+  [RED] composition, escaping, cleanup, and scalar/list contracts
+  [RED] templates and whitelisted safe functions
+  [RED] unsafe constructs are rejected before input parsing
+  [RED] malformed inputs and bounded resources return structured errors
+  [RED] caller context and repeated results remain unmodified
+  Specs: 0 passed, 1 failed; Assertions: 0
+
+Every category failed because `legado.lib.rule_engine` did not exist. This is
+the expected missing-feature failure, not a fixture syntax or harness error.

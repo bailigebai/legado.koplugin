@@ -1,0 +1,871 @@
+local Errors = require("legado.lib.errors")
+local Capabilities = require("legado.lib.rule_capabilities")
+
+local RuleEngine = {}
+RuleEngine.__index = RuleEngine
+
+local function trim(value)
+    return (tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+local function normalize_text(value)
+    return trim(tostring(value or ""):gsub("%s+", " "))
+end
+
+local function copy(value, seen)
+    if type(value) ~= "table" then return value end
+    seen = seen or {}
+    if seen[value] then return seen[value] end
+    local result = {}
+    seen[value] = result
+    for key, child in pairs(value) do result[copy(key, seen)] = copy(child, seen) end
+    return result
+end
+
+local function parse_failure(message, details)
+    return nil, Errors.new(Errors.PARSE_ERROR, message, details)
+end
+
+local function unsupported(message, details)
+    return nil, Errors.new(Errors.UNSUPPORTED_RULE, message, details)
+end
+
+local function nonempty(values)
+    if type(values) ~= "table" or #values == 0 then return false end
+    for _, value in ipairs(values) do
+        if value ~= nil and (type(value) ~= "string" or value ~= "") then return true end
+    end
+    return false
+end
+
+local function append(output, value)
+    if value ~= nil then output[#output + 1] = value end
+end
+
+local function enforce_output_limit(values)
+    if #values > Capabilities.LIMITS.MAX_OUTPUT_ITEMS then
+        return parse_failure("rule output exceeds the safe item limit", {
+            limit = "output_items",
+            maximum = Capabilities.LIMITS.MAX_OUTPUT_ITEMS,
+        })
+    end
+    return values
+end
+
+local function split_top_level(value, operator)
+    local output, start = {}, 1
+    local quote, square, parentheses, templates = nil, 0, 0, 0
+    local index = 1
+    while index <= #value do
+        local character = value:sub(index, index)
+        local pair = value:sub(index, index + 1)
+        if quote then
+            if character == "\\" then index = index + 1
+            elseif character == quote then quote = nil end
+        elseif character == "'" or character == '"' then quote = character
+        elseif pair == "{{" then templates = templates + 1; index = index + 1
+        elseif pair == "}}" and templates > 0 then templates = templates - 1; index = index + 1
+        elseif templates == 0 then
+            if character == "[" then square = square + 1
+            elseif character == "]" then square = square - 1
+            elseif character == "(" then parentheses = parentheses + 1
+            elseif character == ")" then parentheses = parentheses - 1
+            elseif square == 0 and parentheses == 0 and value:sub(index, index + #operator - 1) == operator then
+                output[#output + 1] = value:sub(start, index - 1)
+                start = index + #operator
+                index = index + #operator - 1
+            end
+        end
+        if square < 0 or parentheses < 0 or templates < 0 then return nil, "unbalanced rule delimiters" end
+        index = index + 1
+    end
+    if quote or square ~= 0 or parentheses ~= 0 or templates ~= 0 then return nil, "unbalanced rule delimiters" end
+    output[#output + 1] = value:sub(start)
+    return output
+end
+
+local function matching_close(value, start, open_character, close_character)
+    local depth, quote = 0, nil
+    local index = start
+    while index <= #value do
+        local character = value:sub(index, index)
+        if quote then
+            if character == "\\" then index = index + 1
+            elseif character == quote then quote = nil end
+        elseif character == "'" or character == '"' then quote = character
+        elseif character == open_character then depth = depth + 1
+        elseif character == close_character then
+            depth = depth - 1
+            if depth == 0 then return index end
+        end
+        index = index + 1
+    end
+    return nil
+end
+
+local function descendants(node, output)
+    output = output or {}
+    for _, child in ipairs(node.nodes or {}) do
+        output[#output + 1] = child
+        descendants(child, output)
+    end
+    return output
+end
+
+local function node_attribute(node, name)
+    if not node or type(node.attributes) ~= "table" then return nil end
+    if node.attributes[name] ~= nil then return node.attributes[name] end
+    local lower = name:lower()
+    for key, value in pairs(node.attributes) do
+        if tostring(key):lower() == lower then return value end
+    end
+    return nil
+end
+
+local function node_html(node)
+    if node and type(node.getcontent) == "function" then return node:getcontent() end
+    return ""
+end
+
+local function direct_text_segments(node)
+    if not node or not node.root or type(node.root._text) ~= "string" then return {} end
+    local output, cursor = {}, (node._openend or 0) + 1
+    local finish = (node._closestart or cursor) - 1
+    local children = {}
+    for _, child in ipairs(node.nodes or {}) do children[#children + 1] = child end
+    table.sort(children, function(left, right) return (left._openstart or 0) < (right._openstart or 0) end)
+    for _, child in ipairs(children) do
+        local child_start, child_end = child._openstart or cursor, child._closeend or child._openend or cursor - 1
+        if child_start > cursor then output[#output + 1] = node.root._text:sub(cursor, child_start - 1) end
+        if child_end >= cursor then cursor = child_end + 1 end
+    end
+    if cursor <= finish then output[#output + 1] = node.root._text:sub(cursor, finish) end
+    local cleaned = {}
+    for _, value in ipairs(output) do
+        value = normalize_text(value:gsub("<[^>]*>", ""))
+        if value ~= "" then cleaned[#cleaned + 1] = value end
+    end
+    return cleaned
+end
+
+function RuleEngine.new(options)
+    options = options or {}
+    local safe_functions = {}
+    for name, implementation in pairs(options.safe_functions or {}) do
+        safe_functions[tostring(name):lower()] = implementation
+    end
+    return setmetatable({
+        json_decoder = options.json_decoder,
+        html_parser = options.html_parser,
+        url_resolver = options.url_resolver,
+        safe_functions = safe_functions,
+    }, RuleEngine)
+end
+
+function RuleEngine:_decode_json(input)
+    if type(input) == "table" then return input end
+    if type(input) ~= "string" then return parse_failure("JSON input must be a string or table") end
+    local decoder = self.json_decoder
+    local decode = type(decoder) == "function" and decoder or type(decoder) == "table" and decoder.decode
+    if type(decode) ~= "function" then return parse_failure("JSON decoder is unavailable") end
+    local ok, result = pcall(decode, input)
+    if not ok then return parse_failure("malformed JSON input", { cause = tostring(result) }) end
+    return result
+end
+
+local void_elements = {
+    area=true,base=true,br=true,col=true,command=true,embed=true,hr=true,img=true,input=true,
+    keygen=true,link=true,meta=true,param=true,source=true,track=true,wbr=true,
+}
+
+local function validate_markup(input)
+    local stack = {}
+    local scrubbed = tostring(input or ""):gsub("<!%-%-.-%-%->", "")
+    for slash, name, tail in scrubbed:gmatch("<%s*(/?)%s*([%w%-]+)([^>]*)>") do
+        name = name:lower()
+        if slash == "/" then
+            if stack[#stack] ~= name then return false, "mismatched closing tag " .. name end
+            stack[#stack] = nil
+        elseif not void_elements[name] and not tail:match("/%s*$") then
+            stack[#stack + 1] = name
+        end
+    end
+    if #stack > 0 then return false, "unclosed tag " .. stack[#stack] end
+    return true
+end
+
+function RuleEngine:_html_root(input, context)
+    if type(context.current) == "table" then return context.current end
+    if type(context.node) == "table" then return context.node end
+    if type(input) ~= "string" then return parse_failure("HTML input must be a string") end
+    local valid, reason = validate_markup(input)
+    if not valid then return parse_failure("malformed HTML input", { cause = reason }) end
+    local parser = self.html_parser
+    local parse = type(parser) == "function" and parser or type(parser) == "table" and parser.parse
+    if type(parse) ~= "function" then return parse_failure("HTML parser is unavailable") end
+    local ok, root = pcall(parse, input, Capabilities.LIMITS.MAX_HTML_NODES)
+    if not ok or type(root) ~= "table" or type(root.nodes) ~= "table" then
+        return parse_failure("malformed HTML input", { cause = tostring(root) })
+    end
+    local count = 0
+    local function inspect(node, depth)
+        if depth > Capabilities.LIMITS.MAX_DOM_DEPTH then return false, "dom_depth" end
+        for _, child in ipairs(node.nodes or {}) do
+            count = count + 1
+            if count > Capabilities.LIMITS.MAX_HTML_NODES then return false, "html_nodes" end
+            local within, limit = inspect(child, depth + 1)
+            if not within then return false, limit end
+        end
+        return true
+    end
+    local within, limit = inspect(root, 0)
+    if not within then
+        return parse_failure("HTML input exceeds a safe DOM limit", {
+            limit = limit,
+            maximum = limit == "dom_depth" and Capabilities.LIMITS.MAX_DOM_DEPTH or Capabilities.LIMITS.MAX_HTML_NODES,
+        })
+    end
+    return root
+end
+
+local function parse_json_path(path)
+    path = trim(path:gsub("^@json:%s*", ""))
+    if path:sub(1, 1) ~= "$" then return nil, "JSONPath must start with $" end
+    local tokens, index = {}, 2
+    while index <= #path do
+        local character = path:sub(index, index)
+        if character == "." then
+            local name = path:sub(index + 1):match("^([%w_%-]+)")
+            if not name then return nil, "invalid JSONPath property" end
+            tokens[#tokens + 1] = { kind = "property", name = name }
+            index = index + #name + 1
+        elseif character == "[" then
+            local close = matching_close(path, index, "[", "]")
+            if not close then return nil, "unterminated JSONPath bracket" end
+            local content = trim(path:sub(index + 1, close - 1))
+            local quote, key = content:match("^(['\"])(.*)%1$")
+            if quote then
+                key = key:gsub("\\(['\"])", "%1")
+                tokens[#tokens + 1] = { kind = "property", name = key }
+            elseif content == "*" then
+                tokens[#tokens + 1] = { kind = "wildcard" }
+            elseif content:match("^%-?%d+$") then
+                local number = tonumber(content)
+                if number < 0 then return nil, "negative JSONPath indexes are unsupported" end
+                tokens[#tokens + 1] = { kind = "index", index = number }
+            else
+                local property, operator, literal = content:match("^%?%(%s*@%.([%w_%-]+)%s*([!=]=)%s*(.-)%s*%)$")
+                if not property then return nil, "unsupported JSONPath bracket expression" end
+                local literal_quote, string_value = literal:match("^(['\"])(.*)%1$")
+                local expected
+                if literal_quote then expected = string_value:gsub("\\(['\"])", "%1")
+                elseif literal == "true" then expected = true
+                elseif literal == "false" then expected = false
+                elseif tonumber(literal) ~= nil then expected = tonumber(literal)
+                else return nil, "unsupported JSONPath filter literal" end
+                tokens[#tokens + 1] = { kind = "filter", property = property, operator = operator, expected = expected }
+            end
+            index = close + 1
+        else
+            return nil, "unexpected JSONPath character"
+        end
+    end
+    return tokens
+end
+
+function RuleEngine:_json_path(input, rule)
+    local root, decode_error = self:_decode_json(input)
+    if decode_error then return nil, decode_error end
+    local tokens, token_error = parse_json_path(rule)
+    if not tokens then return parse_failure(token_error) end
+    local values = { root }
+    for _, token in ipairs(tokens) do
+        local next_values = {}
+        for _, value in ipairs(values) do
+            if token.kind == "property" and type(value) == "table" then append(next_values, value[token.name])
+            elseif token.kind == "index" and type(value) == "table" then append(next_values, value[token.index + 1])
+            elseif token.kind == "wildcard" and type(value) == "table" then
+                for index = 1, #value do append(next_values, value[index]) end
+            elseif token.kind == "filter" and type(value) == "table" then
+                for index = 1, #value do
+                    local candidate = value[index]
+                    if type(candidate) == "table" then
+                        local matches = candidate[token.property] == token.expected
+                        if (token.operator == "==" and matches) or (token.operator == "!=" and not matches) then append(next_values, candidate) end
+                    end
+                end
+            end
+        end
+        values = next_values
+        local limited, limit_error = enforce_output_limit(values)
+        if not limited then return nil, limit_error end
+    end
+    local output = {}
+    for _, value in ipairs(values) do output[#output + 1] = copy(value) end
+    return enforce_output_limit(output)
+end
+
+local function parse_extractor(rule)
+    local quote, square, parentheses, last_at = nil, 0, 0, nil
+    for index = 1, #rule do
+        local character = rule:sub(index, index)
+        if quote then
+            if character == "\\" then index = index + 1
+            elseif character == quote then quote = nil end
+        elseif character == "'" or character == '"' then quote = character
+        elseif character == "[" then square = square + 1
+        elseif character == "]" then square = square - 1
+        elseif character == "(" then parentheses = parentheses + 1
+        elseif character == ")" then parentheses = parentheses - 1
+        elseif character == "@" and square == 0 and parentheses == 0 then last_at = index end
+    end
+    if not last_at then return trim(rule), "text" end
+    local extractor = trim(rule:sub(last_at + 1))
+    if not extractor:match("^[%w_:%-]+$") then return nil, nil, "invalid CSS value extractor" end
+    return trim(rule:sub(1, last_at - 1)), extractor
+end
+
+local function tokenize_css(selector)
+    local steps, buffer, pending = {}, {}, "descendant"
+    local quote, square, parentheses = nil, 0, 0
+    local function flush()
+        local value = trim(table.concat(buffer))
+        if value ~= "" then steps[#steps + 1] = { combinator = pending, selector = value }; pending = "descendant" end
+        buffer = {}
+    end
+    local index = 1
+    while index <= #selector do
+        local character = selector:sub(index, index)
+        if quote then
+            buffer[#buffer + 1] = character
+            if character == "\\" then index = index + 1; buffer[#buffer + 1] = selector:sub(index, index)
+            elseif character == quote then quote = nil end
+        elseif character == "'" or character == '"' then quote = character; buffer[#buffer + 1] = character
+        elseif character == "[" then square = square + 1; buffer[#buffer + 1] = character
+        elseif character == "]" then square = square - 1; buffer[#buffer + 1] = character
+        elseif character == "(" then parentheses = parentheses + 1; buffer[#buffer + 1] = character
+        elseif character == ")" then parentheses = parentheses - 1; buffer[#buffer + 1] = character
+        elseif square == 0 and parentheses == 0 and character == ">" then flush(); pending = "child"
+        elseif square == 0 and parentheses == 0 and character:match("%s") then
+            flush()
+        else buffer[#buffer + 1] = character end
+        index = index + 1
+    end
+    if quote or square ~= 0 or parentheses ~= 0 then return nil, "unbalanced CSS selector" end
+    flush()
+    if #steps == 0 then return nil, "empty CSS selector" end
+    return steps
+end
+
+local supported_pseudos = {
+    ["not"]=true,eq=true,gt=true,lt=true,first=true,last=true,contains=true,
+    containsown=true,has=true,["nth-child"]=true,["nth-of-type"]=true,
+}
+
+local function parse_simple_selector(selector)
+    local parsed = { attributes = {}, pseudos = {}, positional = {} }
+    local index = 1
+    if selector:sub(1, 1) == "*" then parsed.tag = "*"; index = 2
+    else
+        local tag = selector:sub(index):match("^([%w_%-]+)")
+        if tag then parsed.tag = tag:lower(); index = index + #tag end
+    end
+    while index <= #selector do
+        local character = selector:sub(index, index)
+        if character == "#" or character == "." then
+            local name = selector:sub(index + 1):match("^([%w_%-]+)")
+            if not name then return nil, "invalid CSS id or class" end
+            if character == "#" then parsed.id = name else parsed.classes = parsed.classes or {}; parsed.classes[#parsed.classes + 1] = name end
+            index = index + #name + 1
+        elseif character == "[" then
+            local close = matching_close(selector, index, "[", "]")
+            if not close then return nil, "unterminated CSS attribute selector" end
+            local content = trim(selector:sub(index + 1, close - 1))
+            local name, operator, value = content:match("^([%w_:%.-]+)%s*([~|%^$*]?=)%s*(.-)%s*$")
+            if not name then name = content:match("^([%w_:%.-]+)$") end
+            if not name then return nil, "invalid CSS attribute selector" end
+            if operator then
+                local quote, inner = value:match("^(['\"])(.*)%1$")
+                if quote then value = inner end
+                if value == "" then return nil, "empty CSS attribute comparison" end
+            end
+            parsed.attributes[#parsed.attributes + 1] = { name = name, operator = operator, value = value }
+            index = close + 1
+        elseif character == ":" then
+            local name = selector:sub(index + 1):match("^([%w_%-]+)")
+            if not name then return nil, "invalid CSS pseudo selector" end
+            name = name:lower()
+            if not supported_pseudos[name] then return nil, "unsupported CSS pseudo selector: " .. name end
+            index = index + #name + 1
+            local argument
+            if selector:sub(index, index) == "(" then
+                local close = matching_close(selector, index, "(", ")")
+                if not close then return nil, "unterminated CSS pseudo selector" end
+                argument = trim(selector:sub(index + 1, close - 1))
+                local quote, inner = argument:match("^(['\"])(.*)%1$")
+                if quote and (name == "contains" or name == "containsown") then argument = inner end
+                index = close + 1
+            end
+            if (name == "eq" or name == "gt" or name == "lt" or name == "nth-child" or name == "nth-of-type")
+                and (not argument or not argument:match("^%-?%d+$")) then return nil, "CSS position requires an integer" end
+            if (name == "not" or name == "contains" or name == "containsown" or name == "has") and not argument then
+                return nil, "CSS pseudo selector requires an argument"
+            end
+            local definition = { name = name, argument = argument }
+            if name == "eq" or name == "gt" or name == "lt" or name == "first" or name == "last" then
+                parsed.positional[#parsed.positional + 1] = definition
+            else parsed.pseudos[#parsed.pseudos + 1] = definition end
+        else return nil, "unexpected CSS selector character" end
+    end
+    return parsed
+end
+
+local function has_class(node, wanted)
+    local class = node_attribute(node, "class") or ""
+    for value in class:gmatch("%S+") do if value == wanted then return true end end
+    return false
+end
+
+function RuleEngine:_node_text(node)
+    return normalize_text(self.safe_functions.htmldecode((node_html(node):gsub("<[^>]*>", ""))))
+end
+
+function RuleEngine:_node_own_text(node)
+    return normalize_text(self.safe_functions.htmldecode(table.concat(direct_text_segments(node), " ")))
+end
+
+function RuleEngine:_matches_simple(node, parsed)
+    if parsed.tag and parsed.tag ~= "*" and tostring(node.name):lower() ~= parsed.tag then return false end
+    if parsed.id and node_attribute(node, "id") ~= parsed.id then return false end
+    for _, class in ipairs(parsed.classes or {}) do if not has_class(node, class) then return false end end
+    for _, definition in ipairs(parsed.attributes) do
+        local actual = node_attribute(node, definition.name)
+        local operator, expected = definition.operator, definition.value
+        if not operator then if actual == nil then return false end
+        elseif actual == nil then return false
+        elseif operator == "=" and actual ~= expected then return false
+        elseif operator == "^=" and actual:sub(1, #expected) ~= expected then return false
+        elseif operator == "$=" and actual:sub(-#expected) ~= expected then return false
+        elseif operator == "*=" and not actual:find(expected, 1, true) then return false
+        elseif operator == "~=" then
+            local found = false
+            for word in actual:gmatch("%S+") do if word == expected then found = true; break end end
+            if not found then return false end
+        elseif operator == "|=" and actual ~= expected and actual:sub(1, #expected + 1) ~= expected .. "-" then return false end
+    end
+    for _, pseudo in ipairs(parsed.pseudos) do
+        if pseudo.name == "contains" and not self:_node_text(node):find(pseudo.argument, 1, true) then return false
+        elseif pseudo.name == "containsown" and not self:_node_own_text(node):find(pseudo.argument, 1, true) then return false
+        elseif pseudo.name == "nth-child" then
+            local wanted, position = tonumber(pseudo.argument), 0
+            for index, child in ipairs((node.parent or {}).nodes or {}) do if child == node then position = index; break end end
+            if position ~= wanted then return false end
+        elseif pseudo.name == "nth-of-type" then
+            local wanted, position = tonumber(pseudo.argument), 0
+            for _, child in ipairs((node.parent or {}).nodes or {}) do
+                if tostring(child.name):lower() == tostring(node.name):lower() then position = position + 1 end
+                if child == node then break end
+            end
+            if position ~= wanted then return false end
+        elseif pseudo.name == "not" then
+            local nested, nested_error = parse_simple_selector(pseudo.argument)
+            if not nested then return nil, nested_error end
+            local matches, match_error = self:_matches_simple(node, nested)
+            if match_error then return nil, match_error end
+            if matches then return false end
+        elseif pseudo.name == "has" then
+            local matches, select_error = self:_css_select(node, pseudo.argument)
+            if select_error then return nil, select_error end
+            if #matches == 0 then return false end
+        end
+    end
+    return true
+end
+
+local function apply_positions(values, definitions)
+    for _, definition in ipairs(definitions) do
+        local filtered, count = {}, #values
+        if definition.name == "first" then if count > 0 then filtered[1] = values[1] end
+        elseif definition.name == "last" then if count > 0 then filtered[1] = values[count] end
+        else
+            local wanted = tonumber(definition.argument)
+            if wanted < 0 then wanted = count + wanted end
+            for index, value in ipairs(values) do
+                local zero = index - 1
+                if (definition.name == "eq" and zero == wanted)
+                    or (definition.name == "gt" and zero > wanted)
+                    or (definition.name == "lt" and zero < wanted) then filtered[#filtered + 1] = value end
+            end
+        end
+        values = filtered
+    end
+    return values
+end
+
+function RuleEngine:_css_select(root, selector)
+    local steps, step_error = tokenize_css(selector)
+    if not steps then return parse_failure(step_error) end
+    local subjects = { root }
+    for _, step in ipairs(steps) do
+        local parsed, simple_error = parse_simple_selector(step.selector)
+        if not parsed then return parse_failure(simple_error) end
+        local candidates, seen = {}, {}
+        for _, subject in ipairs(subjects) do
+            local pool = step.combinator == "child" and (subject.nodes or {}) or descendants(subject)
+            for _, node in ipairs(pool) do
+                local matches, match_error = self:_matches_simple(node, parsed)
+                if match_error then return parse_failure(match_error) end
+                if matches and not seen[node] then seen[node] = true; candidates[#candidates + 1] = node end
+            end
+        end
+        table.sort(candidates, function(left, right) return (left.index or 0) < (right.index or 0) end)
+        subjects = apply_positions(candidates, parsed.positional)
+        local limited, limit_error = enforce_output_limit(subjects)
+        if not limited then return nil, limit_error end
+    end
+    return subjects
+end
+
+function RuleEngine:_extract_nodes(nodes, extractor, context)
+    local output, lower = {}, extractor:lower()
+    for _, node in ipairs(nodes) do
+        if lower == "text" then output[#output + 1] = self:_node_text(node)
+        elseif lower == "owntext" then output[#output + 1] = self:_node_own_text(node)
+        elseif lower == "textnodes" then
+            for _, value in ipairs(direct_text_segments(node)) do output[#output + 1] = self.safe_functions.htmldecode(value) end
+        elseif lower == "html" then output[#output + 1] = node_html(node)
+        else
+            local value = node_attribute(node, extractor)
+            if value ~= nil then
+                if lower == "href" or lower == "src" then
+                    local ok, resolved = pcall(self.url_resolver, context.baseUrl or "", value)
+                    if not ok then return parse_failure("URL resolution failed", { cause = tostring(resolved) }) end
+                    value = resolved
+                end
+                output[#output + 1] = value
+            end
+        end
+    end
+    return enforce_output_limit(output)
+end
+
+function RuleEngine:_css(input, rule, context)
+    local selector, extractor, extractor_error = parse_extractor(rule)
+    if not selector then return parse_failure(extractor_error) end
+    local root, root_error = self:_html_root(input, context)
+    if root_error then return nil, root_error end
+    local nodes, select_error = self:_css_select(root, selector)
+    if select_error then return nil, select_error end
+    return self:_extract_nodes(nodes, extractor, context)
+end
+
+local function parse_xpath_step(raw)
+    local name = raw:match("^([%w_%-]+)") or (raw:sub(1, 1) == "*" and "*")
+    if not name then return nil, "invalid XPath step" end
+    local predicates, index = {}, #name + 1
+    while index <= #raw do
+        if raw:sub(index, index) ~= "[" then return nil, "invalid XPath predicate" end
+        local close = matching_close(raw, index, "[", "]")
+        if not close then return nil, "unterminated XPath predicate" end
+        predicates[#predicates + 1] = trim(raw:sub(index + 1, close - 1))
+        index = close + 1
+    end
+    return { name = name:lower(), predicates = predicates }
+end
+
+function RuleEngine:_xpath_predicates(values, predicates)
+    for _, predicate in ipairs(predicates) do
+        if predicate:match("^%d+$") then
+            local wanted = tonumber(predicate)
+            values = values[wanted] and { values[wanted] } or {}
+        elseif predicate == "last()" then values = #values > 0 and { values[#values] } or {}
+        else
+            local attribute, quote, expected = predicate:match("^@([%w_:%-]+)%s*=%s*(['\"])(.-)%2$")
+            local contains_attribute, contains_quote, contains_expected = predicate:match("^contains%s*%(%s*@([%w_:%-]+)%s*,%s*(['\"])(.-)%2%s*%)$")
+            local text_quote, text_expected = predicate:match("^contains%s*%(%s*text%s*%(%s*%)%s*,%s*(['\"])(.-)%1%s*%)$")
+            if not attribute and not contains_attribute and not text_quote then return nil, "unsupported XPath predicate" end
+            local filtered = {}
+            for _, node in ipairs(values) do
+                local matches = attribute and node_attribute(node, attribute) == expected
+                    or contains_attribute and tostring(node_attribute(node, contains_attribute) or ""):find(contains_expected, 1, true) ~= nil
+                    or text_quote and self:_node_text(node):find(text_expected, 1, true) ~= nil
+                if matches then filtered[#filtered + 1] = node end
+            end
+            values = filtered
+        end
+    end
+    return values
+end
+
+function RuleEngine:_xpath(input, rule, context)
+    local root, root_error = self:_html_root(input, context)
+    if root_error then return nil, root_error end
+    local path = trim(rule:gsub("^@xpath:%s*", ""))
+    local subjects, index = { root }, 1
+    if path:sub(1, 1) == "." then index = 2 end
+    if index > #path then
+        local output = {}
+        for _, node in ipairs(subjects) do output[#output + 1] = self:_node_text(node) end
+        return output
+    end
+    while index <= #path do
+        local axis
+        if path:sub(index, index + 1) == "//" then axis = "descendant"; index = index + 2
+        elseif path:sub(index, index) == "/" then axis = "child"; index = index + 1
+        else axis = "child" end
+        if index > #path then return parse_failure("XPath cannot end with an axis") end
+        local start, quote, square = index, nil, 0
+        while index <= #path do
+            local character = path:sub(index, index)
+            if quote then
+                if character == "\\" then index = index + 1
+                elseif character == quote then quote = nil end
+            elseif character == "'" or character == '"' then quote = character
+            elseif character == "[" then square = square + 1
+            elseif character == "]" then square = square - 1
+            elseif character == "/" and square == 0 then break end
+            index = index + 1
+        end
+        local raw = trim(path:sub(start, index - 1))
+        if raw == "text()" or raw:match("^@[%w_:%-]+$") then
+            if index <= #path then return parse_failure("XPath value extraction must be the final step") end
+            local output = {}
+            for _, node in ipairs(subjects) do
+                if raw == "text()" then output[#output + 1] = self:_node_text(node)
+                else append(output, node_attribute(node, raw:sub(2))) end
+            end
+            return enforce_output_limit(output)
+        end
+        local step, step_error = parse_xpath_step(raw)
+        if not step then return parse_failure(step_error) end
+        local next_subjects = {}
+        for _, subject in ipairs(subjects) do
+            local pool = axis == "descendant" and descendants(subject) or (subject.nodes or {})
+            local group = {}
+            for _, node in ipairs(pool) do
+                if step.name == "*" or tostring(node.name):lower() == step.name then group[#group + 1] = node end
+            end
+            local filtered, predicate_error = self:_xpath_predicates(group, step.predicates)
+            if not filtered then return parse_failure(predicate_error) end
+            for _, node in ipairs(filtered) do next_subjects[#next_subjects + 1] = node end
+        end
+        subjects = next_subjects
+        local limited, limit_error = enforce_output_limit(subjects)
+        if not limited then return nil, limit_error end
+    end
+    local output = {}
+    for _, node in ipairs(subjects) do output[#output + 1] = self:_node_text(node) end
+    return enforce_output_limit(output)
+end
+
+local function find_template_end(value, start)
+    local depth, index = 1, start + 2
+    while index <= #value - 1 do
+        local pair = value:sub(index, index + 1)
+        if pair == "{{" then depth = depth + 1; index = index + 2
+        elseif pair == "}}" then
+            depth = depth - 1
+            if depth == 0 then return index end
+            index = index + 2
+        else index = index + 1 end
+    end
+    return nil
+end
+
+local function split_arguments(value)
+    local values, buffer, quote, parentheses = {}, {}, nil, 0
+    local index = 1
+    while index <= #value do
+        local character = value:sub(index, index)
+        if quote then
+            buffer[#buffer + 1] = character
+            if character == "\\" then index = index + 1; buffer[#buffer + 1] = value:sub(index, index)
+            elseif character == quote then quote = nil end
+        elseif character == "'" or character == '"' then quote = character; buffer[#buffer + 1] = character
+        elseif character == "(" then parentheses = parentheses + 1; buffer[#buffer + 1] = character
+        elseif character == ")" then parentheses = parentheses - 1; buffer[#buffer + 1] = character
+        elseif character == "," and parentheses == 0 then values[#values + 1] = trim(table.concat(buffer)); buffer = {}
+        else buffer[#buffer + 1] = character end
+        index = index + 1
+    end
+    if quote or parentheses ~= 0 then return nil, "unbalanced function arguments" end
+    if #buffer > 0 or trim(value) ~= "" then values[#values + 1] = trim(table.concat(buffer)) end
+    return values
+end
+
+function RuleEngine:_expand_templates(input, rule, context, state, template_depth)
+    if template_depth > Capabilities.LIMITS.MAX_TEMPLATE_DEPTH then
+        return parse_failure("template nesting exceeds the safe limit", {
+            limit = "template_depth", maximum = Capabilities.LIMITS.MAX_TEMPLATE_DEPTH,
+        })
+    end
+    local output, cursor = {}, 1
+    while cursor <= #rule do
+        local start = rule:find("{{", cursor, true)
+        if not start then output[#output + 1] = rule:sub(cursor); break end
+        output[#output + 1] = rule:sub(cursor, start - 1)
+        local close = find_template_end(rule, start)
+        if not close then return parse_failure("unterminated template") end
+        local expression = rule:sub(start + 2, close - 1)
+        if expression:find("{{", 1, true) then
+            local expanded, nested_error = self:_expand_templates(input, expression, context, state, template_depth + 1)
+            if nested_error then return nil, nested_error end
+            expression = expanded
+        end
+        local value, expression_error = self:_template_expression(input, trim(expression), context, state, template_depth)
+        if expression_error then return nil, expression_error end
+        output[#output + 1] = tostring(value or "")
+        cursor = close + 2
+    end
+    return table.concat(output)
+end
+
+function RuleEngine:_template_argument(input, argument, context, state, template_depth)
+    local quote, inner = argument:match("^(['\"])(.*)%1$")
+    if quote then return (inner:gsub("\\(['\"])", "%1")) end
+    if argument == "key" or argument == "page" or argument == "baseUrl" or argument == "result" then return context[argument] end
+    if argument:find("[@$./#%[]") or argument:find("%s[>%w_%-]*[.#]") then
+        local values, rule_error = self:_evaluate(input, argument, context, false, state.depth + 1, template_depth)
+        if rule_error then return nil, rule_error end
+        return values[1]
+    end
+    return argument
+end
+
+function RuleEngine:_template_expression(input, expression, context, state, template_depth)
+    if expression == "key" or expression == "page" or expression == "baseUrl" or expression == "result" then return context[expression] end
+    local name, arguments_text = expression:match("^([%a_][%w_]*)%s*%((.*)%)$")
+    if name then
+        local normalized = name:lower()
+        if not Capabilities.SAFE_FUNCTIONS[normalized] then return unsupported("template function is unsupported", { function_name = name }) end
+        local implementation = self.safe_functions[normalized]
+        if type(implementation) ~= "function" then return unsupported("template function is unavailable", { function_name = name }) end
+        local raw_arguments, argument_error = split_arguments(arguments_text)
+        if not raw_arguments then return parse_failure(argument_error) end
+        local arguments = {}
+        for _, raw in ipairs(raw_arguments) do
+            local value, value_error = self:_template_argument(input, raw, context, state, template_depth)
+            if value_error then return nil, value_error end
+            arguments[#arguments + 1] = value
+        end
+        if normalized == "resolveurl" then table.insert(arguments, 1, context.baseUrl or "") end
+        local ok, value = pcall(implementation, unpack(arguments))
+        if not ok then return parse_failure("safe template function failed", { function_name = name, cause = tostring(value) }) end
+        return value
+    end
+    local values, rule_error = self:_evaluate(input, expression, context, false, state.depth + 1, template_depth)
+    if rule_error then return nil, rule_error end
+    return values[1]
+end
+
+local function whole_template(rule)
+    local stripped = trim(rule)
+    if stripped:sub(1, 2) ~= "{{" then return false end
+    local close = find_template_end(stripped, 1)
+    return close == #stripped - 1
+end
+
+local function template_is_selector(rule)
+    local static = rule:gsub("{{.-}}", "")
+    return static:find("@text", 1, true) or static:find("@ownText", 1, true)
+        or static:find("@html", 1, true) or static:find("@href", 1, true)
+        or static:match("^%s*[@$./#*]") or static:find("[", 1, true) ~= nil
+end
+
+function RuleEngine:_simple(input, rule, context, state, template_depth)
+    if rule:find("{{", 1, true) then
+        local exact = whole_template(rule)
+        local expanded, template_error = self:_expand_templates(input, rule, context, state, template_depth + 1)
+        if template_error then return nil, template_error end
+        if exact or not template_is_selector(rule) then return { expanded } end
+        return self:_evaluate(input, expanded, context, state.want_list, state.depth + 1, template_depth)
+    end
+    local stripped = trim(rule)
+    if stripped:match("^@json:") or stripped:sub(1, 1) == "$" then return self:_json_path(input, stripped) end
+    if stripped:match("^@xpath:") or stripped:sub(1, 1) == "/" or stripped:sub(1, 2) == "./" or stripped:sub(1, 3) == ".//" then
+        return self:_xpath(input, stripped, context)
+    end
+    return self:_css(input, stripped, context)
+end
+
+function RuleEngine:_evaluate(input, rule, context, want_list, depth, template_depth)
+    depth, template_depth = depth or 1, template_depth or 0
+    if depth > Capabilities.LIMITS.MAX_RECURSION then
+        return parse_failure("rule recursion exceeds the safe limit", {
+            limit = "recursion", maximum = Capabilities.LIMITS.MAX_RECURSION,
+        })
+    end
+    local unsafe_code, unsafe_message = Capabilities.findUnsupported(rule)
+    if unsafe_code then return unsupported(unsafe_message, { construct = unsafe_code }) end
+    rule = trim(rule)
+    if rule == "" then return {} end
+
+    local cleanup, cleanup_error = split_top_level(rule, "##")
+    if not cleanup then return parse_failure(cleanup_error) end
+    if #cleanup > 1 then
+        if #cleanup > 3 or trim(cleanup[2]) == "" then return parse_failure("invalid cleanup expression") end
+        local values, value_error = self:_evaluate(input, cleanup[1], context, true, depth + 1, template_depth)
+        if value_error then return nil, value_error end
+        local output = {}
+        for _, value in ipairs(values) do
+            local ok, replaced = pcall(string.gsub, tostring(value), cleanup[2], cleanup[3] or "")
+            if not ok then return parse_failure("invalid Lua cleanup pattern", { cause = tostring(replaced) }) end
+            output[#output + 1] = replaced
+        end
+        return enforce_output_limit(output)
+    end
+
+    local fallbacks, fallback_error = split_top_level(rule, "||")
+    if not fallbacks then return parse_failure(fallback_error) end
+    if #fallbacks > 1 then
+        for _, part in ipairs(fallbacks) do
+            local values, value_error = self:_evaluate(input, part, context, want_list, depth + 1, template_depth)
+            if value_error then return nil, value_error end
+            if nonempty(values) then return values end
+        end
+        return {}
+    end
+
+    local concatenated, concatenation_error = split_top_level(rule, "&&")
+    if not concatenated then return parse_failure(concatenation_error) end
+    if #concatenated > 1 then
+        local output = {}
+        for _, part in ipairs(concatenated) do
+            local values, value_error = self:_evaluate(input, part, context, true, depth + 1, template_depth)
+            if value_error then return nil, value_error end
+            for _, value in ipairs(values) do output[#output + 1] = value end
+        end
+        local limited, limit_error = enforce_output_limit(output)
+        if not limited then return nil, limit_error end
+        if want_list then return output end
+        local strings = {}
+        for _, value in ipairs(output) do strings[#strings + 1] = tostring(value) end
+        return { table.concat(strings) }
+    end
+
+    local state = { depth = depth, want_list = want_list }
+    return self:_simple(input, rule, context, state, template_depth)
+end
+
+function RuleEngine:parse(input, rule, context, want_list)
+    if type(rule) ~= "string" then return nil, Errors.new(Errors.INVALID_INPUT, "rule must be a string") end
+    local unsafe_code, unsafe_message = Capabilities.findUnsupported(rule)
+    if unsafe_code then return nil, Errors.new(Errors.UNSUPPORTED_RULE, unsafe_message, { construct = unsafe_code }) end
+    context = type(context) == "table" and context or {}
+    local ok, values, err = pcall(self._evaluate, self, input, rule, context, want_list == true, 1, 0)
+    if not ok then
+        return nil, Errors.new(Errors.PARSE_ERROR, "rule evaluation failed safely", { cause = tostring(values) })
+    end
+    if err then return nil, err end
+    local limited, limit_error = enforce_output_limit(values)
+    if not limited then return nil, limit_error end
+    if want_list == true then
+        local output = {}
+        for _, value in ipairs(values) do output[#output + 1] = copy(value) end
+        return output, nil
+    end
+    if values[1] == nil then return nil, nil end
+    return copy(values[1]), nil
+end
+
+return RuleEngine

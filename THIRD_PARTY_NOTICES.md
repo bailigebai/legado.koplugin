@@ -1,10 +1,15 @@
 # Third-Party Notices
 
-No third-party source dependencies are vendored in this repository at this
-time. This document reserves the required notice entries for dependencies
-that may be vendored in a future task; an entry will be added with its name,
-version or commit, license, copyright notice, and any required license text.
-
-| Dependency | Version or commit | License | Required notice |
+| Dependency | Exact source revision | License | Vendored runtime files |
 | --- | --- | --- | --- |
-| _No vendored dependencies currently present._ | — | — | — |
+| [msva/lua-htmlparser](https://github.com/msva/lua-htmlparser) | commit `5ce9a775a345cf458c0388d7288e246bb1b82bff` | LGPL-3.0 with the upstream iOS relinking exception | `legado.koplugin/legado/vendor/htmlparser/` |
+
+The files `init.lua`, `ElementNode.lua`, and `voidelements.lua` come from
+`src/htmlparser.lua`, `src/htmlparser/ElementNode.lua`, and
+`src/htmlparser/voidelements.lua` at the exact revision above. The two local
+`require` keys in `init.lua` are namespaced under `legado.vendor` so the
+vendored module obeys the plugin's module namespace; the parser logic is
+otherwise unchanged.
+
+The upstream license notice and exception are reproduced verbatim in
+`legado.koplugin/legado/vendor/htmlparser/LICENSE`.

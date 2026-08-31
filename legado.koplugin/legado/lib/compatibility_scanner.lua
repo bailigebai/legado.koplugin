@@ -18,14 +18,7 @@ local function add_issue(issues, field, code, message)
 end
 
 local function dangerous_construct(value, path)
-    local lower = (path .. "\n" .. value):lower()
-    if lower:find("@js:", 1, true) or lower:find("<js", 1, true) then return "EXECUTABLE_JS", "JavaScript rules are never executed" end
-    if lower:find("eval%s*%(") then return "DYNAMIC_EVAL", "dynamic evaluation is never executed" end
-    if lower:find("loginui", 1, true) or lower:find("logincheckjs", 1, true) then return "LOGIN_UI", "login UI rules are unsupported" end
-    if lower:find("android%.") then return "ANDROID_API", "Android APIs are unsupported" end
-    if lower:find("java%.") or lower:find("packages", 1, true) then return "JAVA_API", "Java APIs are unsupported" end
-    if lower:find("webview", 1, true) then return "WEBVIEW", "WebView rules are unsupported" end
-    return nil
+    return Capabilities.findUnsupported(path .. "\n" .. value)
 end
 
 local function sorted_keys(value)
