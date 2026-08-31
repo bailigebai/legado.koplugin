@@ -35,14 +35,37 @@ local function safe_url(value, image)
     if scheme == "http" or scheme == "https" then return value end
     return nil
 end
+local function validate_regexes(value)
+    if type(value) == "string" then value = { value }
+    elseif type(value) ~= "table" then return nil, Errors.new(Errors.INVALID_INPUT, "replaceRegex must be a string or dense array") end
+    local count, maximum = 0, 0
+    for key, regex in pairs(value) do
+        if type(key) ~= "number" or key % 1 ~= 0 or key < 1 then
+            return nil, Errors.new(Errors.INVALID_INPUT, "replaceRegex must be a dense array")
+        end
+        count, maximum = count + 1, math.max(maximum, key)
+        if type(regex) ~= "string" then return nil, Errors.new(Errors.INVALID_INPUT, "replaceRegex entries must be strings") end
+    end
+    if count ~= maximum or count > 16 then return nil, Errors.new(Errors.INVALID_INPUT, count > 16 and "too many replaceRegex rules" or "replaceRegex must be a dense array") end
+    for index = 1, count do
+        local regex = value[index]
+        if #regex > 512 then return nil, Errors.new(Errors.INVALID_INPUT, "replaceRegex rule exceeds length limit", { index = index }) end
+        if regex:find("@js:", 1, true) or regex:lower():find("<js", 1, true)
+            or regex:find("%%b") or regex:find("%%f") or regex:find("%%[1-9]")
+            or regex:find("[()]" ) then
+            return nil, Errors.new(Errors.UNSUPPORTED_RULE, "unsafe replaceRegex", { index = index })
+        end
+        local ok = pcall(string.find, "", regex)
+        if not ok then return nil, Errors.new(Errors.PARSE_ERROR, "invalid replaceRegex", { index = index }) end
+    end
+    return value
+end
 local function stripped(value, regexes)
     value = value:gsub("<[sS][cC][rR][iI][pP][tT][^>]*>.-</[sS][cC][rR][iI][pP][tT]%s*>", "")
     value = value:gsub("<[sS][tT][yY][lL][eE][^>]*>.-</[sS][tT][yY][lL][eE]%s*>", "")
     value = value:gsub("<[iI][fF][rR][aA][mM][eE][^>]*>.-</[iI][fF][rR][aA][mM][eE]%s*>", "")
     value = value:gsub("<[fF][oO][rR][mM][^>]*>.-</[fF][oO][rR][mM]%s*>", "")
-    if #regexes > 16 then return nil, Errors.new(Errors.INVALID_INPUT, "too many replaceRegex rules") end
-    for _, regex in ipairs(regexes or {}) do
-        if type(regex) ~= "string" or #regex > 512 or regex:find("@js:", 1, true) or regex:find("<js", 1, true) or regex:find("%%b") then return nil, Errors.new(Errors.UNSUPPORTED_RULE, "unsafe replaceRegex") end
+    for _, regex in ipairs(regexes) do
         local ok, result = pcall(string.gsub, value, regex, "")
         if not ok then return nil, Errors.new(Errors.PARSE_ERROR, "invalid replaceRegex") end
         value = result
@@ -70,7 +93,9 @@ function Cleaner.normalize(input, options)
     if type(input) ~= "string" then return nil, Errors.new(Errors.INVALID_INPUT, "chapter content must be a string") end
     options = options or {}
     local regexes = options.replaceRegex or options.replace_regex or {}
-    if type(regexes) == "string" then regexes = { regexes } end
+    local regex_error
+    regexes, regex_error = validate_regexes(regexes)
+    if not regexes then return nil, regex_error end
     local stripped_value, stripped_error = stripped(input, regexes)
     if not stripped_value then return nil, stripped_error end
     input = stripped_value

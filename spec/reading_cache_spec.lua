@@ -57,8 +57,11 @@ do
     assert(cache:writeBody("source-s", book.id, chapters[1], "<p>1</p>")); assert(cache:writeBody("source-s", book.id, chapters[2], "<p>2</p>"))
     local saved, previous = {}, nil
     local ui = { openDocument = function(_, _, callbacks)
-        if previous then callbacks.close(previous) end
-        local doc = { getProgressFraction = function() return 0.4 end }; previous = doc; return doc
+        if previous then previous.callbacks.close(previous.document) end
+        local doc = { getProgressFraction = function() return 0.4 end }
+        previous = { callbacks = callbacks, document = doc }
+        callbacks.ready(doc)
+        return doc
     end }
     local session = ReaderSession.new({ cache = cache, storage = { putProgress = function(_, p) saved[#saved + 1] = p end }, ui = ui })
     assert(session:open(source, book, chapters, 1)); assert(session:_open_cached(session.active, 2, nil))
@@ -111,6 +114,7 @@ do
     end }
     local ui = { openDocument = function(_, path, callbacks)
         local document = { getProgressFraction = function() return 0 end }
+        callbacks.ready(document)
         opened[#opened + 1] = { callbacks = callbacks, document = document, path = path }
         return document
     end }
@@ -148,6 +152,7 @@ do
     local ui = {
         openDocument = function(_, path, callbacks)
             local document = { is_legado_document = true, setProgressFraction = function(_, value) restored = value end, getProgressFraction = function() return 0.25 end }
+            callbacks.ready(document)
             opened[#opened + 1] = { path = path, callbacks = callbacks, document = document }
             return document
         end,

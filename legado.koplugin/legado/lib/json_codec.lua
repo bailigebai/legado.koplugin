@@ -4,6 +4,57 @@ local Json = {}
 local array_values = setmetatable({}, { __mode = "k" })
 local NULL = {}
 
+local escape_bytes = {
+    ['"'] = '\\"', ["\\"] = "\\\\", ["\b"] = "\\b", ["\f"] = "\\f",
+    ["\n"] = "\\n", ["\r"] = "\\r", ["\t"] = "\\t",
+}
+
+local function encode_string(value)
+    return '"' .. value:gsub('[%z\1-\31\\"]', function(character)
+        return escape_bytes[character] or string.format("\\u%04x", character:byte())
+    end) .. '"'
+end
+
+local function encode_value(value, stack)
+    local kind = type(value)
+    if value == NULL or value == nil then return "null" end
+    if kind == "boolean" then return value and "true" or "false" end
+    if kind == "number" then
+        if value ~= value or value == math.huge or value == -math.huge then error("JSON cannot encode non-finite number") end
+        return tostring(value)
+    end
+    if kind == "string" then return encode_string(value) end
+    if kind ~= "table" then error("unsupported JSON value type: " .. kind) end
+    if stack[value] then error("cyclic JSON table") end
+    stack[value] = true
+    local count, maximum, array = 0, 0, true
+    for key in pairs(value) do
+        count = count + 1
+        if type(key) ~= "number" or key % 1 ~= 0 or key < 1 then array = false
+        else maximum = math.max(maximum, key) end
+    end
+    array = Json.isArray(value) or (count > 0 and array and maximum == count)
+    local output = {}
+    if array then
+        for index = 1, maximum do output[index] = encode_value(value[index], stack) end
+        stack[value] = nil
+        return "[" .. table.concat(output, ",") .. "]"
+    end
+    local keys = {}
+    for key in pairs(value) do
+        if type(key) ~= "string" then error("JSON object keys must be strings") end
+        keys[#keys + 1] = key
+    end
+    table.sort(keys)
+    for _, key in ipairs(keys) do output[#output + 1] = encode_string(key) .. ":" .. encode_value(value[key], stack) end
+    stack[value] = nil
+    return "{" .. table.concat(output, ",") .. "}"
+end
+
+function Json.encode(value)
+    return encode_value(value, {})
+end
+
 local function utf8_character(codepoint)
     if codepoint <= 0x7f then return string.char(codepoint) end
     if codepoint <= 0x7ff then
@@ -154,6 +205,12 @@ end
 
 function Json.isArray(value)
     return array_values[value] == true
+end
+
+function Json.array(value)
+    if type(value) ~= "table" then error("JSON array marker requires a table") end
+    array_values[value] = true
+    return value
 end
 
 function Json.isNull(value)

@@ -50,11 +50,9 @@ function App:startReading(book, chapters)
     if not source then return "书源不存在" end
     if type(chapters) == "table" and #chapters > 0 then return self.reader_session:resume(source, book, chapters) end
     local function offline()
-        local catalog = self.reader_session.cache:readCatalog(book.source_id, book.id)
-        local cached = catalog and (catalog.chapters or catalog) or nil
-        if cached and #cached > 0 then return self.reader_session:resume(source, book, cached) end
+        return self.reader_session:openOffline(source, book)
     end
-    if not self.service then return "阅读服务尚未初始化" end
+    if not self.service then return offline() end
     return self.service:getChapters(source, book, function(values, err)
         if err or not values then offline(); return end
         if type(self.storage.replaceChapters) == "function" then self.storage:replaceChapters(book.id, values) end

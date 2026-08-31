@@ -26,7 +26,9 @@ function ReaderSession.new(options)
     assert(options.storage, "ReaderSession requires storage")
     assert(options.ui, "ReaderSession requires a KOReader UI adapter")
     return setmetatable({ cache = options.cache, storage = options.storage, ui = options.ui, service = options.service,
-        settings = options.settings, diagnostics = options.diagnostics or function() end, active = nil, prefetch_handles = {} }, ReaderSession)
+        settings = options.settings, diagnostics = options.diagnostics or function() end, active = nil, pending = nil,
+        next_token = 0, foreground_generation = 0, prefetch_generation = 0,
+        foreground_handles = {}, foreground_state = nil, prefetch_handles = {} }, ReaderSession)
 end
 
 function ReaderSession:prefetchCount()
@@ -37,7 +39,10 @@ end
 function ReaderSession:_save(state, document)
     if not state or not state.active then return false end
     local fraction = 0
-    if document and type(document.getProgressFraction) == "function" then fraction = clamp(document:getProgressFraction(), 0, 1) end
+    if document and type(document.getProgressFraction) == "function" then
+        local ok, value = pcall(document.getProgressFraction, document)
+        if ok then fraction = clamp(value, 0, 1) end
+    end
     local chapter = state.chapters[state.index]
     if not chapter then return false end
     self.storage:putProgress({ book_id = state.book.id, source_id = source_id(state.source, state.book), chapter_uid = chapter.uid,
@@ -46,18 +51,62 @@ function ReaderSession:_save(state, document)
     return true
 end
 
+function ReaderSession:_reader_error(message, cause)
+    if type(cause) == "table" and cause.code then return cause end
+    return Errors.new(Errors.STORAGE_ERROR, message, { cause = tostring(cause or "unknown") })
+end
+
+function ReaderSession:_fail_candidate(state, error_value)
+    if self.pending == state then self.pending = nil end
+    state.cancelled, state.active = true, false
+    state.error = self:_reader_error("KOReader could not activate generated chapter", error_value)
+    local previous = state.previous
+    if previous then previous.active = true; self.active = previous end
+    self.diagnostics("reader", state.error)
+    return nil, state.error
+end
+
+function ReaderSession:_activate_candidate(state, document)
+    if self.pending ~= state or state.cancelled then return nil, self:_reader_error("stale reader-ready callback") end
+    if state.restore_fraction ~= nil then
+        if not document or type(document.setProgressFraction) ~= "function" then
+            return self:_fail_candidate(state, self:_reader_error("KOReader progress restore API is unavailable"))
+        end
+        local ok, restored, restore_error = pcall(document.setProgressFraction, document, state.restore_fraction)
+        if not ok or restored == nil or restored == false then
+            return self:_fail_candidate(state, restore_error or restored)
+        end
+    end
+    local previous = state.previous
+    if previous and previous ~= state then previous.active = false end
+    state.document, state.restore_fraction, state.end_handled, state.active = document, nil, false, true
+    self.active, self.pending = state, nil
+    if state.offline then
+        local chapter = state.chapters[state.index]
+        self.last_offline_chapter = { index = state.index, chapter_uid = chapter and chapter.uid }
+    end
+    if not state.offline then self:_prefetch(state) end
+    return document
+end
+
 function ReaderSession:_callbacks(state)
     return {
         ready = function(document)
-            if self.active ~= state or not state.active or document ~= state.document then return end
-            if state.restore_fraction ~= nil and type(document.setProgressFraction) == "function" then document:setProgressFraction(state.restore_fraction) end
-            state.restore_fraction = nil
+            return self:_activate_candidate(state, document)
+        end,
+        failure = function(error_value)
+            if self.pending == state and not state.cancelled then self:_fail_candidate(state, error_value) end
         end,
         flush = function(document)
             if self.active == state and state.active and document == state.document then self:_save(state, document) end
         end,
         close = function(document)
-            if self.active == state and state.active and document == state.document then self:_save(state, document); state.active = false end
+            if self.active == state and state.active and document == state.document then
+                self:_save(state, document)
+                state.active = false
+                self:_cancelForeground()
+                self:_cancelPrefetch()
+            end
         end,
         end_of_book = function(document)
             if self.active == state and state.active and document == state.document then self:_end(state, document) end
@@ -72,33 +121,60 @@ function ReaderSession:_open_cached(state, index, restore_fraction)
     local page = html_document(chapter.title, body)
     local path, write_error = self.cache:writeHtml(source_id(state.source, state.book), state.book.id, chapter, page)
     if not path then return nil, write_error end
-    -- ReaderUI synchronously closes the old document while showReader runs.
-    -- Keep its chapter/index/document installed until openDocument succeeds.
-    state.restore_fraction = restore_fraction
-    local document = self.ui:openDocument(path, self:_callbacks(state))
-    if not document then state.restore_fraction = nil; return nil, Errors.new(Errors.STORAGE_ERROR, "KOReader could not open cached chapter") end
-    state.index, state.document, state.end_handled, state.active = index, document, false, true
-    self.active = state
-    if restore_fraction ~= nil and type(document.setProgressFraction) == "function" then document:setProgressFraction(restore_fraction); state.restore_fraction = nil end
-    self:_prefetch(state)
+    self.next_token = self.next_token + 1
+    local candidate = {
+        token = self.next_token, source = state.source, book = state.book, chapters = state.chapters,
+        index = index, restore_fraction = restore_fraction, previous = self.active, active = false,
+        offline = state.offline,
+    }
+    if self.pending then self.pending.cancelled = true end
+    self.pending = candidate
+    local ok, document, open_error = pcall(self.ui.openDocument, self.ui, path, self:_callbacks(candidate))
+    if not ok then return self:_fail_candidate(candidate, document) end
+    if not document then return self:_fail_candidate(candidate, open_error or Errors.new(Errors.STORAGE_ERROR, "KOReader could not open cached chapter")) end
+    if candidate.error then return nil, candidate.error end
+    candidate.opened_document = document
     return document
 end
 
 function ReaderSession:_fetch_then_open(state, index, restore_fraction)
     if not self.service or type(self.service.getContent) ~= "function" then return nil, Errors.new(Errors.STORAGE_ERROR, "chapter is not cached for offline reading") end
     local chapter = state.chapters[index]
+    self:_cancelForeground()
+    local generation = self.foreground_generation
     state.fetching = true
-    state.fetch_handle = self.service:getContent(state.source, state.book, chapter, function(content, request_error)
-        if self.active ~= state or not state.active then return end
+    self.foreground_state = state
+    local completed = false
+    local function callback(content, request_error)
+        completed = true
+        if generation ~= self.foreground_generation or self.foreground_state ~= state then return end
+        if self.active ~= state and state.active then return end
         state.fetching = false
+        self.foreground_handles, self.foreground_state = {}, nil
         if request_error or not content then state.end_handled = false; self.diagnostics("read", request_error or Errors.new(Errors.NETWORK_ERROR, "empty content")); return end
         local body, clean_error = Cleaner.normalize(content.content or content, { replaceRegex = state.source.replaceRegex })
         if not body then state.end_handled = false; self.diagnostics("read", clean_error); return end
         local saved, save_error = self.cache:writeBody(source_id(state.source, state.book), state.book.id, chapter, body)
         if not saved then state.end_handled = false; self.diagnostics("read", save_error); return end
-        self:_open_cached(state, index, restore_fraction)
-    end)
-    return state.fetch_handle
+        local opened, open_error = self:_open_cached(state, index, restore_fraction)
+        if not opened then
+            local current = self.active == state and state or self.active
+            if current then current.end_handled = false end
+            self.diagnostics("read", open_error or Errors.new(Errors.STORAGE_ERROR, "KOReader could not open fetched chapter"))
+        end
+    end
+    local ok, handle, request_error = pcall(self.service.getContent, self.service, state.source, state.book, chapter, callback)
+    if not ok or not handle then
+        state.fetching, state.end_handled = false, false
+        local err = not ok and self:_reader_error("foreground request failed", handle) or request_error or Errors.new(Errors.NETWORK_ERROR, "foreground request did not start")
+        self.diagnostics("read", err)
+        return nil, err
+    end
+    if not completed and generation == self.foreground_generation then
+        self.foreground_handles = { handle }
+        state.fetch_handle = handle
+    end
+    return handle
 end
 
 function ReaderSession:_end(state, document)
@@ -117,31 +193,58 @@ function ReaderSession:_end(state, document)
     if not opened then self:_fetch_then_open(state, next_index, nil) end
 end
 
-function ReaderSession:_cancelPrefetch()
-    for _, handle in ipairs(self.prefetch_handles) do
+local function cancel_handles(handles)
+    for _, handle in ipairs(handles) do
         if handle and type(handle.cancel) == "function" then pcall(handle.cancel, handle) end
     end
+end
+
+function ReaderSession:_cancelForeground()
+    self.foreground_generation = self.foreground_generation + 1
+    local handles = self.foreground_handles
+    self.foreground_handles = {}
+    self.foreground_state = nil
+    cancel_handles(handles)
+end
+
+function ReaderSession:_cancelPrefetch()
+    self.prefetch_generation = self.prefetch_generation + 1
+    local handles = self.prefetch_handles
     self.prefetch_handles = {}
+    cancel_handles(handles)
 end
 
 function ReaderSession:_prefetch(state)
     if not self.service or type(self.service.getContent) ~= "function" then return end
+    self:_cancelPrefetch()
+    local generation = self.prefetch_generation
     local maximum, cursor = self:prefetchCount(), state.index + 1
     local function step()
-        if self.active ~= state or not state.active or state.fetching or cursor > state.index + maximum or cursor > #state.chapters then return end
+        if generation ~= self.prefetch_generation or self.active ~= state or not state.active or state.fetching or cursor > state.index + maximum or cursor > #state.chapters then return end
         local chapter, source = state.chapters[cursor], source_id(state.source, state.book)
         local body = self.cache:readBody(source, state.book.id, chapter)
         cursor = cursor + 1
         if body then step(); return end
-        local handle = self.service:getContent(state.source, state.book, chapter, function(content, err)
-            if self.active ~= state or not state.active then return end
+        local completed = false
+        local function callback(content, err)
+            completed = true
+            if generation ~= self.prefetch_generation or self.active ~= state or not state.active then return end
             if content and not err then
-                local cleaned = Cleaner.normalize(content.content or content, { replaceRegex = state.source.replaceRegex })
-                if cleaned then self.cache:writeBody(source, state.book.id, chapter, cleaned) end
+                local cleaned, clean_error = Cleaner.normalize(content.content or content, { replaceRegex = state.source.replaceRegex })
+                if cleaned then
+                    local saved, save_error = self.cache:writeBody(source, state.book.id, chapter, cleaned)
+                    if not saved then self.diagnostics("prefetch", save_error) end
+                else self.diagnostics("prefetch", clean_error) end
             else self.diagnostics("prefetch", err) end
             step()
-        end)
-        self.prefetch_handles[#self.prefetch_handles + 1] = handle
+        end
+        local ok, handle, request_error = pcall(self.service.getContent, self.service, state.source, state.book, chapter, callback)
+        if not ok or not handle then
+            self.diagnostics("prefetch", not ok and self:_reader_error("prefetch request failed", handle) or request_error)
+            step()
+        elseif not completed and generation == self.prefetch_generation then
+            self.prefetch_handles[#self.prefetch_handles + 1] = handle
+        end
     end
     step()
 end
@@ -149,12 +252,17 @@ end
 function ReaderSession:open(source, book, chapters, index, options)
     options = options or {}
     if type(chapters) ~= "table" or #chapters == 0 then return nil, Errors.new(Errors.INVALID_INPUT, "reading requires a non-empty catalog") end
-    self:close()
-    local state = { source = source, book = book, chapters = chapters, index = math.max(1, math.min(#chapters, tonumber(index) or 1)), active = true }
+    self:_cancelForeground()
+    self:_cancelPrefetch()
+    if self.pending then self.pending.cancelled = true; self.pending = nil end
+    local state = { source = source, book = book, chapters = chapters, index = math.max(1, math.min(#chapters, tonumber(index) or 1)), active = false }
     local document, error_value = self:_open_cached(state, state.index, options.restore_fraction)
     if document then return document end
-    self.active = state
-    return self:_fetch_then_open(state, state.index, options.restore_fraction), error_value
+    if error_value and error_value.message and error_value.message:find("unavailable", 1, true) then
+        local handle, fetch_error = self:_fetch_then_open(state, state.index, options.restore_fraction)
+        return handle, fetch_error or error_value
+    end
+    return nil, error_value
 end
 
 function ReaderSession:resume(source, book, chapters)
@@ -170,16 +278,10 @@ function ReaderSession:openOffline(source, book, index)
     local chapters = catalog.chapters or catalog
     local wanted = math.max(1, math.min(#chapters, tonumber(index) or 1))
     for candidate = wanted, 1, -1 do
-        if self.cache:readBody(source_id(source, book), book.id, chapters[candidate]) then
-            self.last_offline_chapter = { index = candidate, chapter_uid = chapters[candidate].uid }
-            self:close()
-            local state = { source = source, book = book, chapters = chapters, index = candidate, active = true, offline = true }
-            self.active = state
-            local document, open_error = self:_open_cached(state, candidate, nil)
-            if document then return document end
-            self.active = nil
-            return nil, open_error
-        end
+        local state = { source = source, book = book, chapters = chapters, index = candidate, active = false, offline = true }
+        local document, open_error = self:_open_cached(state, candidate, nil)
+        if document then return document end
+        if candidate == 1 then return nil, open_error end
     end
     return nil, Errors.new(Errors.STORAGE_ERROR, "no readable cached chapter", { last_readable = 0 })
 end
@@ -196,8 +298,10 @@ function ReaderSession:recoverIndex(chapters, progress)
 end
 
 function ReaderSession:close()
-    if self.active then self:_save(self.active, self.active.document); self.active.active = false end
+    self:_cancelForeground()
     self:_cancelPrefetch()
+    if self.pending then self.pending.cancelled = true; self.pending = nil end
+    if self.active then self:_save(self.active, self.active.document); self.active.active = false end
     self.active = nil
 end
 

@@ -21,6 +21,29 @@ local function split(path)
     return parts
 end
 
+local function normalized_path(path)
+    path = tostring(path or ""):gsub("\\", "/")
+    local prefix, rest = "", path
+    if rest:sub(1, 2) == "//" then
+        prefix, rest = "//", rest:sub(3)
+    elseif rest:match("^%a:/") then
+        prefix, rest = rest:sub(1, 2):lower() .. "/", rest:sub(4)
+    elseif rest:sub(1, 1) == "/" then
+        prefix, rest = "/", rest:sub(2)
+    end
+    local parts = {}
+    for part in rest:gmatch("[^/]+") do
+        if part == ".." then
+            if #parts > 0 and parts[#parts] ~= ".." then table.remove(parts)
+            elseif prefix == "" then parts[#parts + 1] = part end
+        elseif part ~= "." and part ~= "" then parts[#parts + 1] = part end
+    end
+    local joined = table.concat(parts, "/")
+    if prefix == "//" then return "//" .. joined end
+    if prefix ~= "" then return prefix .. joined end
+    return joined
+end
+
 function Fs.new(options)
     options = options or {}
     return setmetatable({
@@ -28,14 +51,21 @@ function Fs.new(options)
         rename = options.rename or os.rename,
         remove = options.remove or os.remove,
         open = options.open or io.open,
+        canonicalize_fn = options.canonicalize,
     }, Fs)
+end
+
+
+function Fs:canonicalize(path)
+    if self.canonicalize_fn then return self.canonicalize_fn(path) end
+    return normalized_path(path)
 end
 
 function Fs:join(root, ...)
     if type(root) ~= "string" or root == "" then
         return nil, Errors.new(Errors.INVALID_INPUT, "missing storage root")
     end
-    local pieces = { root:gsub("[/\\]+$", "") }
+    local pieces = { (root:gsub("[/\\]+$", "")) }
     for index = 1, select("#", ...) do
         local piece = select(index, ...)
         if type(piece) ~= "string" or piece == "" or piece:match("^[\\/]") or piece:match("^%a:[\\/]") then
@@ -91,7 +121,7 @@ function Fs:readBounded(path, max_bytes)
     return self:read(path)
 end
 
-function Fs:atomicWrite(path, data)
+function Fs:atomicWrite(path, data, options)
     if type(data) ~= "string" then return nil, Errors.new(Errors.INVALID_INPUT, "atomic write accepts strings") end
     local parent = parent_directory(path)
     local ensured, ensure_error = self:ensureDirectory(parent)
@@ -105,6 +135,10 @@ function Fs:atomicWrite(path, data)
     if not written then
         self.remove(temporary)
         return nil, Errors.new(Errors.STORAGE_ERROR, "cannot write temporary file", { path = temporary, cause = write_error })
+    end
+    if options and type(options.validate) == "function" then
+        local valid, validation_error = options.validate(path, "before_replace")
+        if not valid then self.remove(temporary); return nil, validation_error end
     end
     local renamed, rename_error = self.rename(temporary, path)
     if not renamed then
@@ -125,6 +159,10 @@ function Fs:atomicWrite(path, data)
                 renamed, rename_error = self.rename(temporary, path)
                 if renamed then
                     self.remove(backup)
+                    if options and type(options.validate) == "function" then
+                        local valid, validation_error = options.validate(path, "after_replace")
+                        if not valid then return nil, validation_error end
+                    end
                     return true
                 end
                 local restored, restore_error = self.rename(backup, path)
@@ -143,6 +181,10 @@ function Fs:atomicWrite(path, data)
         end
         self.remove(temporary)
         return nil, Errors.new(Errors.STORAGE_ERROR, "cannot replace file", { path = path, cause = rename_error })
+    end
+    if options and type(options.validate) == "function" then
+        local valid, validation_error = options.validate(path, "after_replace")
+        if not valid then return nil, validation_error end
     end
     return true
 end
