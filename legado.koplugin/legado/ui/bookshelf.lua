@@ -14,6 +14,7 @@ function Shelf.new(options)
         page_size = math.max(1, tonumber(options.page_size) or 20),
         covers_enabled = options.covers_enabled ~= false,
         cover_loader = options.cover_loader,
+        alive = true, generation = 0, cover_handles = {},
         navigation = Navigation.new({ count = 0, columns = 1 }),
     }, Shelf)
 end
@@ -21,7 +22,15 @@ end
 function Shelf:add(book) return self.storage:createBook(book) end
 function Shelf:remove(book_id) return self.storage:deleteBook(book_id) end
 
+function Shelf:_cancelCovers()
+    for _, handle in ipairs(self.cover_handles) do if handle and type(handle.cancel) == "function" then handle:cancel() end end
+    self.cover_handles = {}
+end
+
 function Shelf:page(page, mode)
+    self:_cancelCovers()
+    self.generation = self.generation + 1
+    local generation = self.generation
     local books = self.storage:listShelf() or {}
     page = math.max(1, math.floor(tonumber(page) or 1))
     mode = mode == "cover" and self.covers_enabled and "cover" or "text"
@@ -41,11 +50,14 @@ function Shelf:page(page, mode)
         }
         items[#items + 1] = item
         if item.cover_pending then
-            self.cover_loader(book, function(image)
+            local handle = self.cover_loader(book, function(image)
+                if not self.alive or generation ~= self.generation then return end
                 item.cover = image
                 item.cover_pending = false
                 if not image then item.cover_text = "封面不可用" end
+                if type(item.on_update) == "function" then item.on_update(item) end
             end)
+            self.cover_handles[#self.cover_handles + 1] = handle
         end
     end
     self.navigation.columns = mode == "cover" and 3 or 1
@@ -54,6 +66,14 @@ function Shelf:page(page, mode)
         items = items, page = page, page_count = page_count, mode = mode,
         empty_text = #books == 0 and "书架为空" or nil,
     }
+end
+
+function Shelf:close()
+    if not self.alive then return false end
+    self.alive = false
+    self.generation = self.generation + 1
+    self:_cancelCovers()
+    return true
 end
 
 function Shelf:onKey(key) return self.navigation:onKey(key) end

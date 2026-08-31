@@ -33,6 +33,10 @@ local function source_reference(source)
     return source and (source.id or source.bookSourceUrl or source.url or source.bookSourceName) or ""
 end
 
+local function first_present(value, names)
+    for _, name in ipairs(names) do if value[name] ~= nil then return value[name] end end
+end
+
 function Models.sourceId(source)
     return Identity.source(source_reference(source))
 end
@@ -44,7 +48,6 @@ function Models.book(source, value, base_url)
     local name = trim(value.name or value.bookName)
     local book = {
         source_id = source_id,
-        source_ref = source_reference(source),
         source_name = trim(source and (source.bookSourceName or source.name)),
         name = name,
         author = trim(value.author),
@@ -66,14 +69,17 @@ function Models.chapter(book, source, value, base_url)
     local url = resolve(base_url or (book and book.url), value.url or value.chapterUrl)
     local chapter = {
         source_id = Models.sourceId(source),
-        source_ref = source_reference(source),
         book_id = book and book.id or "",
         index = index,
         title = trim(value.title or value.chapterName or value.name),
         url = url,
-        vip = boolean(value.vip or value.isVip or value.pay),
+        vip = boolean(first_present(value, { "vip", "isVip", "pay" })),
     }
-    chapter.uid = Identity.chapter(chapter.book_id, url ~= "" and url or chapter.title, index)
+    if url ~= "" then
+        chapter.uid = Identity.chapter(chapter.book_id, url:gsub("#.*$", ""), nil)
+    else
+        chapter.uid = Identity.chapter(chapter.book_id, chapter.title, index)
+    end
     return chapter
 end
 

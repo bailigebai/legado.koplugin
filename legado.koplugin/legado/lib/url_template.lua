@@ -32,7 +32,18 @@ function UrlTemplate:resolve(base, relative)
     return self.resolver(base, relative)
 end
 
-function UrlTemplate:build(specification, context)
+local function merge_headers(defaults, overrides)
+    local result = {}
+    for name, value in pairs(defaults or {}) do result[name] = copy(value) end
+    for name, value in pairs(overrides or {}) do
+        local lowered = tostring(name):lower()
+        for existing in pairs(result) do if tostring(existing):lower() == lowered then result[existing] = nil end end
+        result[name] = copy(value)
+    end
+    return result
+end
+
+function UrlTemplate:build(specification, context, default_headers)
     local request
     if type(specification) == "table" then
         request = copy(specification)
@@ -53,7 +64,7 @@ function UrlTemplate:build(specification, context)
     end
 
     request.method = tostring(request.method or (request.body ~= nil and "POST" or "GET")):upper()
-    request.headers = type(request.headers) == "table" and request.headers or {}
+    request.headers = merge_headers(default_headers, type(request.headers) == "table" and request.headers or {})
     for _, field in ipairs({ "url", "body" }) do
         local expanded, expand_error = self:_expand(request[field], context)
         if expand_error then return nil, expand_error end

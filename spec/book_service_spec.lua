@@ -5,6 +5,7 @@ local RuleEngine = require("legado.lib.rule_engine")
 local SafeFunctions = require("legado.lib.safe_functions")
 local UrlTemplate = require("legado.lib.url_template")
 local BookService = require("legado.lib.book_service")
+local Models = require("legado.lib.models")
 
 local count = 0
 local function equal(expected, actual, message) count = count + 1; assertx.equal(expected, actual, message) end
@@ -40,6 +41,12 @@ local sources = {
         ruleContent = { content = "$.content" },
     },
     off = { id = "off", bookSourceName = "Disabled", bookSourceUrl = "https://off.test/", enabled = false },
+    h = {
+        id = "h", bookSourceName = "Header source", bookSourceUrl = "https://h.test/", enabled = true,
+        header = { ["X-Key"] = "source-{{key}}", ["X-Page"] = "page-{{page}}" },
+        searchUrl = { url = "search", method = "POST", body = "{{key}}/{{page}}", headers = { ["x-key"] = "request-{{page}}" } },
+        ruleSearch = { bookList = "$.items[*]", name = "$.name", author = "$.author", bookUrl = "$.url" },
+    },
 }
 
 local storage = {}
@@ -69,12 +76,13 @@ local function controlled_engine()
     return engine
 end
 
-local function new_service(request_engine, concurrency)
+local function new_service(request_engine, concurrency, scheduler)
     local rules = new_rule_engine()
     return BookService.new({
         storage = storage, rule_engine = rules, request_engine = request_engine,
         url_template = UrlTemplate.new({ rule_engine = rules }),
         settings = { get = function(_, key) return key == "concurrency" and concurrency or nil end },
+        scheduler = scheduler,
     })
 end
 
@@ -97,7 +105,7 @@ do
     equal(nil, finish_error, "partial source failure preserves successful results")
     equal(2, #result.groups, "successful source results are returned")
     equal(1, #result.errors, "failed source is isolated and reported")
-    equal("b", result.errors[1].source_id, "errors retain selected source order")
+    equal(Models.sourceId(sources.b), result.errors[1].source_id, "errors expose only opaque source identifiers")
     equal(nil, result.errors[1].message:find("secret", 1, true), "UI-safe source error omits transport secrets")
     equal("https://a.test/results/book/1", result.groups[1].book.url, "relative book URL resolves from response final URL")
     equal("https://a.test/cover/1.jpg", result.groups[1].book.cover_url, "root-relative cover resolves from response final URL")
@@ -116,8 +124,8 @@ do
     request:respond(2, { status = 200, final_url = "https://b.test/s", body = '{"items":[{"name":"shared","author":"ALICE","url":"/b"},{"name":"Third","author":"C","url":"/c"}]}' })
     equal(2, #result.groups, "identical title and author aggregate stably")
     equal(2, #result.groups[1].alternatives, "aggregation preserves both source choices")
-    equal("a", result.groups[1].alternatives[1].source_ref, "first selected source remains primary")
-    equal("b", result.groups[1].alternatives[2].source_ref, "later alternative remains ordered")
+    equal(Models.sourceId(sources.a), result.groups[1].alternatives[1].source_id, "first selected source remains primary")
+    equal(Models.sourceId(sources.b), result.groups[1].alternatives[2].source_id, "later alternative remains ordered")
     truthy(result.groups[1].alternatives[1].id ~= result.groups[1].alternatives[2].id, "source switching changes book identity")
     equal(true, handle:cancel() == false, "completed aggregate cannot be cancelled")
 end
@@ -150,7 +158,7 @@ do
     local request = controlled_engine()
     local service = new_service(request, 2)
     local detail
-    local seed = { id = "seed", source_ref = "a", source_id = "opaque", name = "Seed", author = "A", url = "https://a.test/books/1" }
+    local seed = { id = "seed", source_id = Models.sourceId(sources.a), name = "Seed", author = "A", url = "https://a.test/books/1" }
     service:getBookInfo(sources.a, seed, function(value, err) assert(not err); detail = value end)
     request:respond(1, { status = 200, final_url = "https://cdn.test/detail/1.json", body = '{"name":"Full","author":"Alice","intro":"About","toc":"../toc/1.json"}' })
     equal("https://cdn.test/toc/1.json", detail.toc_url, "detail toc URL resolves from detail final URL")
@@ -173,6 +181,36 @@ do
     equal("Chapter body\nContinued", content.content, "content pages concatenate in network order")
     equal(nil, content.next_url, "completed content has no remaining continuation URL")
     equal(5, #request.requests, "catalog and content follow only the selected source")
+end
+
+
+do
+    local request = controlled_engine()
+    local service = new_service(request, 2)
+    service:search("header key", { "h" }, 3, function() end)
+    equal("request-3", request.requests[1].headers["x-key"], "request option header overrides source header case-insensitively")
+    equal(nil, request.requests[1].headers["X-Key"], "case-insensitive merge emits no duplicate header")
+    equal("page-3", request.requests[1].headers["X-Page"], "source headers expand with page context")
+    equal("header key/3", request.requests[1].body, "request option body expands with key and page")
+end
+
+do
+    local request = controlled_engine()
+    local scheduler = { queue = {} }
+    function scheduler:scheduleIn(_, action) self.queue[#self.queue + 1] = action; return action end
+    function scheduler:runAll() while #self.queue > 0 do table.remove(self.queue, 1)() end end
+    local service = new_service(request, 2, scheduler)
+    local book = Models.book(sources.a, { name = "A", url = "/book" }, sources.a.bookSourceUrl)
+    local chapter = Models.chapter(book, sources.a, { index = 1, title = "One", url = "/one" }, sources.a.bookSourceUrl)
+    local callbacks = {}
+    service:getBookInfo(sources.b, book, function(value, err) callbacks[#callbacks + 1] = err end)
+    service:getChapters(sources.b, book, function(value, err) callbacks[#callbacks + 1] = err end)
+    service:getContent(sources.a, book, { uid = chapter.uid, source_id = Models.sourceId(sources.b), book_id = book.id, url = chapter.url }, function(value, err) callbacks[#callbacks + 1] = err end)
+    equal(0, #callbacks, "invalid ownership callbacks are always deferred")
+    equal(0, #request.requests, "invalid ownership never reaches RequestEngine")
+    scheduler:runAll()
+    equal(3, #callbacks, "all four-flow ownership checks use the scheduler boundary")
+    for _, err in ipairs(callbacks) do equal("INVALID_INPUT", err.code, "ownership error is structured") end
 end
 
 return count

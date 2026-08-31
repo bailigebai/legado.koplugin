@@ -5,6 +5,7 @@ local SearchView = require("legado.ui.search")
 local SourceManager = require("legado.ui.source_manager")
 local App = require("legado.ui.app")
 local BookDetail = require("legado.ui.book_detail")
+local Errors = require("legado.lib.errors")
 
 local count = 0
 local function equal(expected, actual, message) count = count + 1; assertx.equal(expected, actual, message) end
@@ -42,18 +43,67 @@ do
 end
 
 do
-    local catalog_callback
-    local alternatives = { { id = "a-book", source_ref = "s1", name = "Book" }, { id = "b-book", source_ref = "s2", name = "Book" } }
+    local network_callbacks, cancelled, delivered = {}, 0, 0
+    local manager = SourceManager.new({
+        storage = storage,
+        importer = { importJson = function() return { imported = 1, rejected = 0, warnings = {} } end },
+        request_engine = { execute = function(_, _, callback) network_callbacks[#network_callbacks + 1] = callback; return { cancel = function() cancelled = cancelled + 1; return true end } end },
+    })
+    manager:importUrl("https://sources.test/one", function() delivered = delivered + 1 end)
+    manager:importUrl("https://sources.test/two", function() delivered = delivered + 1 end)
+    equal(1, cancelled, "repeated remote source import cancels the previous handle")
+    network_callbacks[1]({ body = "{}", final_url = "https://sources.test/one" }, nil)
+    equal(0, delivered, "superseded source import callback is ignored")
+    manager:close()
+    equal(2, cancelled, "closing source manager cancels its active request")
+    network_callbacks[2]({ body = "{}", final_url = "https://sources.test/two" }, nil)
+    equal(0, delivered, "closed source manager ignores late network callbacks")
+end
+
+do
+    state.books = { cover = { id = "cover", name = "Cover", cover_url = "https://covers.test/cover.jpg" } }
+    local callback, cancelled = nil, 0
+    local shelf = Shelf.new({ storage = storage, covers_enabled = true, cover_loader = function(_, loaded) callback = loaded; return { cancel = function() cancelled = cancelled + 1; return true end } end })
+    local cover_page = shelf:page(1, "cover")
+    shelf:page(1, "text")
+    equal(1, cancelled, "leaving cover page cancels pending cover loads")
+    callback("late.jpg", nil)
+    equal(nil, cover_page.items[1].cover, "stale cover callback cannot mutate an old page")
+    shelf:page(1, "cover")
+    shelf:close()
+    equal(2, cancelled, "closing shelf cancels current cover loads")
+end
+
+do
+    local info_callbacks, catalog_callbacks, cancelled = {}, {}, 0
+    local alternatives = { { id = "a-book", source_id = "opaque-s1", name = "Book" }, { id = "b-book", source_id = "opaque-s2", name = "Book" } }
     local detail = BookDetail.new({
         book = alternatives[1], alternatives = alternatives,
         source_lookup = function(id) return { id = id } end,
-        service = { getChapters = function(_, source, book, callback) catalog_callback = callback; return { cancel = function() return true end } end },
+        service = {
+            getBookInfo = function(_, source, book, callback) info_callbacks[#info_callbacks + 1] = callback; return { cancel = function() cancelled = cancelled + 1; return true end } end,
+            getChapters = function(_, source, book, callback) catalog_callbacks[#catalog_callbacks + 1] = callback; return { cancel = function() cancelled = cancelled + 1; return true end } end,
+        },
     })
+    detail:loadInfo(function() end)
     equal("b-book", detail:switchSource(2).id, "detail source switch selects the alternative identity")
+    equal(1, cancelled, "switching source cancels an in-flight detail request")
+    info_callbacks[1]({ id = "late", author = "Late" }, nil)
+    equal(nil, detail.info, "old-source detail callback cannot contaminate switched state")
+    detail:loadInfo(function() end)
+    detail:loadInfo(function() end)
+    equal(2, cancelled, "repeated detail load cancels the previous handle")
+    info_callbacks[2]({ id = "stale", author = "Stale" }, nil)
+    equal(nil, detail.info, "superseded detail callback is ignored by generation")
+    info_callbacks[3]({ id = "current", author = "Current", intro = "Intro", kind = "Kind", last_chapter = "Latest" }, nil)
+    equal("Current", detail.info.author, "current detail callback updates visible metadata")
+    detail:loadInfo(function() end)
     detail:loadCatalog(function() end)
     equal(true, detail.loading_catalog, "catalog exposes a nonblocking loading state")
+    info_callbacks[4]({ id = "parallel", author = "Parallel" }, nil)
+    equal("Parallel", detail.info.author, "catalog loading does not invalidate an independent info request")
     detail:close()
-    catalog_callback({ { index = 1, title = "Late" } }, nil)
+    catalog_callbacks[1]({ { index = 1, title = "Late" } }, nil)
     equal(nil, detail.catalog, "closed detail ignores a late catalog callback")
 end
 
@@ -70,13 +120,18 @@ do
 end
 
 do
-    local pending_callback
-    local view = SearchView.new({ service = { search = function(_, _, _, _, callback) pending_callback = callback; return { cancel = function() return true end } end } })
+    local callbacks, cancels = {}, 0
+    local view = SearchView.new({ service = { search = function(_, _, _, _, callback) callbacks[#callbacks + 1] = callback; return { cancel = function() cancels = cancels + 1; return true end } end } })
     view:submit("query", nil, 1)
     equal(true, view.loading, "search view exposes progress state")
+    view:submit("new query", nil, 1)
+    equal(1, cancels, "repeated search cancels the old composite handle")
+    callbacks[1]({ groups = { { book = { name = "Stale" } } }, errors = {} }, nil)
+    equal(0, #view.results, "superseded search callback is ignored by generation")
     view:close()
-    pending_callback({ groups = { { book = { name = "Late" } } }, errors = {} }, nil)
+    callbacks[2]({ groups = { { book = { name = "Late" } } }, errors = {} }, nil)
     equal(0, #view.results, "closed view ignores late callback")
+    equal(2, cancels, "closing search cancels the current handle")
 end
 
 
@@ -116,6 +171,16 @@ do
     local local_update
     async_manager:update("s4", function(result, err) assert(not err); local_update = result end)
     equal(1, local_update.imported, "locally imported sources update from their retained file origin")
+
+    local bounded_limit
+    local bounded_manager = SourceManager.new({
+        storage = storage, importer = manager.importer,
+        fs = { readBounded = function(_, _, limit) bounded_limit = limit; return nil, Errors.new(Errors.RESPONSE_TOO_LARGE, "too large") end },
+    })
+    local bounded_report = bounded_manager:importLocal("huge.json")
+    equal(5 * 1024 * 1024, bounded_limit, "local source import enforces the five MiB hard limit")
+    equal(1, bounded_report.rejected, "bounded read failure maps to an import report")
+    equal("RESPONSE_TOO_LARGE", bounded_report.error.code, "local oversize error remains structured")
 end
 
 do
@@ -140,6 +205,16 @@ do
     equal(1, appearance_opened, "appearance action delegates to KOReader")
     equal("阅读功能将在下一阶段提供", app:startReading({}), "reading is an explicit Task 7 hook")
     equal("下载功能将在下一阶段提供", app:startDownload({}), "download is an explicit Task 8 hook")
+end
+
+do
+    local app = App.new({
+        storage = storage,
+        settings = { get = function(_, key) return ({ shelf_page = 7, covers_enabled = false })[key] end },
+    })
+    local shelf = app:openBookshelf()
+    equal(7, shelf.page_size, "App reads shelf page size from settings")
+    equal(false, shelf.covers_enabled, "App honors disabled cover mode")
 end
 
 return count

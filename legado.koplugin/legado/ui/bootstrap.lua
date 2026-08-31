@@ -27,11 +27,11 @@ end
 
 function Bootstrap.build(plugin)
     local settings = Settings.new()
-    local storage, service, source_manager
+    local storage, service, source_manager, cover_loader, root
     local DataStorage = optional("datastorage")
     local fs = Fs.new()
     if DataStorage and type(DataStorage.getDataDir) == "function" then
-        local root = DataStorage:getDataDir() .. "/legado"
+        root = DataStorage:getDataDir() .. "/legado"
         fs:ensureDirectory(root)
         local Storage = require("legado.lib.storage")
         storage = Storage.new({ path = root .. "/legado.sqlite", fs = fs })
@@ -66,6 +66,9 @@ function Bootstrap.build(plugin)
                     return "pending"
                 end,
             })
+            local CoverLoader = require("legado.lib.cover_loader")
+            local loader = CoverLoader.new({ request_engine = requests, fs = fs, root = root .. "/covers" })
+            cover_loader = function(book, callback) return loader:load(book, callback) end
         end
     end
 
@@ -76,6 +79,7 @@ function Bootstrap.build(plugin)
     app = App.new({
         storage = storage, book_service = service, source_manager = source_manager, settings = settings,
         appearance = native_appearance(plugin),
+        cover_loader = cover_loader,
         show = presenter and function(view) return presenter:show(view) end or nil,
     })
     if presenter then presenter.detail_factory = function(book, alternatives) return app:createBookDetail(book, alternatives) end end

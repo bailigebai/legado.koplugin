@@ -57,12 +57,6 @@ local function source_headers(source)
     return output
 end
 
-local function merge_headers(base, override)
-    local result = shallow_copy(base)
-    for name, value in pairs(override or {}) do result[name] = value end
-    return result
-end
-
 local function aliases(rule, names)
     for _, name in ipairs(names) do
         if type(rule[name]) == "string" and trim(rule[name]) ~= "" then return rule[name] end
@@ -109,6 +103,7 @@ function BookService.new(options)
     return setmetatable({
         storage = options.storage, rules = options.rule_engine, requests = options.request_engine,
         templates = options.url_template, settings = options.settings,
+        scheduler = options.scheduler or options.request_engine.scheduler,
     }, BookService)
 end
 
@@ -118,13 +113,34 @@ function BookService:_parse(input, rule, context, list)
 end
 
 function BookService:_request(source, specification, context, callback)
-    local request, build_error = self.templates:build(specification, context)
+    local request, build_error = self.templates:build(specification, context, source_headers(source))
     if not request then callback(nil, build_error); return { cancel = function() return false end } end
     local base = context and context.baseUrl or source.bookSourceUrl
     request.url = self.templates:resolve(base or "", request.url)
-    request.headers = merge_headers(source_headers(source), request.headers)
     request.source_id = source.id or source.bookSourceUrl
     return self.requests:execute(request, callback)
+end
+
+function BookService:_rejected(callback, message)
+    local handle, state = composite()
+    local err = Errors.new(Errors.INVALID_INPUT, message)
+    local function deliver()
+        if state.cancelled or state.completed then return end
+        state.completed = true
+        callback(nil, err)
+    end
+    if self.scheduler and type(self.scheduler.scheduleIn) == "function" then
+        local token = self.scheduler:scheduleIn(0, deliver)
+        state.children[1] = { cancel = function()
+            if self.scheduler and type(self.scheduler.unschedule) == "function" then self.scheduler:unschedule(token) end
+            return true
+        end }
+    else deliver() end
+    return handle
+end
+
+function BookService:_valid_book_source(source, book)
+    return type(source) == "table" and type(book) == "table" and Models.sourceId(source) == book.source_id
 end
 
 function BookService:_book_values(source, input, rule, base_url, context)
@@ -230,7 +246,7 @@ function BookService:search(keyword, source_ids, page, callback)
                 if state.cancelled or state.completed then return end
                 active, finished = active - 1, finished + 1
                 if err then
-                    failures[index] = { source_id = source.id, source_name = trim(source.bookSourceName), code = err.code or Errors.NETWORK_ERROR, message = safe_message(err) }
+                    failures[index] = { source_id = Models.sourceId(source), source_name = trim(source.bookSourceName), code = err.code or Errors.NETWORK_ERROR, message = safe_message(err) }
                 else results[index] = books or {} end
                 pump(); finish()
             end)
@@ -258,7 +274,7 @@ end
 
 function BookService:getBookInfo(source, book, callback)
     assert(type(callback) == "function", "BookService book info callback must be a function")
-    if type(source) ~= "table" or type(book) ~= "table" then callback(nil, Errors.new(Errors.INVALID_INPUT, "source and book are required")); return composite() end
+    if not self:_valid_book_source(source, book) then return self:_rejected(callback, "source does not own the selected book") end
     local rule = source_rule(source, "ruleBookInfo")
     return self:_single(source, book.url, { baseUrl = book.url, result = "" }, function(response)
         local final_url = response.final_url or book.url
@@ -272,6 +288,7 @@ end
 
 function BookService:getChapters(source, book, callback)
     assert(type(callback) == "function", "BookService catalog callback must be a function")
+    if not self:_valid_book_source(source, book) then return self:_rejected(callback, "source does not own the selected book") end
     local rule = source_rule(source, "ruleToc")
     local url = book.toc_url or book.url
     local handle, state = composite()
@@ -323,9 +340,9 @@ end
 
 function BookService:getContent(source, book, chapter, callback)
     assert(type(callback) == "function", "BookService content callback must be a function")
-    if book.source_ref and source and source.id and book.source_ref ~= source.id then
-        local handle, state = composite(); state.completed = true
-        callback(nil, Errors.new(Errors.INVALID_INPUT, "content source does not match selected book")); return handle
+    if not self:_valid_book_source(source, book)
+        or type(chapter) ~= "table" or chapter.source_id ~= book.source_id or chapter.book_id ~= book.id then
+        return self:_rejected(callback, "chapter does not belong to the selected source and book")
     end
     local rule = source_rule(source, "ruleContent")
     local handle, state = composite()

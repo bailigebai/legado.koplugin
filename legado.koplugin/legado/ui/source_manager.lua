@@ -11,6 +11,7 @@ function SourceManager.new(options)
         kind = "source_manager",
         storage = options.storage, importer = options.importer, requests = options.request_engine,
         fs = options.fs, scanner = options.scanner or Scanner, confirm = options.confirm or function() return false end,
+        alive = true, generation = 0, request = nil,
     }, SourceManager)
 end
 
@@ -34,8 +35,15 @@ end
 
 function SourceManager:importLocal(path)
     if not self.importer or not self.fs then return nil end
-    local text = self.fs:read(path)
-    if not text then return nil end
+    local text, read_error
+    if type(self.fs.readBounded) == "function" then text, read_error = self.fs:readBounded(path, SourceImporter.DEFAULT_MAX_BYTES)
+    elseif type(self.fs.read) == "function" then
+        text, read_error = self.fs:read(path)
+        if type(text) == "string" and #text > SourceImporter.DEFAULT_MAX_BYTES then
+            text, read_error = nil, { code = "RESPONSE_TOO_LARGE", message = "书源文件超过 5 MiB" }
+        end
+    end
+    if not text then return { imported = 0, updated = 0, rejected = 1, warnings = {}, compatibility = {}, error = read_error or { code = "STORAGE_ERROR", message = "无法读取书源文件" } } end
     return self.importer:importJson(text, path)
 end
 
@@ -44,10 +52,25 @@ function SourceManager:importUrl(url, callback)
     local validated = SourceImporter.validateRemoteUrl(url)
     if not validated.valid then callback(nil, validated.error); return { cancel = function() return false end } end
     if not self.requests or not self.importer then callback(nil, { code = "NETWORK_ERROR", message = "远程导入不可用" }); return { cancel = function() return false end } end
-    return self.requests:execute({ url = validated.url, max_bytes = SourceImporter.DEFAULT_MAX_BYTES }, function(response, err)
+    if self.request and type(self.request.cancel) == "function" then self.request:cancel() end
+    self.generation = self.generation + 1
+    local generation = self.generation
+    self.request = self.requests:execute({ url = validated.url, max_bytes = SourceImporter.DEFAULT_MAX_BYTES }, function(response, err)
+        if not self.alive or generation ~= self.generation then return end
+        self.request = nil
         if err then callback(nil, err); return end
         callback(self.importer:importJson(response.body, response.final_url or validated.url), nil)
     end)
+    return self.request
+end
+
+function SourceManager:close()
+    if not self.alive then return false end
+    self.alive = false
+    self.generation = self.generation + 1
+    if self.request and type(self.request.cancel) == "function" then self.request:cancel() end
+    self.request = nil
+    return true
 end
 
 function SourceManager:compatibility(id)

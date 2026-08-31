@@ -19,6 +19,7 @@ function Presenter.new(options)
         info_message = options.info_message or optional("ui/widget/infomessage"),
         input_dialog = options.input_dialog or optional("ui/widget/inputdialog"),
         detail_factory = options.detail_factory,
+        cover_grid_factory = options.cover_grid_factory or function(grid_options) return require("legado.ui.cover_grid").new(grid_options) end,
     }, Presenter)
 end
 
@@ -33,6 +34,17 @@ end
 
 function Presenter:_shelf(view, page, mode)
     local model = view:page(page or 1, mode or "text")
+    if model.mode == "cover" then
+        local grid = self.cover_grid_factory({
+            model = model,
+            on_select = function(book) if self.detail_factory then return self:show(self.detail_factory(book, { book })) end; return book end,
+            on_prev = model.page > 1 and function() return self:_shelf(view, model.page - 1, "cover") end or nil,
+            on_next = model.page < model.page_count and function() return self:_shelf(view, model.page + 1, "cover") end or nil,
+            on_toggle = function() return self:_shelf(view, model.page, "text") end,
+            on_close = function() return view:close() end,
+        })
+        return self:_show(grid)
+    end
     local items = {}
     for _, item in ipairs(model.items) do
         local label = item.title
@@ -49,7 +61,7 @@ function Presenter:_shelf(view, page, mode)
     items[#items + 1] = { text = model.mode == "text" and "封面模式" or "文字模式", callback = function()
         return self:_shelf(view, model.page, model.mode == "text" and "cover" or "text")
     end }
-    return self:_show(construct(self.menu, { title = "书架", item_table = items, is_popout = false }))
+    return self:_show(construct(self.menu, { title = "书架", item_table = items, is_popout = false, close_callback = function() return view:close() end }))
 end
 
 function Presenter:_search_results(view)
@@ -74,7 +86,13 @@ function Presenter:_search_results(view)
             return self:_info(table.concat(lines, "\n"), "搜索诊断")
         end }
     end
-    return self:_show(construct(self.menu, { title = "搜索结果", item_table = items }))
+    return self:_show(construct(self.menu, {
+        title = "搜索结果",
+        item_table = items,
+        close_callback = function()
+            if type(view.close) == "function" then return view:close() end
+        end,
+    }))
 end
 
 function Presenter:_search(view)
@@ -83,12 +101,32 @@ function Presenter:_search(view)
         local keyword = value
         if (keyword == nil or keyword == "") and dialog and type(dialog.getInputText) == "function" then keyword = dialog:getInputText() end
         if type(keyword) ~= "string" or keyword:match("^%s*$") then return self:_info("请输入书名", "搜索") end
-        view.onUpdate = function() if view.alive and not view.loading then self:_search_results(view) end end
+        view.onUpdate = function()
+            if view.alive and not view.loading then
+                if view.progress_widget and self.ui_manager and type(self.ui_manager.close) == "function" then self.ui_manager:close(view.progress_widget) end
+                view.progress_widget = nil
+                self:_search_results(view)
+            end
+        end
+        local function start(ids)
+            local handle = view:submit(keyword, ids, 1)
+            if view.loading == false then return handle end
+            local progress
+            progress = construct(self.menu, { title = "搜索", item_table = {
+                { text = "搜索中…", enabled = false },
+                { text = "取消", callback = function()
+                    if type(view.cancel) == "function" then view:cancel() elseif type(view.close) == "function" then view:close() end
+                    if self.ui_manager and type(self.ui_manager.close) == "function" then self.ui_manager:close(progress) end
+                end },
+            } })
+            view.progress_widget = progress
+            return self:_show(progress)
+        end
         local choices = type(view.sourceChoices) == "function" and view:sourceChoices() or {}
-        if #choices == 0 then return view:submit(keyword, nil, 1) end
-        local items = { { text = "全部已启用书源", callback = function() return view:submit(keyword, nil, 1) end } }
+        if #choices == 0 then return start(nil) end
+        local items = { { text = "全部已启用书源", callback = function() return start(nil) end } }
         for _, source in ipairs(choices) do
-            items[#items + 1] = { text = source.name, callback = function() return view:submit(keyword, { source.id }, 1) end }
+            items[#items + 1] = { text = source.name, callback = function() return start({ source.id }) end }
         end
         return self:_show(construct(self.menu, { title = "选择搜索书源", item_table = items }))
     end
@@ -138,17 +176,21 @@ function Presenter:_sources(view)
     items[#items + 1] = { text = "从本地 JSON 导入", callback = function()
         return input_dialog("导入书源", "JSON 文件路径", function(path)
             local report = view:importLocal(path)
-            return self:_info(report and "导入完成" or "无法读取文件", "导入书源")
+            return self:_info(report and not report.error and (report.rejected or 0) == 0 and "导入完成" or "导入失败", "导入书源")
         end)
     end }
     items[#items + 1] = { text = "从网址导入", callback = function()
         return input_dialog("导入书源", "HTTPS 或 HTTP 地址", function(url)
             return view:importUrl(url, function(report, err)
-                self:_info(err and "远程导入失败" or "导入完成", "导入书源")
+                local text
+                if err or (report and report.error) or (report and tonumber(report.rejected) and report.rejected > 0) then text = "远程导入失败"
+                elseif report and report.warnings and #report.warnings > 0 then text = "导入完成；警告：HTTP 地址不安全"
+                else text = "导入完成" end
+                self:_info(text, "导入书源")
             end)
         end)
     end }
-    return self:_show(construct(self.menu, { title = "书源管理", item_table = items }))
+    return self:_show(construct(self.menu, { title = "书源管理", item_table = items, close_callback = function() if type(view.close) == "function" then return view:close() end end }))
 end
 
 function Presenter:_settings(view)
@@ -173,7 +215,19 @@ function Presenter:_catalog(view)
 end
 
 function Presenter:_detail(view)
-    local items = {
+    local items = {}
+    local info = view.info
+    if info then
+        items[#items + 1] = { text = "作者：" .. tostring(info.author or "未知"), enabled = false }
+        items[#items + 1] = { text = "简介：" .. tostring(info.intro or "暂无"), enabled = false }
+        items[#items + 1] = { text = "分类：" .. tostring(info.kind or "未分类"), enabled = false }
+        items[#items + 1] = { text = "最新章：" .. tostring(info.last_chapter or "未知"), enabled = false }
+    elseif view.info_error then
+        items[#items + 1] = { text = "详情加载失败（书源诊断）", enabled = false }
+    else
+        items[#items + 1] = { text = "详情加载中…", enabled = false }
+    end
+    local actions = {
         { text = "开始阅读", callback = function() return self:_info(view:startReading()) end },
         { text = "加入书架", callback = function() return view:addToShelf() end },
         { text = "移出书架", callback = function() return view:removeFromShelf() end },
@@ -188,6 +242,7 @@ function Presenter:_detail(view)
             for index, candidate in ipairs(view.alternatives or {}) do
                 alternatives[#alternatives + 1] = { text = candidate.source_name or "书源", callback = function()
                     view:switchSource(index)
+                    view._presenter_info_started = nil
                     return self:_detail(view)
                 end }
             end
@@ -195,7 +250,21 @@ function Presenter:_detail(view)
         end },
         { text = "下载整本", callback = function() return self:_info(view:startDownload()) end },
     }
-    return self:_show(construct(self.menu, { title = view.book.name or "图书详情", item_table = items }))
+    for _, item in ipairs(actions) do items[#items + 1] = item end
+    if not info and not view.info_error and not view._presenter_info_started and type(view.loadInfo) == "function" then
+        view._presenter_info_started = true
+        view:loadInfo(function(_, err)
+            if err then view.info_error = err end
+            self:_detail(view)
+        end)
+    end
+    return self:_show(construct(self.menu, {
+        title = view.book.name or "图书详情",
+        item_table = items,
+        close_callback = function()
+            if type(view.close) == "function" then return view:close() end
+        end,
+    }))
 end
 
 function Presenter:show(view)

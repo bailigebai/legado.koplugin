@@ -10,7 +10,10 @@ function BookDetail.new(options)
         book = options.book, alternatives = options.alternatives or {}, shelf = options.shelf,
         reading_hook = options.reading_hook, download_hook = options.download_hook,
         service = options.service, source_lookup = options.source_lookup,
-        alive = true, loading_catalog = false, catalog = nil, catalog_error = nil, request = nil,
+        alive = true, loading_info = false, loading_catalog = false,
+        info = nil, info_error = nil, catalog = nil, catalog_error = nil,
+        info_request = nil, catalog_request = nil, generation = 0,
+        info_generation = 0, catalog_generation = 0,
     }, BookDetail)
 end
 
@@ -18,28 +21,58 @@ function BookDetail:addToShelf() return self.shelf and self.shelf:add(self.book)
 function BookDetail:removeFromShelf() return self.shelf and self.shelf:remove(self.book.id) end
 function BookDetail:switchSource(index)
     local selected = self.alternatives[index]
-    if selected then self.book = selected end
+    if selected then
+        self.generation = self.generation + 1
+        if self.info_request and type(self.info_request.cancel) == "function" then self.info_request:cancel() end
+        if self.catalog_request and type(self.catalog_request.cancel) == "function" then self.catalog_request:cancel() end
+        self.info_request, self.catalog_request = nil, nil
+        self.book, self.info, self.catalog = selected, nil, nil
+        self.info_error, self.catalog_error = nil, nil
+        self.loading_info, self.loading_catalog = false, false
+    end
     return selected
+end
+function BookDetail:loadInfo(callback)
+    callback = callback or function() end
+    if not self.alive or not self.service or type(self.service.getBookInfo) ~= "function" then return nil end
+    if self.info_request and type(self.info_request.cancel) == "function" then self.info_request:cancel() end
+    self.info_generation = self.info_generation + 1
+    local generation, request_generation, book = self.generation, self.info_generation, self.book
+    local source = self.source_lookup and self.source_lookup(book.source_id) or nil
+    if not source then return nil end
+    self.loading_info, self.info_error = true, nil
+    self.info_request = self.service:getBookInfo(source, book, function(info, err)
+        if not self.alive or generation ~= self.generation or request_generation ~= self.info_generation or self.book.id ~= book.id then return end
+        self.loading_info, self.info_error, self.info_request = false, err, nil
+        if info then self.info, self.book = info, info end
+        callback(info, err)
+    end)
+    return self.info_request
 end
 function BookDetail:loadCatalog(callback)
     callback = callback or function() end
     if not self.alive or not self.service or type(self.service.getChapters) ~= "function" then return nil end
-    local source = self.source_lookup and self.source_lookup(self.book.source_ref) or nil
+    if self.catalog_request and type(self.catalog_request.cancel) == "function" then self.catalog_request:cancel() end
+    self.catalog_generation = self.catalog_generation + 1
+    local generation, request_generation, book = self.generation, self.catalog_generation, self.book
+    local source = self.source_lookup and self.source_lookup(book.source_id) or nil
     if not source then return nil end
     self.loading_catalog, self.catalog_error = true, nil
-    self.request = self.service:getChapters(source, self.book, function(chapters, err)
-        if not self.alive then return end
-        self.loading_catalog = false
+    self.catalog_request = self.service:getChapters(source, book, function(chapters, err)
+        if not self.alive or generation ~= self.generation or request_generation ~= self.catalog_generation or self.book.id ~= book.id then return end
+        self.loading_catalog, self.catalog_request = false, nil
         self.catalog_error = err
         if chapters then self.catalog = Catalog.new(chapters) end
         callback(self.catalog, err)
     end)
-    return self.request
+    return self.catalog_request
 end
 function BookDetail:close()
     if not self.alive then return false end
     self.alive = false
-    if self.request and type(self.request.cancel) == "function" then self.request:cancel() end
+    self.generation = self.generation + 1
+    if self.info_request and type(self.info_request.cancel) == "function" then self.info_request:cancel() end
+    if self.catalog_request and type(self.catalog_request.cancel) == "function" then self.catalog_request:cancel() end
     return true
 end
 function BookDetail:startReading() return self.reading_hook and self.reading_hook(self.book) or "阅读功能将在下一阶段提供" end

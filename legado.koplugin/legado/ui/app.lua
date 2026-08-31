@@ -3,6 +3,7 @@ local SearchView = require("legado.ui.search")
 local SettingsView = require("legado.ui.settings")
 local About = require("legado.ui.about")
 local BookDetail = require("legado.ui.book_detail")
+local Models = require("legado.lib.models")
 
 local App = {}
 App.__index = App
@@ -13,6 +14,7 @@ function App.new(options)
         storage = options.storage, service = options.book_service, source_manager = options.source_manager,
         settings = options.settings, appearance = options.appearance,
         reading_hook = options.reading_hook, download_hook = options.download_hook,
+        cover_loader = options.cover_loader,
         show = options.show,
     }, App)
 end
@@ -24,7 +26,9 @@ end
 
 function App:openBookshelf()
     if not self.storage then return self:_present({ title = "书架", empty_text = "书架尚未初始化" }) end
-    return self:_present(Shelf.new({ storage = self.storage, page_size = 20, covers_enabled = true }))
+    local page_size = self.settings and self.settings:get("shelf_page") or 20
+    local covers_enabled = not self.settings or self.settings:get("covers_enabled") ~= false
+    return self:_present(Shelf.new({ storage = self.storage, page_size = page_size, covers_enabled = covers_enabled, cover_loader = self.cover_loader }))
 end
 function App:openSearch()
     if not self.service then return self:_present({ title = "搜索", error = "搜索服务尚未初始化" }) end
@@ -40,11 +44,15 @@ function App:openAbout() return self:_present(About) end
 function App:startReading(book) return self.reading_hook and self.reading_hook(book) or "阅读功能将在下一阶段提供" end
 function App:startDownload(book) return self.download_hook and self.download_hook(book) or "下载功能将在下一阶段提供" end
 function App:createBookDetail(book, alternatives)
-    local shelf = self.storage and Shelf.new({ storage = self.storage, page_size = 20, covers_enabled = true }) or nil
+    local page_size = self.settings and self.settings:get("shelf_page") or 20
+    local covers_enabled = not self.settings or self.settings:get("covers_enabled") ~= false
+    local shelf = self.storage and Shelf.new({ storage = self.storage, page_size = page_size, covers_enabled = covers_enabled, cover_loader = self.cover_loader }) or nil
     return BookDetail.new({
         book = book, alternatives = alternatives or { book }, shelf = shelf,
         service = self.service,
-        source_lookup = self.storage and function(id) return self.storage:getSource(id) end or nil,
+        source_lookup = self.storage and function(opaque_id)
+            for _, source in ipairs(self.storage:listSources() or {}) do if Models.sourceId(source) == opaque_id then return source end end
+        end or nil,
         reading_hook = function(selected) return self:startReading(selected) end,
         download_hook = function(selected) return self:startDownload(selected) end,
     })
