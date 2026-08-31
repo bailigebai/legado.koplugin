@@ -183,6 +183,10 @@ function Presenter:_sources(view)
             local actions = {
                 { text = source.enabled == false and "启用书源" or "停用书源", callback = function() view:toggle(source.id); return self:_sources(view) end },
                 { text = "兼容性报告", callback = function()
+                    if type(view.compatibilityReport) == "function" then
+                        local compatibility_view = view:compatibilityReport(source.id)
+                        if compatibility_view then return self:show(compatibility_view) end
+                    end
                     local report = view:compatibility(source.id) or { status = "unsupported", issues = {} }
                     local lines = { "状态：" .. tostring(report.status) }
                     for _, issue in ipairs(report.issues or {}) do lines[#lines + 1] = tostring(issue.field or "规则") .. "：" .. tostring(issue.code or "不支持") end
@@ -228,6 +232,53 @@ function Presenter:_sources(view)
         end)
     end }
     return self:_show(construct(self.menu, { title = "书源管理", item_table = items, close_callback = function() if type(view.close) == "function" then return view:close() end end }))
+end
+
+local function diagnostic_report_text(report)
+    local lines = { "状态：" .. safe_token(type(report) == "table" and report.status, "unknown") }
+    for _, step in ipairs(type(report) == "table" and report.steps or {}) do
+        local line = tostring(step.name or "step") .. "：" .. safe_token(step.status, "unknown")
+        if tonumber(step.http_status) then line = line .. " · HTTP " .. tostring(math.floor(tonumber(step.http_status))) end
+        if type(step.charset) == "string" and step.charset:match("^[%w._%-]+$") then line = line .. " · " .. step.charset end
+        if type(step.error) == "table" then line = line .. " · " .. safe_token(step.error.code, "UNKNOWN_ERROR") end
+        lines[#lines + 1] = line
+    end
+    return table.concat(lines, "\n")
+end
+
+function Presenter:_compatibility(view)
+    local items = { { text = "状态：" .. tostring(view.status or "unsupported"), enabled = false } }
+    for _, capability in ipairs(view.capabilities or {}) do
+        items[#items + 1] = {
+            text = tostring(capability.name) .. "：" .. (capability.supported and "支持" or "不支持"),
+            enabled = false,
+        }
+    end
+    for _, issue in ipairs(view.issues or {}) do
+        items[#items + 1] = {
+            text = tostring(issue.field or "rule") .. "：" .. safe_token(issue.code, "UNSUPPORTED"),
+            enabled = false,
+        }
+    end
+    items[#items + 1] = { text = "运行诊断", enabled = view.diagnostics ~= nil, callback = function()
+        local dialog
+        local function start(keyword)
+            if (keyword == nil or keyword == "") and dialog and type(dialog.getInputText) == "function" then keyword = dialog:getInputText() end
+            if type(keyword) ~= "string" or keyword:match("^%s*$") then return self:_info("请输入测试书名", "书源诊断") end
+            return view:run(keyword, function(report)
+                self:_info(diagnostic_report_text(report), "书源诊断")
+            end)
+        end
+        dialog = construct(self.input_dialog, { title = "书源诊断", input_hint = "测试书名", input_type = "string", buttons = {
+            { { text = "取消" }, { text = "开始", is_enter_default = true, callback = start } },
+        } })
+        return self:_show(dialog)
+    end }
+    return self:_show(construct(self.menu, {
+        title = "兼容性报告",
+        item_table = items,
+        close_callback = function() return view:close() end,
+    }))
 end
 
 function Presenter:_settings(view)
@@ -365,6 +416,7 @@ function Presenter:show(view)
     if view.kind == "catalog" then return self:_catalog(view) end
     if view.kind == "book_detail" then return self:_detail(view) end
     if view.kind == "downloads" then return self:_downloads(view) end
+    if view.kind == "compatibility_report" then return self:_compatibility(view) end
     return self:_info(view.text or view.empty_text or view.error or "", view.title)
 end
 

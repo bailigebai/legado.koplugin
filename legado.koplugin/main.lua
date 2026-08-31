@@ -1,4 +1,4 @@
-local WidgetContainer = require("ui/widget/container")
+local WidgetContainer = require("ui/widget/container/widgetcontainer")
 
 local Legado = WidgetContainer:extend({
     name = "legado",

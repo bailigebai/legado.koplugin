@@ -1,0 +1,53 @@
+param([switch]$Offline)
+
+$ErrorActionPreference = "Stop"
+$repositoryRoot = Split-Path -Parent $PSScriptRoot
+$toolsRoot = Join-Path $repositoryRoot ".tools"
+$sourceRoot = Join-Path $toolsRoot "koreader"
+$archivePath = Join-Path $toolsRoot "koreader-kindlehf-v2026.07.1.zip"
+$python = Join-Path $toolsRoot "python\python.exe"
+$tag = "v2026.07.1"
+$archiveUrl = "https://github.com/koreader/koreader/releases/download/v2026.07.1/koreader-kindlehf-v2026.07.1.zip"
+$archiveSha256 = "3343a916d12f36c01b59df1f65bd83ff5616e6c2a4dfbe919e7fa1400b8b1bbb"
+
+if (-not (Test-Path -LiteralPath $toolsRoot -PathType Container)) {
+    New-Item -ItemType Directory -Path $toolsRoot | Out-Null
+}
+if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
+    & (Join-Path $PSScriptRoot "bootstrap-tests.ps1")
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+
+if (-not (Test-Path -LiteralPath $sourceRoot -PathType Container)) {
+    if ($Offline) { Write-Error "KOReader source is absent in offline mode: $sourceRoot"; exit 1 }
+    & git clone --quiet --depth 1 --branch $tag https://github.com/koreader/koreader.git $sourceRoot
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+$headCommit = (& git -C $sourceRoot rev-parse HEAD 2>$null).Trim()
+if ($LASTEXITCODE -ne 0) { Write-Error "Unable to read KOReader checkout: $sourceRoot"; exit 1 }
+$tagCommit = (& git -C $sourceRoot rev-parse ("refs/tags/{0}^{{commit}}" -f $tag) 2>$null).Trim()
+if ($LASTEXITCODE -ne 0 -or $headCommit -ne $tagCommit) {
+    Write-Error "KOReader source must be an exact $tag checkout: $sourceRoot"
+    exit 1
+}
+
+if (-not (Test-Path -LiteralPath $archivePath -PathType Leaf)) {
+    if ($Offline) { Write-Error "kindlehf archive is absent in offline mode: $archivePath"; exit 1 }
+    $temporaryArchive = $archivePath + ".part"
+    Invoke-WebRequest -UseBasicParsing -Uri $archiveUrl -OutFile $temporaryArchive
+    $downloadHash = (Get-FileHash -LiteralPath $temporaryArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($downloadHash -ne $archiveSha256) {
+        Remove-Item -LiteralPath $temporaryArchive -Force
+        Write-Error "Downloaded kindlehf archive hash mismatch."
+        exit 1
+    }
+    Move-Item -LiteralPath $temporaryArchive -Destination $archivePath
+}
+$actualHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($actualHash -ne $archiveSha256) {
+    Write-Error "Cached kindlehf archive hash mismatch: $archivePath"
+    exit 1
+}
+
+& $python (Join-Path $PSScriptRoot "check_koreader_compat.py") --plugin-root (Join-Path $repositoryRoot "legado.koplugin") --source-root $sourceRoot --kindlehf-archive $archivePath --tag $tag
+exit $LASTEXITCODE

@@ -6,7 +6,7 @@ local function extend(base, fields)
     return setmetatable(fields, { __index = base })
 end
 
-package.preload["ui/widget/container"] = function()
+package.preload["ui/widget/container/widgetcontainer"] = function()
     return { extend = extend }
 end
 package.preload["ui/uimanager"] = function()

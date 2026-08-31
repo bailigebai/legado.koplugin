@@ -17,6 +17,7 @@ function App.new(options)
         reading_hook = options.reading_hook, download_hook = options.download_hook,
         reader_session = options.reader_session,
         download_manager = options.download_manager,
+        speech_provider = options.speech_provider,
         scheduler = options.scheduler,
         cover_loader = options.cover_loader,
         show = options.show,
@@ -48,6 +49,9 @@ function App:openDownloads()
 end
 function App:openSettings() return self:_present(SettingsView.new({ settings = self.settings, appearance = self.appearance })) end
 function App:openAbout() return self:_present(About) end
+function App:openSpeech()
+    return self:_present({ kind = "speech_unavailable", title = "听书", text = "听书功能尚未配置" })
+end
 function App:startReading(book, chapters)
     if self.reading_hook then return self.reading_hook(book, chapters) end
     if not self.reader_session or not self.storage then return "阅读功能尚未初始化" end
@@ -106,6 +110,7 @@ function App:menuItems()
         { text = "下载管理", callback = function() return self:openDownloads() end },
         { text = "设置", callback = function() return self:openSettings() end },
         { text = "关于", callback = function() return self:openAbout() end },
+        { text = "听书", callback = function() return self:openSpeech() end },
     }
 end
 

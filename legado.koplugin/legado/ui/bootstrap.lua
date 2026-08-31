@@ -32,6 +32,7 @@ end
 
 function Bootstrap.build(plugin)
     local settings = Settings.new()
+    local speech_provider = require("legado.lib.speech_provider").new()
     local storage, service, source_manager, cover_loader, reader_session, download_manager, root
     local DataStorage = optional("datastorage")
     local fs = Fs.new()
@@ -59,11 +60,13 @@ function Bootstrap.build(plugin)
             local requests = RequestEngine.new({ scheduler = UIManager, settings = settings })
             local templates = UrlTemplate.new({ rule_engine = rules })
             service = BookService.new({ storage = storage, rule_engine = rules, request_engine = requests, url_template = templates, settings = settings })
+            local diagnostics = require("legado.lib.diagnostics").new({ book_service = service })
             local SourceImporter = require("legado.lib.source_importer")
             local SourceManager = require("legado.ui.source_manager")
             source_manager = SourceManager.new({
                 storage = storage, importer = SourceImporter:new({ storage = storage }),
                 request_engine = requests, fs = fs,
+                diagnostics = diagnostics,
                 confirm = function(message, accepted)
                     local ConfirmBox = optional("ui/widget/confirmbox")
                     if not (UIManager and ConfirmBox) then return false end
@@ -106,6 +109,7 @@ function Bootstrap.build(plugin)
         cover_loader = cover_loader,
         reader_session = reader_session,
         download_manager = download_manager,
+        speech_provider = speech_provider,
         scheduler = UIManager,
         show = presenter and function(view) return presenter:show(view) end or nil,
     })

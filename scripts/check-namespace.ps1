@@ -1,7 +1,13 @@
+param([string]$RuntimeRoot)
+
 $ErrorActionPreference = "Stop"
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
-$runtimeRoot = Join-Path $repositoryRoot "legado.koplugin"
+$runtimeRoot = if ($RuntimeRoot) { [System.IO.Path]::GetFullPath($RuntimeRoot) } else { Join-Path $repositoryRoot "legado.koplugin" }
+if (-not (Test-Path -LiteralPath $runtimeRoot -PathType Container)) {
+    Write-Error "Runtime root does not exist: $runtimeRoot"
+    exit 1
+}
 $violations = @()
 
 function Test-ProjectLocalLegacyModule {

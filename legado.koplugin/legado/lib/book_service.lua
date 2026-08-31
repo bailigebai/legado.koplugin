@@ -75,6 +75,13 @@ local function safe_message(err)
     return messages[code] or "书源处理失败"
 end
 
+local function response_metadata(response)
+    if type(response) ~= "table" then return nil end
+    local status = tonumber(response.status)
+    local charset = type(response.charset) == "string" and response.charset:lower():match("^([%w._%-]+)$") or nil
+    return { http_status = status, charset = charset }
+end
+
 local function aggregate_error(message, details)
     return Errors.new(Errors.NETWORK_ERROR, message, details)
 end
@@ -169,18 +176,19 @@ function BookService:_search_source(source, keyword, page, callback)
     local context = { key = keyword, page = page, baseUrl = source.bookSourceUrl, result = "" }
     return self:_request(source, source.searchUrl, context, function(response, request_error)
         if request_error then callback(nil, request_error); return end
+        local metadata = response_metadata(response)
         local final_url = response.final_url or context.baseUrl
         local parse_context = { key = keyword, page = page, baseUrl = final_url, result = response.body }
         local list_rule = aliases(rule, { "bookList", "list" })
         local members, list_error = self:_parse(response.body, list_rule, parse_context, true)
-        if list_error then callback(nil, list_error); return end
+        if list_error then callback(nil, list_error, metadata); return end
         local books = {}
         for _, member in ipairs(members or {}) do
             local book, book_error = self:_book_values(source, member, rule, final_url, parse_context)
-            if book_error then callback(nil, book_error); return end
+            if book_error then callback(nil, book_error, metadata); return end
             if book.name ~= "" and book.url ~= "" then books[#books + 1] = book end
         end
-        callback(books, nil)
+        callback(books, nil, metadata)
     end)
 end
 
@@ -211,7 +219,7 @@ function BookService:search(keyword, source_ids, page, callback)
     end
     local limit = concurrency(self.settings)
     local next_index, active, finished = 1, 0, 0
-    local results, failures = {}, {}
+    local results, failures, traces = {}, {}, {}
 
     local function finish()
         if state.cancelled or state.completed or finished < #sources then return end
@@ -233,7 +241,8 @@ function BookService:search(keyword, source_ids, page, callback)
         local result = { groups = groups, errors = errors, page = page, keyword = keyword }
         local err
         if #sources > 0 and #errors == #sources then err = aggregate_error("all selected sources failed", { count = #errors }) end
-        callback(result, err)
+        local trace = #sources == 1 and traces[1] or nil
+        callback(result, err, trace)
     end
 
     local pump
@@ -242,9 +251,10 @@ function BookService:search(keyword, source_ids, page, callback)
         while active < limit and next_index <= #sources do
             local index, source = next_index, sources[next_index]
             next_index, active = next_index + 1, active + 1
-            local child = self:_search_source(source, keyword, page, function(books, err)
+            local child = self:_search_source(source, keyword, page, function(books, err, metadata)
                 if state.cancelled or state.completed then return end
                 active, finished = active - 1, finished + 1
+                traces[index] = metadata
                 if err then
                     failures[index] = { source_id = Models.sourceId(source), source_name = trim(source.bookSourceName), code = err.code or Errors.NETWORK_ERROR, message = safe_message(err) }
                 else results[index] = books or {} end
@@ -292,20 +302,22 @@ function BookService:getChapters(source, book, callback)
     local rule = source_rule(source, "ruleToc")
     local url = book.toc_url or book.url
     local handle, state = composite()
-    local chapters, seen, page = {}, {}, 1
+    local chapters, seen, page, trace = {}, {}, 1, nil
     local function finish(value, err)
         if state.cancelled or state.completed then return end
         state.completed = true
-        callback(value, err)
+        callback(value, err, trace)
     end
     local fetch
     fetch = function(current_url)
         if state.cancelled or state.completed then return end
         if seen[current_url] then finish(nil, Errors.new(Errors.PARSE_ERROR, "catalog pagination loop detected")); return end
         seen[current_url] = true
+        trace = nil
         local child = self:_request(source, current_url, { baseUrl = current_url, page = page, result = "" }, function(response, request_error)
             if state.cancelled or state.completed then return end
             if request_error then finish(nil, request_error); return end
+            trace = response_metadata(response)
             local final_url = response.final_url or current_url
             local context = { baseUrl = final_url, page = page, result = response.body }
             local list, list_error = self:_parse(response.body, aliases(rule, { "chapterList", "list" }), context, true)
@@ -346,20 +358,22 @@ function BookService:getContent(source, book, chapter, callback)
     end
     local rule = source_rule(source, "ruleContent")
     local handle, state = composite()
-    local parts, seen, page = {}, {}, 1
+    local parts, seen, page, trace = {}, {}, 1, nil
     local function finish(value, err)
         if state.cancelled or state.completed then return end
         state.completed = true
-        callback(value, err)
+        callback(value, err, trace)
     end
     local fetch
     fetch = function(url)
         if state.cancelled or state.completed then return end
         if seen[url] then finish(nil, Errors.new(Errors.PARSE_ERROR, "content pagination loop detected")); return end
         seen[url] = true
+        trace = nil
         local child = self:_request(source, url, { baseUrl = url, page = page, result = "" }, function(response, request_error)
             if state.cancelled or state.completed then return end
             if request_error then finish(nil, request_error); return end
+            trace = response_metadata(response)
             local final_url = response.final_url or url
             local context = { baseUrl = final_url, page = page, result = response.body }
             local content, parse_error = self:_parse(response.body, aliases(rule, { "content", "body" }), context, false)

@@ -31,4 +31,14 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "verify-epub.ps1") -SelfTest
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
+& powershell -ExecutionPolicy Bypass -File (Join-Path $repositoryRoot "spec\package_spec.ps1")
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
+& powershell -ExecutionPolicy Bypass -File (Join-Path $repositoryRoot "spec\koreader_compat_spec.ps1")
 exit $LASTEXITCODE

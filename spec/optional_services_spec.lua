@@ -1,6 +1,6 @@
 local assertx = require("assertions")
 
-package.preload["ui/widget/container"] = function()
+package.preload["ui/widget/container/widgetcontainer"] = function()
     return {
         extend = function(base, fields)
             return setmetatable(fields or {}, { __index = base })

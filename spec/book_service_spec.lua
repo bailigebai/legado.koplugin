@@ -116,6 +116,16 @@ end
 do
     local request = controlled_engine()
     local service = new_service(request, 1)
+    local search_metadata
+    service:search("trace", { "a" }, 1, function(_, _, metadata) search_metadata = metadata end)
+    request:respond(1, { status = 201, charset = "gb18030", final_url = "https://a.test/search", body = '{"items":[]}' })
+    equal(201, search_metadata.http_status, "single-source search exposes safe diagnostic HTTP status")
+    equal("gb18030", search_metadata.charset, "single-source search exposes safe diagnostic charset")
+end
+
+do
+    local request = controlled_engine()
+    local service = new_service(request, 1)
     local result
     local handle = service:search("shared", nil, 1, function(value) result = value end)
     equal(1, #request.requests, "all-enabled search respects concurrency one")

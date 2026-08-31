@@ -10,6 +10,7 @@ function SourceManager.new(options)
     return setmetatable({
         kind = "source_manager",
         storage = options.storage, importer = options.importer, requests = options.request_engine,
+        diagnostics = options.diagnostics,
         fs = options.fs, scanner = options.scanner or Scanner, confirm = options.confirm or function() return false end,
         alive = true, generation = 0, request = nil,
     }, SourceManager)
@@ -76,6 +77,16 @@ end
 function SourceManager:compatibility(id)
     local source = self.storage:getSource(id)
     return source and self.scanner.scan(source) or nil
+end
+
+function SourceManager:compatibilityReport(id)
+    local source = self.storage:getSource(id)
+    if not source then return nil end
+    return require("legado.ui.compatibility_report").new({
+        source = source,
+        scanner = self.scanner,
+        diagnostics = self.diagnostics,
+    })
 end
 
 function SourceManager:update(id, callback)

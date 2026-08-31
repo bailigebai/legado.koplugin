@@ -4,4 +4,6 @@
 .superpowers/
 dist/
 *.zip
+__pycache__/
+*.pyc
 
