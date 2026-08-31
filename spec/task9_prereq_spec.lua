@@ -2,6 +2,7 @@ local assertx = require("assertions")
 local DownloadManager = require("legado.lib.download_manager")
 local Errors = require("legado.lib.errors")
 local Storage = require("legado.lib.storage")
+local Downloads = require("legado.ui.downloads")
 
 local count = 0
 local function equal(expected, actual, message) count = count + 1; assertx.equal(expected, actual, message) end
@@ -77,6 +78,163 @@ local function manager_fixture(options)
         book_service = service, builder = { write = function() end }, standby = standby,
         scheduler = scheduler, output_root = "downloads", now = options.now or function() return 100 end })
     return manager, state
+end
+
+-- Completed history may omit book metadata for backward compatibility, but a
+-- present book and optional task references must be structurally usable by the
+-- real Downloads list view.
+do
+    for index, bad_book in ipairs({ true, 7 }) do
+        local task = restored("completed-bad-book-" .. index, 1, 1)
+        task.status, task.book = "completed", bad_book
+        local manager, state = manager_fixture({ initial = { task } })
+        truthy(manager.persistence_blocked, "completed bad book " .. index .. " blocks restored history")
+        equal(Errors.STORAGE_ERROR, manager.init_error and manager.init_error.code,
+            "completed bad book " .. index .. " has a structured error")
+        equal(0, #manager.queue, "completed bad book " .. index .. " exposes no queue")
+        equal(0, #state.scheduled, "completed bad book " .. index .. " schedules no work")
+        local view_ok, view = pcall(Downloads.new, { manager = manager })
+        truthy(view_ok, "Downloads UI survives completed bad book " .. index)
+        equal(0, view and #view.items or -1, "Downloads UI receives no corrupt row " .. index)
+        state.list_value = function()
+            local repaired = restored("completed-repaired-" .. index, 1, 1)
+            repaired.status = "completed"
+            return { repaired }
+        end
+        truthy(manager:recoverPersistence(), "completed bad book " .. index .. " recovers after repair")
+    end
+
+    local legacy = { id = "completed-legacy-minimal", status = "completed", final_path = "downloads/legacy.epub" }
+    local legacy_manager = manager_fixture({ initial = { legacy } })
+    equal(false, legacy_manager.persistence_blocked, "minimal legacy completed record may omit book and references")
+    local legacy_view = Downloads.new({ manager = legacy_manager })
+    equal(1, #legacy_view.items, "Downloads UI lists minimal legacy completed history")
+
+    local with_book = restored("completed-with-book", 2, 1)
+    with_book.status, with_book.book_id, with_book.source_id = "completed", nil, nil
+    local with_book_manager = manager_fixture({ initial = { with_book } })
+    equal(false, with_book_manager.persistence_blocked,
+        "completed book validates its own id and source when task references are absent")
+    local with_book_view = Downloads.new({ manager = with_book_manager })
+    truthy(with_book_view.items[1].text:find("completed%-with%-book") ~= nil,
+        "Downloads UI renders a validated completed book")
+
+    local mismatch = restored("completed-mismatched-book", 3, 1)
+    mismatch.status, mismatch.book_id = "completed", "different-book-id"
+    local mismatch_manager, mismatch_state = manager_fixture({ initial = { mismatch } })
+    truthy(mismatch_manager.persistence_blocked, "completed book reference mismatch is rejected")
+    equal(0, #mismatch_state.scheduled, "completed book mismatch schedules no work")
+end
+
+-- Queue metadata is normalized across every persisted status.  Non-queued
+-- invalid metadata is cleared atomically without changing status or requeueing
+-- history; running/cancelling retain only the existing restart interruption.
+do
+    local statuses = { "queued", "running", "cancelling", "interrupted", "failed", "cancelled", "completed" }
+    for index, status in ipairs(statuses) do
+        local id = "all-status-valid-sequence-" .. status
+        local task = restored(id, "0002", index)
+        task.status = status
+        local manager, state = manager_fixture({ initial = { task } })
+        equal(2, state.tasks[id].queue_sequence, status .. " exact string sequence is persisted as a number")
+        equal("number", type(manager:get(id).queue_sequence), status .. " manager exposes numeric sequence metadata")
+        local expected_status = (status == "running" or status == "cancelling") and "interrupted" or status
+        equal(expected_status, manager:get(id).status, status .. " normalization preserves lifecycle semantics")
+        equal(status == "queued" and id or "", table.concat(manager.queue, ","),
+            status .. " normalization cannot accidentally requeue history")
+    end
+
+    for _, invalid in ipairs({ "2e0", "9007199254740992" }) do
+        for index, status in ipairs(statuses) do
+            local id = "all-status-invalid-" .. status .. "-" .. index .. "-" .. invalid
+            local task = restored(id, invalid, index)
+            task.status = status
+            local manager, state = manager_fixture({ initial = { task } })
+            if status == "queued" then
+                equal(1, state.tasks[id].queue_sequence, status .. " invalid sequence migrates into FIFO")
+                equal(id, manager.queue[1], status .. " invalid sequence remains queued once")
+            else
+                equal(nil, state.tasks[id].queue_sequence, status .. " invalid irrelevant sequence is cleared")
+                equal(0, #manager.queue, status .. " invalid irrelevant sequence cannot requeue history")
+            end
+            local expected_status = (status == "running" or status == "cancelling") and "interrupted" or status
+            equal(expected_status, manager:get(id).status, status .. " invalid metadata cleanup preserves status")
+        end
+    end
+end
+
+-- Terminal metadata cleanup failures block atomically and resume without
+-- status changes or queue insertion after the storage backend is repaired.
+do
+    for index, definition in ipairs({
+        { value = "0002", fails_when = function(task) return task.queue_sequence == 2 end },
+        { value = "2e0", fails_when = function(task) return rawget(task, "queue_sequence") == nil end },
+    }) do
+        local id = "terminal-sequence-write-failure-" .. index
+        local task = restored(id, definition.value, 1)
+        task.status = "failed"
+        local manager, state = manager_fixture({ initial = { task }, fail_put = function(current, fixture_state)
+            if current.id == id and definition.fails_when(current) and not fixture_state.failed_once then
+                fixture_state.failed_once = true
+                return true
+            end
+        end })
+        truthy(manager.persistence_blocked, "terminal sequence write failure " .. index .. " blocks initialization")
+        equal("failed", manager:get(id).status, "terminal sequence write failure " .. index .. " preserves status")
+        equal(definition.value, manager:get(id).queue_sequence,
+            "terminal sequence write failure " .. index .. " rolls back in-memory metadata")
+        equal(0, #manager.queue, "terminal sequence write failure " .. index .. " exposes no queue")
+        state.fail_put = nil
+        truthy(manager:recoverPersistence(), "terminal sequence write failure " .. index .. " recovers")
+        equal(index == 1 and 2 or nil, state.tasks[id].queue_sequence,
+            "terminal sequence write failure " .. index .. " finishes deterministic normalization")
+        equal("failed", manager:get(id).status, "terminal sequence recovery " .. index .. " keeps terminal status")
+        equal(0, #manager.queue, "terminal sequence recovery " .. index .. " never requeues history")
+    end
+end
+
+-- Restored progress counters must describe a possible partition of total
+-- chapters.  Minimal legacy records still default missing counters to zero.
+do
+    local invalid_counts = {
+        { total = 1, completed = 2, failed = 0 },
+        { total = 1, completed = 0, failed = 2 },
+        { total = 2, completed = 2, failed = 1 },
+        { total = 0, completed = 1, failed = 0 },
+        { total = 0, completed = 0, failed = 1 },
+    }
+    for _, status in ipairs({ "running", "failed", "cancelled", "completed" }) do
+        for index, counters in ipairs(invalid_counts) do
+            local id = "invalid-counters-" .. status .. "-" .. index
+            local task = restored(id, 1, index)
+            task.status, task.total, task.completed, task.failed =
+                status, counters.total, counters.completed, counters.failed
+            local manager, state = manager_fixture({ initial = { task } })
+            truthy(manager.persistence_blocked, status .. " impossible counters " .. index .. " are rejected")
+            equal(Errors.STORAGE_ERROR, manager.init_error and manager.init_error.code,
+                status .. " impossible counters " .. index .. " are structured")
+            equal(0, #manager.queue, status .. " impossible counters " .. index .. " expose no queue")
+            equal(0, #state.scheduled, status .. " impossible counters " .. index .. " schedule no work")
+            equal(0, state.network, status .. " impossible counters " .. index .. " start no network")
+            state.list_value = function()
+                local repaired = restored("repaired-counters-" .. status .. "-" .. index, 1, index)
+                repaired.status, repaired.total, repaired.completed, repaired.failed = status, 3, 2, 1
+                return { repaired }
+            end
+            truthy(manager:recoverPersistence(), status .. " counters " .. index .. " recover after repair")
+        end
+    end
+
+    for _, status in ipairs({ "running", "failed", "cancelled", "completed" }) do
+        local id = "valid-counters-" .. status
+        local task = restored(id, 1, 1)
+        task.status, task.total, task.completed, task.failed = status, 10, 4, 2
+        local manager, state = manager_fixture({ initial = { task } })
+        equal(false, manager.persistence_blocked, status .. " valid progress remains accepted")
+        equal(10, state.tasks[id].total, status .. " valid total remains unchanged")
+        equal(4, state.tasks[id].completed, status .. " valid completed count remains unchanged")
+        equal(2, state.tasks[id].failed, status .. " valid failure count remains unchanged")
+    end
 end
 
 -- Every initialization write is an exception boundary.  A backend throw at

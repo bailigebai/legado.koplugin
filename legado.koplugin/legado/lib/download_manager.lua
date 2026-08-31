@@ -119,6 +119,13 @@ local function sorted_queued_tasks(tasks)
     return queued
 end
 
+local function sorted_tasks(tasks)
+    local values = {}
+    for _, task in pairs(tasks) do values[#values + 1] = task end
+    table.sort(values, function(a, b) return a.id < b.id end)
+    return values
+end
+
 function DownloadManager:_migrateAndRebuildQueue()
     local maximum = valid_queue_sequence(self.queue_sequence) or 0
     for _, task in pairs(self.tasks) do
@@ -126,6 +133,17 @@ function DownloadManager:_migrateAndRebuildQueue()
     end
     self.queue_sequence = maximum
     local seen, legacy, normalize = {}, {}, {}
+    for _, task in ipairs(sorted_tasks(self.tasks)) do
+        local raw_sequence = task.queue_sequence
+        local sequence = valid_queue_sequence(raw_sequence)
+        if task.status ~= "queued" and raw_sequence ~= nil then
+            if sequence ~= nil and type(raw_sequence) == "string" then
+                normalize[task] = sequence
+            elseif sequence == nil then
+                normalize[task] = CLEAR
+            end
+        end
+    end
     for _, task in ipairs(sorted_queued_tasks(self.tasks)) do
         local sequence = valid_queue_sequence(task.queue_sequence)
         if sequence == nil or seen[sequence] then
@@ -135,9 +153,10 @@ function DownloadManager:_migrateAndRebuildQueue()
             if type(task.queue_sequence) == "string" then normalize[task] = sequence end
         end
     end
-    for _, task in ipairs(sorted_queued_tasks(self.tasks)) do
-        if normalize[task] then
-            local saved, err = self:_transition(task, { queue_sequence = normalize[task] })
+    for _, task in ipairs(sorted_tasks(self.tasks)) do
+        local normalized_sequence = normalize[task]
+        if normalized_sequence then
+            local saved, err = self:_transition(task, { queue_sequence = normalized_sequence })
             if not saved then return nil, err end
         end
     end
@@ -218,7 +237,7 @@ local function valid_restored_book(value, book_id, source_id)
     if type(value) ~= "table" then return false end
     local id, source = rawget(value, "id"), rawget(value, "source_id")
     if type(id) ~= "string" or id == "" or type(source) ~= "string" or source == ""
-        or id ~= book_id or source ~= source_id then return false end
+        or (book_id ~= nil and id ~= book_id) or (source_id ~= nil and source ~= source_id) then return false end
     for _, field in ipairs({
         "source_name", "name", "author", "url", "cover_url", "intro",
         "kind", "last_chapter", "toc_url",
@@ -319,11 +338,13 @@ local function validate_download_listing(value)
             or (queue_type ~= "nil" and queue_type ~= "number" and queue_type ~= "string")
             or created_at == nil or updated_at == nil or generation == nil
             or total == nil or completed == nil or failed == nil
+            or completed > total or failed > total or completed > total - failed
             or (cancel_requested ~= nil and type(cancel_requested) ~= "boolean")
             or (current ~= nil and type(current) ~= "string")
-            or (requires_book and (type(book_id) ~= "string" or book_id == ""
-                or type(source_id) ~= "string" or source_id == ""
-                or not valid_restored_book(book, book_id, source_id)))
+            or (book_id ~= nil and (type(book_id) ~= "string" or book_id == ""))
+            or (source_id ~= nil and (type(source_id) ~= "string" or source_id == ""))
+            or (requires_book and (book_id == nil or source_id == nil or book == nil))
+            or (book ~= nil and not valid_restored_book(book, book_id, source_id))
             or (chapters ~= nil and not valid_restored_chapters(chapters))
             or (error_record ~= nil and not valid_restored_diagnostic(error_record))
             or (warning ~= nil and not valid_restored_diagnostic(warning))
