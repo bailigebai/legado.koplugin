@@ -10,9 +10,18 @@ DownloadManager.__index = DownloadManager
 local terminal = { cancelled = true, failed = true, completed = true }
 local CLEAR = {}
 local MAX_SAFE_QUEUE_SEQUENCE = 9007199254740991
+local MAX_SAFE_QUEUE_SEQUENCE_TEXT = "9007199254740991"
 local RESTORABLE_STATUS = {
     queued = true, running = true, cancelling = true, interrupted = true,
     failed = true, cancelled = true, completed = true,
+}
+local KNOWN_ERROR_CODE = {
+    [Errors.INVALID_INPUT] = true, [Errors.STORAGE_ERROR] = true,
+    [Errors.MIGRATION_ERROR] = true, [Errors.NETWORK_ERROR] = true,
+    [Errors.TIMEOUT] = true, [Errors.CANCELLED] = true,
+    [Errors.RESPONSE_TOO_LARGE] = true, [Errors.ENCODING_ERROR] = true,
+    [Errors.PARSE_ERROR] = true, [Errors.UNSUPPORTED_RULE] = true,
+    [Errors.SITE_REJECTED] = true,
 }
 
 local function copy(value, seen)
@@ -29,8 +38,17 @@ local function timestamp(epoch)
 end
 
 local function error_value(value, fallback)
-    if type(value) == "table" and value.code then return value end
-    return Errors.new(Errors.STORAGE_ERROR, fallback or "download failed", value and { cause = tostring(value) } or nil)
+    local code, sequence_exhausted = Errors.STORAGE_ERROR, false
+    if type(value) == "table" then
+        local candidate = rawget(value, "code")
+        if type(candidate) == "string" and KNOWN_ERROR_CODE[candidate] then code = candidate end
+        local details = rawget(value, "details")
+        if type(details) == "table" then
+            sequence_exhausted = rawget(details, "sequence_exhausted") == true
+        end
+    end
+    return Errors.new(code, fallback or "download failed",
+        sequence_exhausted and { sequence_exhausted = true } or nil)
 end
 
 local function durable_task(task)
@@ -49,7 +67,20 @@ local function published_diagnostic(value)
 end
 
 local function valid_queue_sequence(value)
-    local numeric = tonumber(value)
+    local numeric
+    if type(value) == "number" then
+        numeric = value
+    elseif type(value) == "string" then
+        if not value:match("^%d+$") then return nil end
+        local digits = value:gsub("^0+", "")
+        if digits == "" or #digits > #MAX_SAFE_QUEUE_SEQUENCE_TEXT
+            or (#digits == #MAX_SAFE_QUEUE_SEQUENCE_TEXT and digits > MAX_SAFE_QUEUE_SEQUENCE_TEXT) then
+            return nil
+        end
+        numeric = tonumber(digits)
+    else
+        return nil
+    end
     if not numeric or numeric ~= numeric or numeric == math.huge or numeric == -math.huge
         or numeric <= 0 or numeric > MAX_SAFE_QUEUE_SEQUENCE or numeric % 1 ~= 0
         or numeric + 1 <= numeric then return nil end
@@ -94,13 +125,20 @@ function DownloadManager:_migrateAndRebuildQueue()
         maximum = math.max(maximum, valid_queue_sequence(task.queue_sequence) or 0)
     end
     self.queue_sequence = maximum
-    local seen, legacy = {}, {}
+    local seen, legacy, normalize = {}, {}, {}
     for _, task in ipairs(sorted_queued_tasks(self.tasks)) do
         local sequence = valid_queue_sequence(task.queue_sequence)
         if sequence == nil or seen[sequence] then
             legacy[task] = true
         else
             seen[sequence] = true
+            if type(task.queue_sequence) == "string" then normalize[task] = sequence end
+        end
+    end
+    for _, task in ipairs(sorted_queued_tasks(self.tasks)) do
+        if normalize[task] then
+            local saved, err = self:_transition(task, { queue_sequence = normalize[task] })
+            if not saved then return nil, err end
         end
     end
     for _, task in ipairs(sorted_queued_tasks(self.tasks)) do
@@ -123,12 +161,127 @@ function DownloadManager:_migrateAndRebuildQueue()
 end
 
 
+local function plain_persisted_copy(value, seen, depth, budget)
+    local value_type = type(value)
+    if value_type == "nil" or value_type == "boolean" or value_type == "string" then return value end
+    if value_type == "number" then
+        if value ~= value or value == math.huge or value == -math.huge then
+            return nil, "non-finite persisted number"
+        end
+        return value
+    end
+    if value_type ~= "table" then return nil, "unsupported persisted value" end
+    depth = (depth or 0) + 1
+    if depth > 64 then return nil, "persisted value nesting is too deep" end
+    seen, budget = seen or {}, budget or { count = 0 }
+    if seen[value] then return nil, "cyclic persisted value" end
+    seen[value] = true
+    local result, key = {}, nil
+    while true do
+        local next_key, child = next(value, key)
+        if next_key == nil then break end
+        key = next_key
+        budget.count = budget.count + 1
+        if budget.count > 100000 then seen[value] = nil; return nil, "persisted value is too large" end
+        local key_type = type(next_key)
+        if key_type ~= "string" and key_type ~= "number" and key_type ~= "boolean" then
+            seen[value] = nil
+            return nil, "unsupported persisted key"
+        end
+        if key_type == "number" and (next_key ~= next_key or next_key == math.huge or next_key == -math.huge) then
+            seen[value] = nil
+            return nil, "non-finite persisted key"
+        end
+        local copied, copy_error = plain_persisted_copy(child, seen, depth, budget)
+        if copy_error then seen[value] = nil; return nil, copy_error end
+        rawset(result, next_key, copied)
+    end
+    seen[value] = nil
+    return result
+end
+
+local function valid_plain_array(value, table_items)
+    if type(value) ~= "table" then return false end
+    local count, highest, key = 0, 0, nil
+    while true do
+        local next_key, child = next(value, key)
+        if next_key == nil then break end
+        key = next_key
+        if type(next_key) ~= "number" or next_key < 1 or next_key % 1 ~= 0
+            or (table_items and type(child) ~= "table") then return false end
+        count, highest = count + 1, math.max(highest, next_key)
+    end
+    return count == highest
+end
+
+local function valid_restored_book(value, book_id, source_id)
+    if type(value) ~= "table" then return false end
+    local id, source = rawget(value, "id"), rawget(value, "source_id")
+    if type(id) ~= "string" or id == "" or type(source) ~= "string" or source == ""
+        or id ~= book_id or source ~= source_id then return false end
+    for _, field in ipairs({
+        "source_name", "name", "author", "url", "cover_url", "intro",
+        "kind", "last_chapter", "toc_url",
+    }) do
+        local child = rawget(value, field)
+        if child ~= nil and type(child) ~= "string" then return false end
+    end
+    local word_count = rawget(value, "word_count")
+    if word_count ~= nil and (type(word_count) ~= "number" or word_count ~= word_count or word_count < 0) then
+        return false
+    end
+    return true
+end
+
+local function valid_restored_chapters(value)
+    if not valid_plain_array(value, true) then return false end
+    local index = 1
+    while rawget(value, index) ~= nil do
+        local chapter = rawget(value, index)
+        local uid, chapter_index = rawget(chapter, "uid"), rawget(chapter, "index")
+        if type(uid) ~= "string" or uid == "" or type(chapter_index) ~= "number"
+            or chapter_index < 1 or chapter_index % 1 ~= 0 or chapter_index >= MAX_SAFE_QUEUE_SEQUENCE then
+            return false
+        end
+        for _, field in ipairs({ "book_id", "source_id", "title", "url" }) do
+            local child = rawget(chapter, field)
+            if child ~= nil and type(child) ~= "string" then return false end
+        end
+        local vip = rawget(chapter, "vip")
+        if vip ~= nil and type(vip) ~= "boolean" then return false end
+        index = index + 1
+    end
+    return true
+end
+
+local function valid_restored_diagnostic(value)
+    if type(value) ~= "table" then return false end
+    local code, message = rawget(value, "code"), rawget(value, "message")
+    return type(code) == "string" and code ~= "" and type(message) == "string"
+end
+
+local function normalized_counter(value, default)
+    if value == nil then return default end
+    if type(value) ~= "number" or value ~= value or value < 0 or value % 1 ~= 0
+        or value >= MAX_SAFE_QUEUE_SEQUENCE then return nil end
+    return value
+end
+
 local function validate_download_listing(value)
     if type(value) ~= "table" then
         return nil, Errors.new(Errors.STORAGE_ERROR, "invalid persisted download collection")
     end
+    local normalized = plain_persisted_copy(value)
+    if not normalized then
+        return nil, Errors.new(Errors.STORAGE_ERROR, "invalid persisted download collection")
+    end
+    value = normalized
     local count, highest = 0, 0
-    for key in pairs(value) do
+    local collection_key = nil
+    while true do
+        local key = next(value, collection_key)
+        if key == nil then break end
+        collection_key = key
         if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then
             return nil, Errors.new(Errors.STORAGE_ERROR, "invalid persisted download collection")
         end
@@ -139,25 +292,60 @@ local function validate_download_listing(value)
     end
     local tasks, order, ids = {}, {}, {}
     for index = 1, count do
-        local task = value[index]
-        local queue_type = type(task) == "table" and type(task.queue_sequence) or "nil"
-        local created_type = type(task) == "table" and type(task.created_at) or "nil"
-        local updated_type = type(task) == "table" and type(task.updated_at) or "nil"
-        if type(task) ~= "table" or type(task.id) ~= "string" or task.id == ""
-            or type(task.status) ~= "string" or not RESTORABLE_STATUS[task.status] or ids[task.id]
+        local task = rawget(value, index)
+        local id = type(task) == "table" and rawget(task, "id") or nil
+        local status = type(task) == "table" and rawget(task, "status") or nil
+        local queue_sequence = type(task) == "table" and rawget(task, "queue_sequence") or nil
+        local queue_type = type(queue_sequence)
+        local created_at = type(task) == "table" and normalized_counter(rawget(task, "created_at"), 0) or nil
+        local updated_at = type(task) == "table" and normalized_counter(rawget(task, "updated_at"), 0) or nil
+        local generation = type(task) == "table" and normalized_counter(rawget(task, "generation"), 0) or nil
+        local total = type(task) == "table" and normalized_counter(rawget(task, "total"), 0) or nil
+        local completed = type(task) == "table" and normalized_counter(rawget(task, "completed"), 0) or nil
+        local failed = type(task) == "table" and normalized_counter(rawget(task, "failed"), 0) or nil
+        local cancel_requested = type(task) == "table" and rawget(task, "cancel_requested") or nil
+        local current = type(task) == "table" and rawget(task, "current") or nil
+        local book = type(task) == "table" and rawget(task, "book") or nil
+        local chapters = type(task) == "table" and rawget(task, "chapters") or nil
+        local error_record = type(task) == "table" and rawget(task, "error") or nil
+        local warning = type(task) == "table" and rawget(task, "warning") or nil
+        local diagnostic = type(task) == "table" and rawget(task, "published_diagnostic") or nil
+        local final_path = type(task) == "table" and rawget(task, "final_path") or nil
+        local book_id = type(task) == "table" and rawget(task, "book_id") or nil
+        local source_id = type(task) == "table" and rawget(task, "source_id") or nil
+        local requires_book = status ~= "completed"
+        if type(task) ~= "table" or type(id) ~= "string" or id == ""
+            or type(status) ~= "string" or not RESTORABLE_STATUS[status] or ids[id]
             or (queue_type ~= "nil" and queue_type ~= "number" and queue_type ~= "string")
-            or (created_type ~= "nil" and created_type ~= "number" and created_type ~= "string")
-            or (updated_type ~= "nil" and updated_type ~= "number" and updated_type ~= "string") then
+            or created_at == nil or updated_at == nil or generation == nil
+            or total == nil or completed == nil or failed == nil
+            or (cancel_requested ~= nil and type(cancel_requested) ~= "boolean")
+            or (current ~= nil and type(current) ~= "string")
+            or (requires_book and (type(book_id) ~= "string" or book_id == ""
+                or type(source_id) ~= "string" or source_id == ""
+                or not valid_restored_book(book, book_id, source_id)))
+            or (chapters ~= nil and not valid_restored_chapters(chapters))
+            or (error_record ~= nil and not valid_restored_diagnostic(error_record))
+            or (warning ~= nil and not valid_restored_diagnostic(warning))
+            or (diagnostic ~= nil and not valid_restored_diagnostic(diagnostic))
+            or (final_path ~= nil and type(final_path) ~= "string") then
             return nil, Errors.new(Errors.STORAGE_ERROR, "invalid persisted download task", { index = index })
         end
-        ids[task.id] = true
-        tasks[task.id], order[#order + 1] = task, task.id
+        rawset(task, "created_at", created_at)
+        rawset(task, "updated_at", updated_at)
+        rawset(task, "generation", generation)
+        rawset(task, "total", total)
+        rawset(task, "completed", completed)
+        rawset(task, "failed", failed)
+        rawset(task, "cancel_requested", cancel_requested == true)
+        ids[id] = true
+        tasks[id], order[#order + 1] = task, id
     end
     return tasks, order
 end
 
 function DownloadManager:_readPersistedTasks()
-    local ok, value = pcall(self.storage.listDownloadTasks, self.storage)
+    local ok, value = pcall(function() return self.storage:listDownloadTasks() end)
     if not ok then
         return nil, error_value(value, "cannot load persisted download tasks")
     end
@@ -237,7 +425,10 @@ function DownloadManager.new(options)
 end
 
 function DownloadManager:_persist(task)
-    local saved, err = self.storage:putDownloadTask(durable_task(task))
+    local called, saved, err = pcall(function()
+        return self.storage:putDownloadTask(durable_task(task))
+    end)
+    if not called then return nil, error_value(saved, "cannot persist download task") end
     if not saved then return nil, error_value(err, "cannot persist download task") end
     self.tasks[task.id] = task
     return true

@@ -29,26 +29,35 @@ local function manager_fixture(options)
     options = options or {}
     local state = {
         tasks = {}, list_value = options.list_value, list_throws = options.list_throws,
-        fail_put = options.fail_put, puts = 0, network = 0, scheduled = {}, releases = 0,
+        list_error = options.list_error, fail_put = options.fail_put, put_error = options.put_error,
+        throw_put = options.throw_put, puts = 0, network = 0, scheduled = {}, releases = 0,
     }
-    for _, task in ipairs(options.initial or {}) do state.tasks[task.id] = clone(task) end
+    for _, task in ipairs(options.initial or {}) do
+        state.tasks[rawget(task, "id")] = options.raw_listing and task or clone(task)
+    end
     if state.list_value == nil then
         state.list_value = function()
             local values = {}
-            for _, task in pairs(state.tasks) do values[#values + 1] = clone(task) end
+            for _, task in pairs(state.tasks) do
+                values[#values + 1] = options.raw_listing and task or clone(task)
+            end
             return values
         end
     end
     local storage = {}
     function storage:listDownloadTasks()
-        if state.list_throws then error("damaged download collection") end
+        if state.list_throws then error(state.list_error or "damaged download collection") end
         if type(state.list_value) == "function" then return state.list_value() end
         return state.list_value
     end
     function storage:putDownloadTask(task)
         state.puts = state.puts + 1
+        if state.throw_put then
+            local thrown = state.throw_put(task, state)
+            if thrown ~= nil then error(thrown) end
+        end
         if state.fail_put and state.fail_put(task, state) then
-            return nil, Errors.new(Errors.STORAGE_ERROR, "synthetic persistence failure")
+            return nil, state.put_error or Errors.new(Errors.STORAGE_ERROR, "synthetic persistence failure")
         end
         state.tasks[task.id] = clone(task)
         return clone(task)
@@ -68,6 +77,151 @@ local function manager_fixture(options)
         book_service = service, builder = { write = function() end }, standby = standby,
         scheduler = scheduler, output_root = "downloads", now = options.now or function() return 100 end })
     return manager, state
+end
+
+-- Every initialization write is an exception boundary.  A backend throw at
+-- the first, middle, or last duplicate migration becomes a blocked manager;
+-- recovery resumes from durable progress after the backend is repaired.
+do
+    for failure_index, failure_id in ipairs({ "throw-b", "throw-c", "throw-d" }) do
+        local metatable_calls = 0
+        local hostile_error = setmetatable({ secret = "must-not-leak-" .. failure_index }, {
+            __index = function() metatable_calls = metatable_calls + 1; error("error __index executed") end,
+            __tostring = function() metatable_calls = metatable_calls + 1; error("error __tostring executed") end,
+        })
+        local ok, manager, state = pcall(function()
+            local current, current_state = manager_fixture({ initial = {
+                restored("throw-a", 1, 1), restored("throw-b", 1, 2),
+                restored("throw-c", 1, 3), restored("throw-d", 1, 4),
+            }, throw_put = function(task)
+                if task.id == failure_id then return hostile_error end
+            end })
+            return current, current_state
+        end)
+        truthy(ok, "migration throw " .. failure_index .. " cannot escape construction")
+        truthy(manager.persistence_blocked, "migration throw " .. failure_index .. " blocks persistence")
+        equal(Errors.STORAGE_ERROR, manager.init_error and manager.init_error.code,
+            "migration throw " .. failure_index .. " is normalized structurally")
+        equal(nil, manager.init_error and manager.init_error.details,
+            "migration throw " .. failure_index .. " exposes no backend exception details")
+        equal(nil, (manager.init_error and manager.init_error.message or ""):find("must-not-leak", 1, true),
+            "migration throw " .. failure_index .. " redacts the hostile payload")
+        equal(0, metatable_calls, "migration throw " .. failure_index .. " executes no error metatable")
+        equal(0, #manager.queue, "migration throw " .. failure_index .. " exposes no partial queue")
+        equal(0, #state.scheduled, "migration throw " .. failure_index .. " schedules no network pump")
+        state.throw_put = nil
+        truthy(manager:recoverPersistence(), "migration throw " .. failure_index .. " recovers after repair")
+        local seen = {}
+        for _, task in pairs(state.tasks) do
+            truthy(not seen[task.queue_sequence], "migration throw " .. failure_index .. " recovery has unique sequences")
+            seen[task.queue_sequence] = true
+        end
+    end
+end
+
+-- Hostile thrown/returned error objects are data, never executable error
+-- interfaces, and their payload must not enter diagnostics.
+do
+    for index, mode in ipairs({ "list-throw", "put-return" }) do
+        local metatable_calls = 0
+        local hostile_error = setmetatable({ secret = "backend-password-" .. index }, {
+            __index = function() metatable_calls = metatable_calls + 1; error("hostile error index") end,
+            __tostring = function() metatable_calls = metatable_calls + 1; error("hostile error tostring") end,
+        })
+        local options
+        if mode == "list-throw" then
+            options = { list_value = function() return {} end, list_throws = true, list_error = hostile_error }
+        else
+            options = { initial = { restored("returned-error-a", 1, 1), restored("returned-error-b", 1, 2) },
+                fail_put = function(task) return task.id == "returned-error-b" end, put_error = hostile_error }
+        end
+        local ok, manager, state = pcall(function()
+            local current, current_state = manager_fixture(options)
+            return current, current_state
+        end)
+        truthy(ok, mode .. " hostile object cannot escape construction")
+        truthy(manager.persistence_blocked, mode .. " hostile object blocks persistence")
+        equal(Errors.STORAGE_ERROR, manager.init_error and manager.init_error.code,
+            mode .. " hostile object is normalized structurally")
+        equal(nil, manager.init_error and manager.init_error.details,
+            mode .. " hostile object exposes no details")
+        equal(nil, (manager.init_error and manager.init_error.message or ""):find("backend-password", 1, true),
+            mode .. " hostile payload is redacted")
+        equal(0, metatable_calls, mode .. " never executes error metatable methods")
+        equal(0, #state.scheduled, mode .. " schedules no network")
+        state.list_throws, state.fail_put = false, nil
+        truthy(manager:recoverPersistence(), mode .. " recovers after backend repair")
+    end
+end
+
+-- Restored state is copied through raw operations into plain tables before it
+-- enters manager state.  Neither root nor nested persistence metatables may be
+-- executed later by get/list, sorting, transitions, or the scheduled pump.
+do
+    local metatable_calls = 0
+    local function hostile()
+        metatable_calls = metatable_calls + 1
+        error("persisted metatable executed")
+    end
+    local task = restored("hostile-metatable", 1, 1)
+    task.book = setmetatable(task.book, {
+        __index = hostile, __newindex = hostile, __pairs = hostile, __tostring = hostile,
+    })
+    setmetatable(task, {
+        __index = hostile, __newindex = hostile, __pairs = hostile, __tostring = hostile,
+    })
+    local manager, state = manager_fixture({ initial = { task }, raw_listing = true })
+    equal(0, metatable_calls, "construction never executes persisted root or nested metatables")
+    equal(false, manager.persistence_blocked, "safe raw fields survive metatable stripping")
+    local got_ok, got = pcall(manager.get, manager, task.id)
+    truthy(got_ok, "get remains callable after hostile persistence metatables are stripped")
+    equal("hostile-metatable", got and got.book and got.book.name,
+        "normalized nested book content remains available")
+    equal(nil, got and getmetatable(got), "restored task copy has no persistence metatable")
+    equal(nil, got and got.book and getmetatable(got.book), "nested restored copy has no persistence metatable")
+    local pump_ok = pcall(state.scheduled[1])
+    truthy(pump_ok, "scheduled startup work cannot execute a restored __newindex hook")
+    equal(0, metatable_calls, "all later manager operations remain isolated from persistence metatables")
+    equal(0, state.network, "hostile metatable fixture reaches no network source")
+end
+
+-- Fields consumed by sorting, transitions, arithmetic, and UI state must be
+-- normalized up front.  Malformed or non-persistable values block safely and
+-- recovery re-reads durable state after repair.
+do
+    local cyclic = {}; cyclic.self = cyclic
+    local keyed = {}; keyed[{}] = "unsupported table key"
+    local bad_fields = {
+        { "created_at", "oops" }, { "updated_at", {} }, { "generation", "oops" },
+        { "total", -1 }, { "completed", 1.5 }, { "failed", "oops" },
+        { "cancel_requested", "false" }, { "current", {} }, { "book", function() end },
+        { "chapters", coroutine.create(function() end) }, { "error", io.stdout },
+        { "book", cyclic }, { "book", keyed },
+        { "book", { source_id = "source-one", name = "missing id" } },
+        { "book", { id = "book-bad-restored-field-15", source_id = "source-one", name = "bad cover", author = "A",
+            cover_url = {} } },
+        { "chapters", { { uid = {}, index = 1, title = "bad uid", url = "https://example.test" } } },
+        { "error", { code = 7, message = {} } },
+    }
+    for index, definition in ipairs(bad_fields) do
+        local task = restored("bad-restored-field-" .. index, 1, 1)
+        task[definition[1]] = definition[2]
+        local ok, manager, state = pcall(function()
+            local current, current_state = manager_fixture({ initial = { task }, raw_listing = true })
+            return current, current_state
+        end)
+        truthy(ok, "bad restored field " .. index .. " cannot escape construction")
+        truthy(manager.persistence_blocked, "bad restored field " .. index .. " blocks persistence")
+        equal(Errors.STORAGE_ERROR, manager.init_error and manager.init_error.code,
+            "bad restored field " .. index .. " returns structured initialization error")
+        equal(0, #manager.queue, "bad restored field " .. index .. " exposes no runnable queue")
+        equal(0, #state.scheduled, "bad restored field " .. index .. " schedules no pump")
+        equal(0, state.network, "bad restored field " .. index .. " starts no network")
+        state.list_value = function() return { restored("repaired-field-" .. index, 1, 1) } end
+        truthy(manager:recoverPersistence(), "bad restored field " .. index .. " recovers after durable repair")
+        equal("repaired-field-" .. index, manager.queue[1],
+            "repaired field " .. index .. " restores normalized work")
+    end
 end
 
 -- The first task in deterministic duplicate order keeps its valid sequence;
@@ -95,6 +249,38 @@ do
     local manager, state = manager_fixture({ initial = { restored("too-large", 9007199254740992, 1) } })
     equal(1, state.tasks["too-large"].queue_sequence, "unsafe integer sequence migrates to a small exact value")
     equal("too-large", table.concat(manager.queue, ","), "unsafe sequence recovery retains the queued task")
+end
+
+-- String sequences are accepted only as exact positive decimal integer
+-- literals.  Parsing must never round a fractional/exponent form into a valid
+-- queue integer, and accepted leading zeroes are normalized durably.
+do
+    for index, value in ipairs({
+        "9007199254740990.5", "9007199254740991.4", "2.0", "2e0",
+        " 2", "2 ", "+2", "-2", "NaN", "Inf", "0", "000",
+    }) do
+        local id = "invalid-sequence-string-" .. index
+        local manager, state = manager_fixture({ initial = { restored(id, value, index) } })
+        equal(1, state.tasks[id].queue_sequence,
+            "non-integer sequence literal " .. index .. " is migrated instead of rounded")
+        equal(id, manager.queue[1], "non-integer sequence literal " .. index .. " remains queued safely")
+    end
+
+    local leading_manager, leading_state = manager_fixture({ initial = {
+        restored("leading-zero-sequence", "0002", 1),
+    } })
+    equal(2, leading_state.tasks["leading-zero-sequence"].queue_sequence,
+        "positive leading-zero integer is normalized to its exact numeric value")
+    equal("leading-zero-sequence", leading_manager.queue[1],
+        "normalized leading-zero sequence retains its queue position")
+
+    local boundary_manager, boundary_state = manager_fixture({ initial = {
+        restored("exact-safe-string", "9007199254740991", 1),
+    } })
+    equal(9007199254740991, boundary_state.tasks["exact-safe-string"].queue_sequence,
+        "maximum-safe integer string is normalized without precision loss")
+    equal("exact-safe-string", boundary_manager.queue[1],
+        "maximum-safe integer string remains a valid queued task")
 end
 
 do
