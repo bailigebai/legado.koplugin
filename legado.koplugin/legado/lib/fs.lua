@@ -3,6 +3,19 @@ local Errors = require("legado.lib.errors")
 local Fs = {}
 Fs.__index = Fs
 
+function Fs.posixFlags(arch)
+    local arm = arch == "arm"
+    return {
+        O_RDONLY = 0,
+        O_WRONLY = 1,
+        O_CREAT = 64,
+        O_EXCL = 128,
+        O_DIRECTORY = arm and 16384 or 65536,
+        O_NOFOLLOW = arm and 32768 or 131072,
+        O_CLOEXEC = 524288,
+    }
+end
+
 local function parent_directory(path)
     return path:match("^(.*)[/\\][^/\\]+$")
 end
@@ -55,6 +68,8 @@ function Fs.new(options)
         secure_temp_fn = options.secureTemp,
         atomic_backend_fn = options.atomicBackend,
         file_identity_fn = options.fileIdentity,
+        posix_syscalls = options.posixSyscalls,
+        posix_arch = options.posixArch,
     }, Fs)
 end
 
@@ -105,7 +120,8 @@ local function posix_exclusive(path)
         int close(int fd);
     ]])
     local bit = require("bit")
-    local fd = ffi.C.open(path, bit.bor(1, 64, 128, 131072, 524288), 384)
+    local flags = Fs.posixFlags(ffi.arch)
+    local fd = ffi.C.open(path, bit.bor(flags.O_WRONLY, flags.O_CREAT, flags.O_EXCL, flags.O_NOFOLLOW, flags.O_CLOEXEC), 384)
     if fd < 0 then return nil, "exclusive open failed" end
     local closed = false
     return {
@@ -128,67 +144,111 @@ local function posix_exclusive(path)
 end
 
 local function posix_dirfd_atomic(self, path, data, options)
-    if not jit or jit.os == "Windows" then return nil, nil end
-    local ok, ffi = pcall(require, "ffi")
-    if not ok or not self.lfs or type(self.lfs.attributes) ~= "function" then
+    if not self.posix_syscalls and (not jit or jit.os == "Windows") then return nil, nil end
+    local sys, native_arch = self.posix_syscalls
+    if not sys then
+        local ok, ffi = pcall(require, "ffi")
+        if not ok then return true, nil, Errors.new(Errors.STORAGE_ERROR, "directory-handle atomic backend unavailable") end
+        pcall(ffi.cdef, [[
+            int open(const char *pathname, int flags, unsigned int mode);
+            int openat(int dirfd, const char *pathname, int flags, unsigned int mode);
+            int mkdirat(int dirfd, const char *pathname, unsigned int mode);
+            int renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpath);
+            int unlinkat(int dirfd, const char *pathname, int flags);
+            long read(int fd, void *buf, unsigned long count);
+            long write(int fd, const void *buf, unsigned long count);
+            int fsync(int fd);
+            int close(int fd);
+        ]])
+        local buffer = ffi.new("unsigned char[65536]")
+        sys, native_arch = {}, ffi.arch
+        function sys:errno() return ffi.errno() end
+        function sys:open(name, flags, mode) return ffi.C.open(name, flags, mode) end
+        function sys:openat(fd, name, flags, mode) return ffi.C.openat(fd, name, flags, mode) end
+        function sys:mkdirat(fd, name, mode) return ffi.C.mkdirat(fd, name, mode) end
+        function sys:renameat(oldfd, oldname, newfd, newname) return ffi.C.renameat(oldfd, oldname, newfd, newname) end
+        function sys:unlinkat(fd, name, flags) return ffi.C.unlinkat(fd, name, flags) end
+        function sys:read(fd, maximum)
+            local amount = tonumber(ffi.C.read(fd, buffer, maximum))
+            if not amount or amount < 0 then return -1 end
+            return ffi.string(buffer, amount)
+        end
+        function sys:write(fd, value) return tonumber(ffi.C.write(fd, value, #value)) end
+        function sys:fsync(fd) return ffi.C.fsync(fd) end
+        function sys:close(fd) return ffi.C.close(fd) end
+    end
+    if not self.lfs or type(self.lfs.attributes) ~= "function" then
         return true, nil, Errors.new(Errors.STORAGE_ERROR, "directory-handle atomic backend unavailable")
     end
-    pcall(ffi.cdef, [[
-        int open(const char *pathname, int flags, unsigned int mode);
-        int openat(int dirfd, const char *pathname, int flags, unsigned int mode);
-        int mkdirat(int dirfd, const char *pathname, unsigned int mode);
-        int renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpath);
-        int unlinkat(int dirfd, const char *pathname, int flags);
-        long read(int fd, void *buf, unsigned long count);
-        long write(int fd, const void *buf, unsigned long count);
-        int fsync(int fd);
-        int close(int fd);
-    ]])
     local bit = require("bit")
-    local O_RDONLY, O_WRONLY, O_CREAT, O_EXCL = 0, 1, 64, 128
-    local O_DIRECTORY, O_NOFOLLOW, O_CLOEXEC = 65536, 131072, 524288
-    local directory_flags = bit.bor(O_RDONLY, O_DIRECTORY, O_NOFOLLOW, O_CLOEXEC)
-    local read_flags = bit.bor(O_RDONLY, O_NOFOLLOW, O_CLOEXEC)
-    local create_flags = bit.bor(O_WRONLY, O_CREAT, O_EXCL, O_NOFOLLOW, O_CLOEXEC)
+    local flags = Fs.posixFlags(self.posix_arch or native_arch or sys.arch)
+    local directory_flags = bit.bor(flags.O_RDONLY, flags.O_DIRECTORY, flags.O_NOFOLLOW, flags.O_CLOEXEC)
+    local read_flags = bit.bor(flags.O_RDONLY, flags.O_NOFOLLOW, flags.O_CLOEXEC)
+    local create_flags = bit.bor(flags.O_WRONLY, flags.O_CREAT, flags.O_EXCL, flags.O_NOFOLLOW, flags.O_CLOEXEC)
     local opened, names = {}, {}
     local parent_fd
+    local function retry(call)
+        while true do
+            local result = call()
+            local numeric = tonumber(result)
+            if numeric ~= -1 or sys:errno() ~= 4 then return numeric or result end
+        end
+    end
     local function remember(fd) if fd and fd >= 0 then opened[tonumber(fd)] = true end return fd end
     local function close_fd(fd)
-        if not fd or fd < 0 then return end
-        ffi.C.close(fd)
-        opened[tonumber(fd)] = nil
+        if not fd or fd < 0 then return true end
+        if retry(function() return sys:close(fd) end) ~= 0 then return nil, "descriptor close failed" end
+        opened[tonumber(fd)] = nil; return true
+    end
+    local function unlink_name(name)
+        if retry(function() return sys:unlinkat(parent_fd, name, 0) end) ~= 0 then return nil, "atomic cleanup unlink failed" end
+        names[name] = nil; return true
     end
     local function cleanup()
-        if parent_fd then for name in pairs(names) do ffi.C.unlinkat(parent_fd, name, 0) end end
-        for fd in pairs(opened) do ffi.C.close(fd) end
-        opened, names = {}, {}
+        local cleanup_error
+        if parent_fd then
+            for name in pairs(names) do local ok, err = unlink_name(name); if not ok then cleanup_error = cleanup_error or err end end
+        end
+        for fd in pairs(opened) do local ok, err = close_fd(fd); if not ok then cleanup_error = cleanup_error or err end end
+        if cleanup_error then return nil, cleanup_error end
+        return true
     end
-    local function failure(message, details) cleanup(); return true, nil, Errors.new(Errors.STORAGE_ERROR, message, details) end
+    local function failure(message, details)
+        local cleaned, cleanup_error = cleanup()
+        if not cleaned then
+            details = type(details) == "table" and details or {}
+            details.cleanup_cause = cleanup_error
+        end
+        return true, nil, Errors.new(Errors.STORAGE_ERROR, message, details)
+    end
     local function fd_identity(fd)
+        if type(sys.identity) == "function" then return sys:identity(fd) end
         local attributes = self.lfs.attributes("/proc/self/fd/" .. tostring(fd))
         if not attributes or attributes.dev == nil or attributes.ino == nil then return nil end
         return { dev = tostring(attributes.dev), ino = tostring(attributes.ino) }
     end
-    local function retry(call)
-        while true do local result = call(); if result >= 0 or ffi.errno() ~= 4 then return result end end
-    end
     local function write_all(fd, value)
         local offset = 0
         while offset < #value do
-            local written = tonumber(retry(function() return ffi.C.write(fd, value:sub(offset + 1), #value - offset) end))
+            local written = retry(function() return sys:write(fd, value:sub(offset + 1)) end)
             if not written or written <= 0 then return nil end
             offset = offset + written
         end
-        return retry(function() return ffi.C.fsync(fd) end) == 0
+        return retry(function() return sys:fsync(fd) end) == 0
     end
     local function read_all(fd)
-        local chunks, buffer = {}, ffi.new("unsigned char[65536]")
+        local chunks = {}
         while true do
-            local amount = tonumber(retry(function() return ffi.C.read(fd, buffer, 65536) end))
-            if not amount or amount < 0 then return nil end
-            if amount == 0 then return table.concat(chunks) end
-            chunks[#chunks + 1] = ffi.string(buffer, amount)
+            local value
+            while true do value = sys:read(fd, 65536); if value ~= -1 or sys:errno() ~= 4 then break end end
+            if value == -1 or type(value) ~= "string" then return nil end
+            if value == "" then return table.concat(chunks) end
+            chunks[#chunks + 1] = value
         end
+    end
+    local function sync_parent()
+        if retry(function() return sys:fsync(parent_fd) end) ~= 0 then return nil, "parent directory fsync failed" end
+        return true
     end
     local validate = options.validate
     if validate then local valid, err = validate(path, "before_write"); if not valid then return true, nil, err end end
@@ -231,13 +291,13 @@ local function posix_dirfd_atomic(self, path, data, options)
     if not root_components or not parent_components then
         return true, nil, Errors.new(Errors.STORAGE_ERROR, "unsafe atomic directory component")
     end
-    local root_fd = remember(ffi.C.open(absolute and "/" or ".", directory_flags, 0))
+    local root_fd = remember(retry(function() return sys:open(absolute and "/" or ".", directory_flags, 0) end))
     if root_fd < 0 then return failure("cannot open atomic anchor directory") end
     local function descend(fd, component)
-        local next_fd = retry(function() return ffi.C.openat(fd, component, directory_flags, 0) end)
+        local next_fd = retry(function() return sys:openat(fd, component, directory_flags, 0) end)
         if next_fd < 0 then
-            ffi.C.mkdirat(fd, component, 448)
-            next_fd = retry(function() return ffi.C.openat(fd, component, directory_flags, 0) end)
+            retry(function() return sys:mkdirat(fd, component, 448) end)
+            next_fd = retry(function() return sys:openat(fd, component, directory_flags, 0) end)
         end
         return remember(next_fd)
     end
@@ -263,13 +323,13 @@ local function posix_dirfd_atomic(self, path, data, options)
         for _ = 1, 16 do
             local nonce = random_hex(); if not nonce then return nil end
             local name = "." .. purpose .. "-" .. nonce
-            local fd = retry(function() return ffi.C.openat(parent_fd, name, create_flags, 384) end)
+            local fd = retry(function() return sys:openat(parent_fd, name, create_flags, 384) end)
             if fd >= 0 then names[name] = true; return name, remember(fd), fd_identity(fd) end
         end
     end
     local temp_name, temp_fd, temp_identity = create_name("temp")
     if not temp_name or not temp_identity or not write_all(temp_fd, data) then return failure("cannot create bound atomic temporary") end
-    local target_fd = retry(function() return ffi.C.openat(parent_fd, target_name, read_flags, 0) end)
+    local target_fd = retry(function() return sys:openat(parent_fd, target_name, read_flags, 0) end)
     local had_old, old_content = target_fd >= 0, nil
     if had_old then
         remember(target_fd); old_content = read_all(target_fd); close_fd(target_fd)
@@ -282,84 +342,110 @@ local function posix_dirfd_atomic(self, path, data, options)
     end
     local function restore_previous()
         if not had_old then
-            if ffi.C.unlinkat(parent_fd, target_name, 0) ~= 0 then return nil, "cannot remove rejected target" end
+            if retry(function() return sys:unlinkat(parent_fd, target_name, 0) end) ~= 0 then return nil, "cannot remove rejected target" end
             return true
         end
         if backup_name then
-            local check_backup = retry(function() return ffi.C.openat(parent_fd, backup_name, read_flags, 0) end)
+            local check_backup = retry(function() return sys:openat(parent_fd, backup_name, read_flags, 0) end)
             if check_backup >= 0 then
                 remember(check_backup)
                 local matches = same_identity(backup_identity, fd_identity(check_backup))
                 close_fd(check_backup)
-                if matches and retry(function() return ffi.C.renameat(parent_fd, backup_name, parent_fd, target_name) end) == 0 then
+                if matches and retry(function() return sys:renameat(parent_fd, backup_name, parent_fd, target_name) end) == 0 then
                     names[backup_name] = nil
-                    local restored_fd = retry(function() return ffi.C.openat(parent_fd, target_name, read_flags, 0) end)
+                    local restored_fd = retry(function() return sys:openat(parent_fd, target_name, read_flags, 0) end)
                     if restored_fd >= 0 then
                         remember(restored_fd)
                         local restored = same_identity(backup_identity, fd_identity(restored_fd))
                         close_fd(restored_fd)
                         if restored then return true end
                     end
-                    ffi.C.unlinkat(parent_fd, target_name, 0)
+                    if retry(function() return sys:unlinkat(parent_fd, target_name, 0) end) ~= 0 then
+                        return nil, "cannot remove mismatched restored target"
+                    end
                 end
             end
         end
         local recovery_name, recovery_fd, recovery_identity = create_name("recovery")
         if not recovery_name or not recovery_identity or not write_all(recovery_fd, old_content) then return nil, "cannot create bound recovery" end
-        local check_recovery = retry(function() return ffi.C.openat(parent_fd, recovery_name, read_flags, 0) end)
+        local check_recovery = retry(function() return sys:openat(parent_fd, recovery_name, read_flags, 0) end)
         if check_recovery < 0 then return nil, "atomic recovery unavailable before rename" end
         remember(check_recovery)
         local matches = same_identity(recovery_identity, fd_identity(check_recovery))
         close_fd(check_recovery)
         if not matches then return nil, "atomic recovery identity changed" end
-        if retry(function() return ffi.C.renameat(parent_fd, recovery_name, parent_fd, target_name) end) ~= 0 then return nil, "atomic recovery rename failed" end
+        if retry(function() return sys:renameat(parent_fd, recovery_name, parent_fd, target_name) end) ~= 0 then return nil, "atomic recovery rename failed" end
         names[recovery_name] = nil
-        local restored_fd = retry(function() return ffi.C.openat(parent_fd, target_name, read_flags, 0) end)
+        local restored_fd = retry(function() return sys:openat(parent_fd, target_name, read_flags, 0) end)
         if restored_fd < 0 then return nil, "restored atomic target unavailable" end
         remember(restored_fd)
         local restored = same_identity(recovery_identity, fd_identity(restored_fd))
         close_fd(restored_fd)
-        if not restored then ffi.C.unlinkat(parent_fd, target_name, 0); return nil, "restored atomic target identity mismatch" end
+        if not restored then
+            if retry(function() return sys:unlinkat(parent_fd, target_name, 0) end) ~= 0 then
+                return nil, "restored identity mismatch and cleanup failed"
+            end
+            return nil, "restored atomic target identity mismatch"
+        end
         return true
+    end
+    local function abort_after_commit(message, details)
+        details = details or {}
+        local restored, restore_error = restore_previous()
+        local synced, sync_error = sync_parent()
+        if not restored then details.restore_cause = restore_error end
+        if not synced then details.restore_fsync_cause = sync_error end
+        return failure(message, details)
     end
     if validate then
         local valid, err = validate(path, "before_replace")
-        if not valid then cleanup(); return true, nil, err end
+        if not valid then
+            local cleaned, cleanup_error = cleanup()
+            if not cleaned then return true, nil, Errors.new(Errors.STORAGE_ERROR, "validation cleanup failed", { cause = tostring(err), cleanup_cause = cleanup_error }) end
+            return true, nil, err
+        end
     end
-    local check_temp = retry(function() return ffi.C.openat(parent_fd, temp_name, read_flags, 0) end)
+    local check_temp = retry(function() return sys:openat(parent_fd, temp_name, read_flags, 0) end)
     if check_temp < 0 then return failure("atomic temporary disappeared before rename") end
     remember(check_temp)
     if not same_identity(temp_identity, fd_identity(check_temp)) then return failure("atomic temporary identity changed") end
     close_fd(check_temp)
-    if retry(function() return ffi.C.renameat(parent_fd, temp_name, parent_fd, target_name) end) ~= 0 then return failure("directory-handle rename failed") end
+    if retry(function() return sys:renameat(parent_fd, temp_name, parent_fd, target_name) end) ~= 0 then return failure("directory-handle rename failed") end
     names[temp_name] = nil
-    local published_fd = retry(function() return ffi.C.openat(parent_fd, target_name, read_flags, 0) end)
+    local published_fd = retry(function() return sys:openat(parent_fd, target_name, read_flags, 0) end)
     if published_fd < 0 then
-        local restored, restore_error = restore_previous()
-        if not restored then return failure("published target unavailable and recovery failed", { restore_cause = restore_error }) end
-        return failure("published atomic target unavailable")
+        return abort_after_commit("published atomic target unavailable")
     end
     remember(published_fd)
     if not same_identity(temp_identity, fd_identity(published_fd)) then
         close_fd(published_fd)
-        local restored, restore_error = restore_previous()
-        if not restored then return failure("published identity mismatch and recovery failed", { restore_cause = restore_error }) end
-        return failure("published atomic target identity mismatch")
+        return abort_after_commit("published atomic target identity mismatch")
     end
     close_fd(published_fd)
-    retry(function() return ffi.C.fsync(parent_fd) end)
+    local published_synced, publish_sync_error = sync_parent()
+    if not published_synced then
+        return abort_after_commit("published target fsync failed", { cause = publish_sync_error })
+    end
     local valid, validation_error = true
     if validate then valid, validation_error = validate(path, "after_replace") end
     if not valid then
         local restored, restore_error = restore_previous()
-        retry(function() return ffi.C.fsync(parent_fd) end)
-        if not restored then return failure("validation and recovery failed", { cause = tostring(validation_error), restore_cause = restore_error }) end
-        cleanup()
+        local synced, sync_error = sync_parent()
+        if not restored or not synced then
+            return failure("validation and recovery failed", { cause = tostring(validation_error), restore_cause = restore_error, restore_fsync_cause = sync_error })
+        end
+        local cleaned, cleanup_error = cleanup()
+        if not cleaned then return true, nil, Errors.new(Errors.STORAGE_ERROR, "validation recovery cleanup failed", { cause = tostring(validation_error), cleanup_cause = cleanup_error }) end
         return true, nil, validation_error
     end
-    if backup_name then ffi.C.unlinkat(parent_fd, backup_name, 0); names[backup_name] = nil end
-    retry(function() return ffi.C.fsync(parent_fd) end)
-    cleanup()
+    if backup_name then
+        local removed, remove_error = unlink_name(backup_name)
+        if not removed then return abort_after_commit("atomic backup cleanup failed", { cleanup_cause = remove_error }) end
+    end
+    local cleanup_synced, cleanup_sync_error = sync_parent()
+    if not cleanup_synced then return abort_after_commit("atomic cleanup fsync failed", { cause = cleanup_sync_error }) end
+    local cleaned, cleanup_error = cleanup()
+    if not cleaned then return true, nil, Errors.new(Errors.STORAGE_ERROR, "atomic descriptor cleanup failed", { cleanup_cause = cleanup_error }) end
     return true, true
 end
 
