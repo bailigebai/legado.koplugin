@@ -106,6 +106,34 @@ function Json.decode(input)
         end
     end
 
+    local function parse_number()
+        local start = index
+        if input:sub(index, index) == "-" then index = index + 1 end
+        local first = input:sub(index, index)
+        if first == "0" then
+            index = index + 1
+            if input:sub(index, index):match("%d") then error("leading zero in JSON number") end
+        elseif first:match("[1-9]") then
+            repeat index = index + 1 until not input:sub(index, index):match("%d")
+        else
+            error("invalid JSON number")
+        end
+        if input:sub(index, index) == "." then
+            index = index + 1
+            if not input:sub(index, index):match("%d") then error("invalid JSON fraction") end
+            repeat index = index + 1 until not input:sub(index, index):match("%d")
+        end
+        if input:sub(index, index):match("[eE]") then
+            index = index + 1
+            if input:sub(index, index):match("[+-]") then index = index + 1 end
+            if not input:sub(index, index):match("%d") then error("invalid JSON exponent") end
+            repeat index = index + 1 until not input:sub(index, index):match("%d")
+        end
+        local value = tonumber(input:sub(start, index - 1))
+        if value == nil then error("invalid JSON number") end
+        return value
+    end
+
     parse_value = function()
         whitespace()
         local character = input:sub(index, index)
@@ -115,9 +143,7 @@ function Json.decode(input)
         if input:sub(index, index + 3) == "true" then index = index + 4 return true end
         if input:sub(index, index + 4) == "false" then index = index + 5 return false end
         if input:sub(index, index + 3) == "null" then index = index + 4 return NULL end
-        local number = input:sub(index):match("^-?%d+%.?%d*[eE]?[+-]?%d*")
-        if number and number ~= "-" then index = index + #number return tonumber(number) end
-        error("invalid JSON value")
+        return parse_number()
     end
 
     local value = parse_value()

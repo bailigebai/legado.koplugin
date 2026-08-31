@@ -220,7 +220,9 @@ function SqliteBackend:replaceSources(sources)
         local saved, save_error = self:putSource(source)
         if not saved then self:_exec("ROLLBACK"); return nil, save_error end
     end
-    return self:_exec("COMMIT")
+    local committed, commit_error = self:_exec("COMMIT")
+    if not committed then self:_exec("ROLLBACK"); return nil, commit_error end
+    return true
 end
 function SqliteBackend:putBook(value) return self:_put("books", "id", value.id, value, { source_id = value.source_id or "" }) end
 function SqliteBackend:getBook(id) return self:_get("books", "id=" .. quote(id)) end
@@ -241,7 +243,9 @@ function SqliteBackend:replaceChapters(book_id, chapters)
         local saved, save_error = self:_put("chapters", "uid", chapter.uid, chapter, { book_id = book_id, chapter_index = chapter.index })
         if not saved then self:_exec("ROLLBACK"); return nil, save_error end
     end
-    return self:_exec("COMMIT")
+    local committed, commit_error = self:_exec("COMMIT")
+    if not committed then self:_exec("ROLLBACK"); return nil, commit_error end
+    return true
 end
 function SqliteBackend:listChapters(book_id) return self:_list("chapters", "book_id=" .. quote(book_id), "chapter_index, uid") end
 function SqliteBackend:getChapter(book_id, uid) return self:_get("chapters", "book_id=" .. quote(book_id) .. " AND uid=" .. quote(uid)) end

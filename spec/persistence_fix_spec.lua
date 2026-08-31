@@ -141,6 +141,107 @@ local function fake_sqlite(state)
     return { open = function() return database() end }
 end
 
+-- This KOReader-shaped driver keeps writes private until COMMIT. A failed
+-- commit deliberately leaves its transaction open until the backend rolls it
+-- back, which makes accidental uncommitted visibility and a blocked next
+-- BEGIN observable in the public storage facade.
+local function transactional_sqlite(state)
+    state.committed = state.committed or { sources = {}, chapters = {}, chapter_books = {} }
+    state.rollbacks = state.rollbacks or 0
+
+    local function clone(map)
+        local result = {}
+        for key, value in pairs(map) do result[key] = value end
+        return result
+    end
+
+    local function clone_state(value)
+        return { sources = clone(value.sources), chapters = clone(value.chapters), chapter_books = clone(value.chapter_books) }
+    end
+
+    local function quoted_values(sql)
+        local result = {}
+        for value in sql:gmatch("'([^']*)'") do result[#result + 1] = value end
+        return result
+    end
+
+    local function database()
+        local db = {}
+        local function visible() return state.transaction or state.committed end
+        local function payload_rows(table_name, key)
+            local data = visible()
+            local values = {}
+            if table_name == "chapters" then
+                for uid, payload in pairs(data.chapters) do
+                    if data.chapter_books[uid] == key then values[#values + 1] = payload end
+                end
+            elseif data[table_name] and data[table_name][key] then
+                values[1] = data[table_name][key]
+            end
+            return values
+        end
+
+        function db:exec(sql)
+            if sql:match("^SELECT") then
+                if sql:find("sqlite_master", 1, true) or sql:find("legado_v1_meta", 1, true) then return nil, 0 end
+                local table_name = sql:match("FROM legado_v1_(%w+)")
+                local key = sql:match("WHERE [%w_]+='([^']*)'")
+                local values = table_name and key and payload_rows(table_name, key) or {}
+                return #values > 0 and { payload = values } or nil, #values
+            end
+            if sql:match("^BEGIN IMMEDIATE") then
+                if state.transaction then return false, "transaction already active" end
+                state.transaction = clone_state(state.committed)
+                return {}
+            end
+            if sql:match("^ROLLBACK") then
+                state.transaction = nil
+                state.rollbacks = state.rollbacks + 1
+                return {}
+            end
+            if sql:match("^COMMIT") then
+                if state.fail_next_commit then
+                    state.fail_next_commit = false
+                    return false, "simulated commit failure"
+                end
+                state.committed = state.transaction
+                state.transaction = nil
+                return {}
+            end
+            if sql:find("CREATE TABLE", 1, true) or sql:find("INSERT INTO legado_v1_meta", 1, true) then return {} end
+
+            local data = assert(state.transaction, "mutation outside transaction")
+            local replacement = sql:match("INSERT OR REPLACE INTO legado_v1_(%w+)%s*%b()")
+            if replacement then
+                local values = quoted_values(sql)
+                data[replacement][values[1]] = values[2]
+                if replacement == "chapters" then
+                    for _, value in ipairs(values) do
+                        if value:match("^book%-") then data.chapter_books[values[1]] = value break end
+                    end
+                end
+                return {}
+            end
+            local deleted, key = sql:match("DELETE FROM legado_v1_(%w+) WHERE [%w_]+='([^']*)'")
+            if deleted == "sources" then data.sources[key] = nil return {} end
+            if deleted == "chapters" then
+                for uid in pairs(data.chapters) do
+                    if data.chapter_books[uid] == key then data.chapters[uid] = nil; data.chapter_books[uid] = nil end
+                end
+                return {}
+            end
+            local deleted_all = sql:match("DELETE FROM legado_v1_(%w+)%s*$")
+            if deleted_all then data[deleted_all] = {} return {} end
+            return {}
+        end
+
+        function db:rowexec() return nil end
+        return db
+    end
+
+    return { open = function() return database() end }
+end
+
 local sqlite_state = {}
 local sqlite_path = temporary_path("sqlite")
 local sqlite_storage = assert(Storage.new({ path = sqlite_path, sqlite_loader = function() return fake_sqlite(sqlite_state) end }))
@@ -157,6 +258,28 @@ assertx.equal(0.5, assert(sqlite_restarted:getProgress("book-sql")).fraction, "s
 assert(sqlite_restarted:replaceSources({ { id = "source-sql-replaced", name = "Replacement", url = "https://example.test/replaced" } }))
 assertx.equal(nil, sqlite_restarted:getSource("source-sql"), "sqlite source replacement removes omitted rows as one batch")
 assertx.equal("Replacement", assert(sqlite_restarted:getSource("source-sql-replaced")).name, "sqlite source replacement stores replacement rows")
+
+local transaction_state = {}
+local transactional_storage = assert(Storage.new({ path = temporary_path("transactional"), sqlite_loader = function() return transactional_sqlite(transaction_state) end }))
+assert(transactional_storage:replaceSources({ { id = "source-tx-old", name = "Old source" } }))
+transaction_state.fail_next_commit = true
+local source_commit_ok, source_commit_error = transactional_storage:replaceSources({ { id = "source-tx-new", name = "New source" } })
+assertx.equal(nil, source_commit_ok, "source replacement returns the original failed commit result")
+assertx.equal(Errors.STORAGE_ERROR, source_commit_error.code, "source commit failure remains a storage error")
+assertx.equal("Old source", assert(transactional_storage:getSource("source-tx-old")).name, "failed source commit leaves prior committed set visible")
+assertx.equal(1, transaction_state.rollbacks, "failed source commit is rolled back")
+assert(transactional_storage:replaceSources({ { id = "source-tx-new", name = "New source" } }))
+assertx.equal("New source", assert(transactional_storage:getSource("source-tx-new")).name, "source replacement can begin a later transaction after rollback")
+
+assert(transactional_storage:replaceChapters("book-tx", { { uid = "chapter-tx-old", index = 1, title = "Old" } }))
+transaction_state.fail_next_commit = true
+local chapter_commit_ok, chapter_commit_error = transactional_storage:replaceChapters("book-tx", { { uid = "chapter-tx-new", index = 1, title = "New" } })
+assertx.equal(nil, chapter_commit_ok, "chapter replacement returns the original failed commit result")
+assertx.equal(Errors.STORAGE_ERROR, chapter_commit_error.code, "chapter commit failure remains a storage error")
+assertx.equal("chapter-tx-old", assert(transactional_storage:listChapters("book-tx"))[1].uid, "failed chapter commit leaves prior committed set visible")
+assertx.equal(2, transaction_state.rollbacks, "failed chapter commit is rolled back")
+assert(transactional_storage:replaceChapters("book-tx", { { uid = "chapter-tx-new", index = 1, title = "New" } }))
+assertx.equal("chapter-tx-new", assert(transactional_storage:listChapters("book-tx"))[1].uid, "chapter replacement can begin a later transaction after rollback")
 
 cleanup(sqlite_path)
 local migration_state = { tables = { meta = true }, schema_version = 999 }
@@ -240,4 +363,4 @@ local identity_key = Identity.source("https://user:synthetic-secret@example.test
 assertx.equal("source-nativehash", identity_key, "available KOReader hash is preferred")
 assertx.truthy(not sha_inputs[1]:find("synthetic%-secret", 1, false), "native hash input excludes credentials")
 
-return 42
+return 56

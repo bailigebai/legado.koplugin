@@ -116,6 +116,14 @@ local malformed_report = assert(importer:importJson("{ definitely not json", "C:
 assertx.equal(1, malformed_report.rejected, "malformed JSON is rejected")
 assertx.equal("PARSE_ERROR", malformed_report.error.code, "malformed JSON produces a structured parse error")
 
+for _, invalid_number in ipairs({ "1.", "1e", "1e+", "01", "-01" }) do
+    local invalid_number_report = assert(importer:importJson(
+        "{\"bookSourceName\":\"Numeric source\",\"bookSourceUrl\":\"https://example.test/numeric\",\"customNumber\":" .. invalid_number .. "}",
+        "C:/sources/invalid-number.json"
+    ))
+    assertx.equal("PARSE_ERROR", invalid_number_report.error.code, "invalid JSON number is rejected before source validation: " .. invalid_number)
+end
+
 local bounded_text = usable_json
 local bounded = SourceImporter:new({ storage = new_storage(), max_bytes = #bounded_text })
 assertx.equal(1, assert(bounded:importJson(bounded_text, "C:/sources/bounded.json")).imported, "byte limit accepts exactly the configured boundary")
@@ -188,4 +196,4 @@ assertx.equal("MISSING_BOOK_INFO", missing.issues[1].code, "missing issues use c
 assertx.equal("MISSING_TOC", missing.issues[2].code, "missing catalog issue follows book info")
 assertx.equal("MISSING_CONTENT", missing.issues[3].code, "missing content issue follows catalog")
 
-return 60
+return 65
