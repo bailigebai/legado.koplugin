@@ -597,7 +597,7 @@ function DownloadManager:_build(task, source, chapters)
     local bodies = {}
     for _, chapter in ipairs(chapters) do
         local body, cache_error = self.cache:readBody(task.source_id, task.book_id, chapter)
-        if type(body) ~= "string" or body == "" then return self:_fail(task, cache_error, true) end
+        if type(body) ~= "string" or body == "" then return self:_fail(task, cache_error) end
         bodies[chapter.uid] = body
     end
     local cover = self.cache.readCover and self.cache:readCover(task.source_id, task.book_id) or nil

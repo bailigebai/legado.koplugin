@@ -63,11 +63,19 @@ local function storage_fake(initial)
     return storage, state
 end
 
-local function cache_fake(initial)
-    local state = { bodies = initial or {}, writes = {} }
+local function cache_fake(initial, behavior)
+    behavior = behavior or {}
+    local state = { bodies = initial or {}, writes = {}, reads = {} }
     local cache = {}
     local function key(s, b, c) return s .. "/" .. b .. "/" .. c.uid end
-    function cache:readBody(s, b, c) return state.bodies[key(s, b, c)] end
+    function cache:readBody(s, b, c)
+        local cache_key = key(s, b, c)
+        state.reads[cache_key] = (state.reads[cache_key] or 0) + 1
+        if behavior.miss_on_read == state.reads[cache_key] then
+            return nil, { code = "STORAGE_ERROR", message = "synthetic cache changed during assembly" }
+        end
+        return state.bodies[cache_key]
+    end
     function cache:writeBody(s, b, c, body)
         state.bodies[key(s, b, c)] = body; state.writes[#state.writes + 1] = c.uid; return "cache/" .. c.uid
     end
@@ -119,8 +127,13 @@ end
 
 local function manager_fixture(options)
     options = options or {}
-    local storage, stored = storage_fake(options.initial)
-    local cache, cached, key = cache_fake(options.cached)
+    local storage, stored
+    if options.storage_adapter then
+        storage, stored = options.storage_adapter, options.storage_state
+    else
+        storage, stored = storage_fake(options.initial)
+    end
+    local cache, cached, key = cache_fake(options.cached, options.cache_behavior)
     local service, served = service_fake()
     local standby, awake = standby_fake()
     local builder, built = builder_fake(options.builder)
@@ -128,7 +141,8 @@ local function manager_fixture(options)
     local manager = DownloadManager.new({ storage = storage, cache = cache, book_service = service,
         builder = builder, standby = standby, output_root = "downloads", now = function() return 1788134400 end,
         open_final = function(path) opened[#opened + 1] = path; return "opened:" .. path end })
-    return manager, { storage = stored, cache = cached, key = key, service = served, standby = awake, builder = built, opened = opened }
+    return manager, { storage = stored, storage_adapter = storage, cache = cached, key = key,
+        service = served, standby = awake, builder = built, opened = opened }
 end
 
 do
@@ -188,6 +202,8 @@ do
     equal(2, #state.service.pending, "second chapter starts only after first succeeds")
     state.service.pending[2].callback(nil, { code = "NETWORK_ERROR", message = "offline" })
     equal("failed", manager:get(first.id).status, "partial fetch failure marks task failed")
+    equal(2, manager:get(first.id).total, "partial fetch failure retains catalog total")
+    equal(1, manager:get(first.id).completed, "partial fetch failure retains prior successful chapter count")
     equal(1, manager:get(first.id).failed, "partial fetch failure increments failed counter")
     equal("<p>one</p>", state.cache.bodies[state.key(book_one.source_id, book_one.id, chapters_one[1])],
         "successful chapter cache survives task failure")
@@ -206,6 +222,9 @@ do
     truthy(manager:cancel(task.id), "active task cancellation succeeds")
     truthy(manager:cancel(task.id), "repeated cancellation is idempotent")
     equal("cancelled", manager:get(task.id).status, "cancelled task reaches a terminal state")
+    equal(2, manager:get(task.id).total, "cancellation retains catalog total")
+    equal(0, manager:get(task.id).completed, "cancellation before callback completes no chapter")
+    equal(0, manager:get(task.id).failed, "cancellation is not counted as a failed chapter")
     equal(1, state.service.cancellations, "current request is cancelled once")
     equal(0, state.standby.refs, "cancel releases standby")
     late({ content = "<p>late</p>" }, nil)
@@ -253,8 +272,36 @@ do
     state.service.catalog_pending[1].callback(chapters_two, nil)
     state.service.pending[1].callback({ content = "<p>only</p>" }, nil)
     equal("failed", manager:get(task.id).status, "archive commit failure marks task failed")
+    equal(1, manager:get(task.id).total, "archive commit failure retains catalog total")
+    equal(1, manager:get(task.id).completed, "archive commit failure retains completed chapter count")
+    equal(0, manager:get(task.id).failed, "archive commit failure is not a duplicate failed chapter")
     equal(0, state.standby.refs, "builder failure releases standby")
     equal(1, #state.storage.chapters[book_two.id], "fetched catalog is persisted")
+end
+
+-- Assembly re-reads every completed cache entry.  If that verification fails,
+-- it is one overall build failure, not a second failed chapter; the durable
+-- terminal record must remain valid across restart and retry.
+do
+    local cache_key = book_two.source_id .. "/" .. book_two.id .. "/" .. chapters_two[1].uid
+    local cached = { [cache_key] = "<p>cached before assembly</p>" }
+    local manager, state = manager_fixture({ cached = cached, cache_behavior = { miss_on_read = 2 } })
+    local task = assert(manager:enqueue(book_two, chapters_two))
+    equal("failed", state.storage.tasks[task.id].status, "assembly cache miss persists a failed task")
+    equal(1, state.storage.tasks[task.id].completed, "chapter was completed before assembly verification")
+
+    local restarted, restart_state = manager_fixture({ storage_adapter = state.storage_adapter,
+        storage_state = state.storage, cached = cached })
+    equal(false, restarted.persistence_blocked, "manager-produced assembly failure remains valid after restart")
+    local restored_task = restarted:get(task.id)
+    equal("failed", restored_task and restored_task.status, "restart keeps the failed task visible")
+    equal(1, restored_task and restored_task.completed, "restart preserves the completed chapter count")
+    equal(0, restored_task and restored_task.failed, "assembly failure does not double-count a failed chapter")
+    truthy(restarted:retry(task.id), "restart-visible assembly failure remains retryable")
+    equal("completed", restarted:get(task.id).status, "retry reuses the intact cache and completes")
+    equal(1, restarted:get(task.id).completed, "retry rebuilds restart-safe completed count")
+    equal(0, restarted:get(task.id).failed, "retry rebuilds restart-safe failed count")
+    equal(1, #restart_state.builder.calls, "retry publishes exactly one EPUB")
 end
 
 return count
