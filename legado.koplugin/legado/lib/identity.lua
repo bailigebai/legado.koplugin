@@ -1,17 +1,35 @@
 local Identity = {}
 
+local function koreader_hasher()
+    local loaded, sha2 = pcall(require, "ffi/sha2")
+    if not loaded or not sha2 then return nil end
+    if type(sha2.sha256) == "function" then return sha2.sha256 end
+    if type(sha2.digest) == "function" then return function(value) return sha2.digest("sha256", value) end end
+    return nil
+end
+
+local native_hash = koreader_hasher()
+
 local function normalize(value)
     value = tostring(value or "")
     value = value:gsub("^(%a[%w+.-]*://)[^/@]*@", "%1")
     return value
 end
 
-local function hash(value)
+local function fallback_hash(value)
     local total = 5381
     for index = 1, #value do
         total = (total * 33 + value:byte(index)) % 4294967296
     end
     return string.format("%08x", total)
+end
+
+local function hash(value)
+    if native_hash then
+        local ok, digest = pcall(native_hash, value)
+        if ok and type(digest) == "string" and digest ~= "" then return digest end
+    end
+    return fallback_hash(value)
 end
 
 function Identity.hash(value)

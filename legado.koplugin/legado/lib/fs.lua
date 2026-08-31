@@ -58,9 +58,12 @@ function Fs:ensureDirectory(path)
         return true
     end
     local prefix = path:match("^%a:[/\\]") or path:match("^[/\\]") or ""
-    local current = prefix:gsub("[/\\]$", "")
+    local current
+    if prefix == "/" or prefix == "\\" then current = "/" else current = prefix:gsub("[/\\]$", "") end
     for _, part in ipairs(split(path:sub(#prefix + 1))) do
-        if current == "" then current = part else current = current .. "/" .. part end
+        if current == "" then current = part
+        elseif current == "/" then current = current .. part
+        else current = current .. "/" .. part end
         if not (self.lfs.attributes and self.lfs.attributes(current, "mode") == "directory") then
             local ok, err = self.lfs.mkdir(current)
             if not ok and not (self.lfs.attributes and self.lfs.attributes(current, "mode") == "directory") then
@@ -124,7 +127,16 @@ function Fs:atomicWrite(path, data)
                     self.remove(backup)
                     return true
                 end
-                self.rename(backup, path)
+                local restored, restore_error = self.rename(backup, path)
+                if not restored then
+                    self.remove(temporary)
+                    return nil, Errors.new(Errors.STORAGE_ERROR, "cannot restore original file", {
+                        path = path,
+                        cause = rename_error,
+                        restore_cause = restore_error,
+                        recovery_path = backup,
+                    })
+                end
             else
                 rename_error = move_error or rename_error
             end

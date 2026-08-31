@@ -180,9 +180,22 @@ function Storage.new(options)
 end
 
 function Storage:_save()
-    local encoded_ok, content = pcall(function() return "return " .. encode(self.state) end)
+    return self:_save_state(self.state)
+end
+
+function Storage:_save_state(state)
+    local encoded_ok, content = pcall(function() return "return " .. encode(state) end)
     if not encoded_ok then return nil, Errors.new(Errors.STORAGE_ERROR, "cannot encode fallback storage", { cause = content }) end
     return self.fs:atomicWrite(self.path, content)
+end
+
+function Storage:_mutate(mutator)
+    local candidate = copy(self.state)
+    mutator(candidate)
+    local saved, error_value = self:_save_state(candidate)
+    if not saved then return nil, error_value end
+    self.state = candidate
+    return true
 end
 
 function Storage:backendName()
@@ -194,16 +207,21 @@ function Storage:_map(name)
 end
 
 function Storage:_persist_value(name, id, value)
-    self:_map(name)[id] = copy(value)
-    local saved, error_value = self:_save()
-    if not saved then self:_map(name)[id] = nil return nil, error_value end
+    local saved, error_value = self:_mutate(function(candidate)
+        candidate.data[name][id] = copy(value)
+    end)
+    if not saved then return nil, error_value end
     return copy(value)
 end
 
 function Storage:createSource(source)
     source = copy(source or {})
     source.id = source.id or Identity.source(source.url or source.bookSourceUrl or source.name)
-    if self.adapter then return self.adapter:putSource(source) and copy(source) end
+    if self.adapter then
+        local saved, error_value = self.adapter:putSource(source)
+        if not saved then return nil, error_value end
+        return copy(source)
+    end
     return self:_persist_value("sources", source.id, source)
 end
 function Storage:getSource(id)
@@ -220,13 +238,20 @@ function Storage:updateSource(id, patch)
     end
     return self:_persist_value("sources", id, update_fields(copy(value), patch or {}))
 end
-function Storage:deleteSource(id) if self.adapter then return self.adapter:deleteSource(id) end self:_map("sources")[id] = nil; return self:_save() end
+function Storage:deleteSource(id)
+    if self.adapter then return self.adapter:deleteSource(id) end
+    return self:_mutate(function(candidate) candidate.data.sources[id] = nil end)
+end
 function Storage:listSources() if self.adapter then return self.adapter:listSources() end return list_values(self:_map("sources"), "name") end
 
 function Storage:createBook(book)
     book = copy(book or {})
     book.id = book.id or Identity.book(book.source_id, book.url or book.name)
-    if self.adapter then return self.adapter:putBook(book) and copy(book) end
+    if self.adapter then
+        local saved, error_value = self.adapter:putBook(book)
+        if not saved then return nil, error_value end
+        return copy(book)
+    end
     return self:_persist_value("books", book.id, book)
 end
 function Storage:getBook(id) if self.adapter then return self.adapter:getBook(id) end local value = self:_map("books")[id]; return value and copy(value) or nil end
@@ -240,7 +265,14 @@ function Storage:updateBook(id, patch)
     end
     return self:_persist_value("books", id, update_fields(copy(value), patch or {}))
 end
-function Storage:deleteBook(id) if self.adapter then return self.adapter:deleteBook(id) end self:_map("books")[id] = nil; self:_map("chapters")[id] = nil; self:_map("progress")[id] = nil; return self:_save() end
+function Storage:deleteBook(id)
+    if self.adapter then return self.adapter:deleteBook(id) end
+    return self:_mutate(function(candidate)
+        candidate.data.books[id] = nil
+        candidate.data.chapters[id] = nil
+        candidate.data.progress[id] = nil
+    end)
+end
 function Storage:listShelf() if self.adapter then return self.adapter:listBooks() end return list_values(self:_map("books"), "name") end
 
 function Storage:replaceChapters(book_id, chapters)
@@ -255,10 +287,9 @@ function Storage:replaceChapters(book_id, chapters)
         local values = list_values(replacement, "index")
         return self.adapter:replaceChapters(book_id, values)
     end
-    self:_map("chapters")[book_id] = replacement
-    local saved, error_value = self:_save()
-    if not saved then return nil, error_value end
-    return true
+    return self:_mutate(function(candidate)
+        candidate.data.chapters[book_id] = replacement
+    end)
 end
 function Storage:listChapters(book_id) if self.adapter then return self.adapter:listChapters(book_id) end return list_values(self:_map("chapters")[book_id] or {}, "index") end
 function Storage:getChapter(book_id, uid)

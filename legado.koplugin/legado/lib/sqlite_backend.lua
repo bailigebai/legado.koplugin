@@ -89,7 +89,9 @@ function SqliteBackend.open(driver, path)
     if type(driver) ~= "table" or type(driver.open) ~= "function" then return nil, "invalid sqlite driver" end
     local opened, db = pcall(driver.open, path)
     if not opened or not db then return nil, db or "cannot open sqlite database" end
-    if type(db.exec) ~= "function" or type(db.nrows) ~= "function" then return nil, "unsupported sqlite driver" end
+    if type(db.exec) ~= "function" or (type(db.rowexec) ~= "function" and type(db.prepare) ~= "function") then
+        return nil, "unsupported sqlite driver"
+    end
     local self = setmetatable({ db = db }, SqliteBackend)
     local initialized, error_value = self:_initialize()
     if not initialized then return nil, error_value end
@@ -97,21 +99,67 @@ function SqliteBackend.open(driver, path)
 end
 
 function SqliteBackend:_exec(sql)
-    local ok, result = pcall(self.db.exec, self.db, sql)
-    if not ok or result == false or result == nil then return nil, Errors.new(Errors.STORAGE_ERROR, "sqlite statement failed", { cause = result }) end
+    local ok, result, count = pcall(self.db.exec, self.db, sql)
+    if not ok or result == false or (result == nil and type(count) == "string") then
+        return nil, Errors.new(Errors.STORAGE_ERROR, "sqlite statement failed", { cause = result or count })
+    end
     return true
 end
 
 function SqliteBackend:_rows(sql)
-    local ok, iterator = pcall(self.db.nrows, self.db, sql)
-    if not ok or type(iterator) ~= "function" then return nil, Errors.new(Errors.STORAGE_ERROR, "sqlite query failed", { cause = iterator }) end
     local rows = {}
-    local iterated, iteration_error = pcall(function() for row in iterator do rows[#rows + 1] = row end end)
-    if not iterated then return nil, Errors.new(Errors.STORAGE_ERROR, "sqlite row iteration failed", { cause = iteration_error }) end
-    return rows
+    local executed, resultset, count = pcall(self.db.exec, self.db, sql)
+    if executed and resultset == nil and (count == 0 or count == nil) then return rows end
+    if executed and type(resultset) == "table" and count and count > 0 then
+        for index = 1, count do
+            local row = {}
+            for name, column in pairs(resultset) do
+                if type(name) == "string" and type(column) == "table" then row[name] = column[index] end
+            end
+            rows[#rows + 1] = row
+        end
+        return rows
+    end
+    if not executed or resultset == false or (resultset == nil and type(count) == "string") then
+        return nil, Errors.new(Errors.STORAGE_ERROR, "sqlite query failed", { cause = resultset or count })
+    end
+    if type(self.db.rowexec) == "function" then
+        local ok, first = pcall(self.db.rowexec, self.db, sql)
+        if not ok then return nil, Errors.new(Errors.STORAGE_ERROR, "sqlite row query failed", { cause = first }) end
+        if first == nil then return rows end
+        local column = sql:match("SELECT%s+([%w_]+)")
+        if column then rows[1] = { [column] = first } end
+        return rows
+    end
+    if type(self.db.prepare) == "function" then
+        local ok, statement = pcall(self.db.prepare, self.db, sql)
+        if not ok or not statement then return nil, Errors.new(Errors.STORAGE_ERROR, "sqlite prepare failed", { cause = statement }) end
+        local iterated, iteration_error = pcall(function()
+            local row, names = statement:step({}, {})
+            while row do
+                local mapped = {}
+                for index, name in ipairs(names or {}) do mapped[name] = row[index] end
+                rows[#rows + 1] = mapped
+                row, names = statement:step({}, {})
+            end
+        end)
+        if statement.close then statement:close() elseif statement.finalize then statement:finalize() end
+        if not iterated then return nil, Errors.new(Errors.STORAGE_ERROR, "sqlite row iteration failed", { cause = iteration_error }) end
+        return rows
+    end
+    return nil, Errors.new(Errors.STORAGE_ERROR, "sqlite query support unavailable")
 end
 
 function SqliteBackend:_initialize()
+    local meta_tables, meta_error = self:_rows("SELECT name FROM sqlite_master WHERE type='table' AND name='" .. TABLE .. "meta'")
+    if not meta_tables then return nil, meta_error end
+    if meta_tables[1] then
+        local versions, version_error = self:_rows("SELECT value FROM " .. TABLE .. "meta WHERE key='schema_version'")
+        if not versions then return nil, version_error end
+        if versions[1] and tonumber(versions[1].value) ~= SqliteBackend.SCHEMA_VERSION then
+            return nil, Errors.new(Errors.MIGRATION_ERROR, "unsupported sqlite migration", { from = versions[1].value, to = SqliteBackend.SCHEMA_VERSION })
+        end
+    end
     local schema = table.concat({
         "PRAGMA journal_mode=WAL;", "PRAGMA synchronous=NORMAL;",
         "CREATE TABLE IF NOT EXISTS " .. TABLE .. "meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);",
@@ -125,9 +173,6 @@ function SqliteBackend:_initialize()
     if not ready then return nil, ready_error end
     local rows, rows_error = self:_rows("SELECT value FROM " .. TABLE .. "meta WHERE key='schema_version'")
     if not rows then return nil, rows_error end
-    if rows[1] and tonumber(rows[1].value) ~= SqliteBackend.SCHEMA_VERSION then
-        return nil, Errors.new(Errors.MIGRATION_ERROR, "unsupported sqlite migration", { from = rows[1].value, to = SqliteBackend.SCHEMA_VERSION })
-    end
     if not rows[1] then return self:_exec("INSERT INTO " .. TABLE .. "meta (key,value) VALUES ('schema_version'," .. SqliteBackend.SCHEMA_VERSION .. ")") end
     return true
 end
