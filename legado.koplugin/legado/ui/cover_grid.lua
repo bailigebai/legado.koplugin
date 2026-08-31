@@ -37,6 +37,7 @@ function CoverGrid.new(options)
         layout[#layout + 1] = focus_row
     end
     local controls, focus_controls = {}, {}
+    local close_grid
     local function control(text, callback)
         if callback then
             local button = deps.button:new({ text = text, callback = callback })
@@ -46,9 +47,31 @@ function CoverGrid.new(options)
     control("上一页", options.on_prev)
     control("文字模式", options.on_toggle)
     control("下一页", options.on_next)
+    control("返回", function() return close_grid() end)
     if #controls > 0 then rows[#rows + 1] = deps.horizontal_group:new(controls); layout[#layout + 1] = focus_controls end
-    local widget = deps.focus_manager:new({ layout = layout, deps.vertical_group:new(rows) })
+    local Grid = deps.focus_manager
+    if type(deps.focus_manager.extend) == "function" then Grid = deps.focus_manager:extend({}) end
+    local widget = Grid:new({ layout = layout, deps.vertical_group:new(rows) })
     widget.kind, widget.cells, widget.model, widget.alive = "cover_grid", cells, model, true
+    local closed = false
+    local function finalize_close()
+        if closed then return false end
+        closed = true
+        widget.alive = false
+        for _, cell in ipairs(cells) do cell.item.on_update = nil end
+        if options.on_close then options.on_close() end
+        return true
+    end
+    close_grid = function()
+        if closed then return false end
+        if deps.ui_manager and type(deps.ui_manager.close) == "function" then deps.ui_manager:close(widget) end
+        finalize_close()
+        return true
+    end
+    widget.close_button = controls[#controls]
+    widget.key_events = widget.key_events or {}
+    widget.key_events.Close = { { "Back" }, { "Close" }, event = "Close" }
+    widget.onClose = close_grid
     for _, cell in ipairs(cells) do
         cell.item.on_update = function(item)
             if not widget.alive then return end
@@ -58,11 +81,7 @@ function CoverGrid.new(options)
             if deps.ui_manager and type(deps.ui_manager.setDirty) == "function" then deps.ui_manager:setDirty(widget, "ui") end
         end
     end
-    widget.onCloseWidget = function()
-        widget.alive = false
-        for _, cell in ipairs(cells) do cell.item.on_update = nil end
-        if options.on_close then options.on_close() end
-    end
+    widget.onCloseWidget = finalize_close
     return widget
 end
 

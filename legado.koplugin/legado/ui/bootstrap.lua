@@ -13,8 +13,13 @@ local function native_appearance(plugin)
     return function()
         local Event = optional("ui/event")
         if plugin.ui and type(plugin.ui.handleEvent) == "function" and Event and type(Event.new) == "function" then
-            plugin.ui:handleEvent(Event:new("ShowReaderConfigMenu"))
-            return true
+            local handled = plugin.ui:handleEvent(Event:new("ShowConfigMenu"))
+            if handled then return true end
+            local UIManager, InfoMessage = optional("ui/uimanager"), optional("ui/widget/infomessage")
+            if UIManager and InfoMessage and type(UIManager.show) == "function" and type(InfoMessage.new) == "function" then
+                UIManager:show(InfoMessage:new({ text = "请在 KOReader 阅读界面中使用原生字体和背景设置。" }))
+            end
+            return false
         end
         local UIManager, InfoMessage = optional("ui/uimanager"), optional("ui/widget/infomessage")
         if UIManager and InfoMessage and type(UIManager.show) == "function" and type(InfoMessage.new) == "function" then

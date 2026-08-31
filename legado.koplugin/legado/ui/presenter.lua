@@ -11,6 +11,25 @@ local function construct(class, options)
     return options
 end
 
+local function safe_token(value, fallback)
+    local token = tostring(value or ""):gsub("[^%w_%-%.]", "")
+    return token ~= "" and token or fallback
+end
+
+local function diagnostic_text(error, compatibility)
+    local code = safe_token(type(error) == "table" and error.code, "UNKNOWN_ERROR")
+    local status = type(error) == "table" and type(error.details) == "table" and tonumber(error.details.status) or nil
+    local lines = { "错误代码：" .. code, "说明：请求或解析失败，请检查书源配置。" }
+    if status then lines[#lines + 1] = "状态码：" .. tostring(status) end
+    if type(compatibility) == "table" then
+        lines[#lines + 1] = "兼容性：" .. safe_token(compatibility.status, "unknown")
+        for _, issue in ipairs(compatibility.issues or {}) do
+            lines[#lines + 1] = safe_token(issue.field, "rule") .. "：" .. safe_token(issue.code, "UNSUPPORTED")
+        end
+    end
+    return table.concat(lines, "\n")
+end
+
 function Presenter.new(options)
     options = options or {}
     return setmetatable({
@@ -112,13 +131,19 @@ function Presenter:_search(view)
             local handle = view:submit(keyword, ids, 1)
             if view.loading == false then return handle end
             local progress
+            local closed = false
+            local function close_progress(close_widget)
+                if closed then return false end
+                closed = true
+                if type(view.cancel) == "function" then view:cancel() elseif type(view.close) == "function" then view:close() end
+                if view.progress_widget == progress then view.progress_widget = nil end
+                if close_widget and self.ui_manager and type(self.ui_manager.close) == "function" then self.ui_manager:close(progress) end
+                return true
+            end
             progress = construct(self.menu, { title = "搜索", item_table = {
                 { text = "搜索中…", enabled = false },
-                { text = "取消", callback = function()
-                    if type(view.cancel) == "function" then view:cancel() elseif type(view.close) == "function" then view:close() end
-                    if self.ui_manager and type(self.ui_manager.close) == "function" then self.ui_manager:close(progress) end
-                end },
-            } })
+                { text = "取消", callback = function() return close_progress(true) end },
+            }, close_callback = function() return close_progress(false) end })
             view.progress_widget = progress
             return self:_show(progress)
         end
@@ -223,7 +248,10 @@ function Presenter:_detail(view)
         items[#items + 1] = { text = "分类：" .. tostring(info.kind or "未分类"), enabled = false }
         items[#items + 1] = { text = "最新章：" .. tostring(info.last_chapter or "未知"), enabled = false }
     elseif view.info_error then
-        items[#items + 1] = { text = "详情加载失败（书源诊断）", enabled = false }
+        items[#items + 1] = { text = "详情加载失败（书源诊断）", callback = function()
+            local report = type(view.compatibility) == "function" and view:compatibility() or view.compatibility
+            return self:_info(diagnostic_text(view.info_error, report), "书源诊断")
+        end }
     else
         items[#items + 1] = { text = "详情加载中…", enabled = false }
     end

@@ -10,6 +10,7 @@ function BookDetail.new(options)
         book = options.book, alternatives = options.alternatives or {}, shelf = options.shelf,
         reading_hook = options.reading_hook, download_hook = options.download_hook,
         service = options.service, source_lookup = options.source_lookup,
+        compatibility_provider = options.compatibility,
         alive = true, loading_info = false, loading_catalog = false,
         info = nil, info_error = nil, catalog = nil, catalog_error = nil,
         info_request = nil, catalog_request = nil, generation = 0,
@@ -74,6 +75,10 @@ function BookDetail:close()
     if self.info_request and type(self.info_request.cancel) == "function" then self.info_request:cancel() end
     if self.catalog_request and type(self.catalog_request.cancel) == "function" then self.catalog_request:cancel() end
     return true
+end
+function BookDetail:compatibility()
+    if type(self.compatibility_provider) == "function" then return self.compatibility_provider(self.book) end
+    return nil
 end
 function BookDetail:startReading() return self.reading_hook and self.reading_hook(self.book) or "阅读功能将在下一阶段提供" end
 function BookDetail:startDownload() return self.download_hook and self.download_hook(self.book) or "下载功能将在下一阶段提供" end

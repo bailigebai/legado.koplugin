@@ -24,9 +24,10 @@ local grid = CoverGrid.new({
 })
 
 assertx.equal("cover_grid", grid.kind, "cover mode returns a dedicated native widget")
-assertx.equal(2, #grid.layout, "four covers produce two focus rows")
+assertx.equal(3, #grid.layout, "four covers plus return controls produce three focus rows")
 assertx.equal(3, #grid.layout[1], "cover focus layout uses three columns")
 assertx.equal(1, #grid.layout[2], "last focus row keeps remainder")
+assertx.equal("返回", grid.layout[3][1].text, "cover focus layout includes a reachable return button")
 assertx.equal("horizontal", grid[1][1].kind, "widget tree uses HorizontalGroup rows")
 assertx.equal(3, #grid[1][1], "first visual row contains three cells")
 assertx.equal("image", grid.cells[1].visual[1].kind, "available cover uses ImageWidget")

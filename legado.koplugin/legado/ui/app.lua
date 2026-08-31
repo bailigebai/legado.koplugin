@@ -53,6 +53,15 @@ function App:createBookDetail(book, alternatives)
         source_lookup = self.storage and function(opaque_id)
             for _, source in ipairs(self.storage:listSources() or {}) do if Models.sourceId(source) == opaque_id then return source end end
         end or nil,
+        compatibility = function(selected)
+            if not selected or not self.source_manager or type(self.source_manager.compatibility) ~= "function" then return nil end
+            local source = self.storage and (function()
+                for _, candidate in ipairs(self.storage:listSources() or {}) do
+                    if Models.sourceId(candidate) == selected.source_id then return candidate end
+                end
+            end)()
+            return source and self.source_manager:compatibility(source.id) or nil
+        end,
         reading_hook = function(selected) return self:startReading(selected) end,
         download_hook = function(selected) return self:startDownload(selected) end,
     })
