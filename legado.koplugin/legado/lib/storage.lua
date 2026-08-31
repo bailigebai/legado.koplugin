@@ -125,6 +125,19 @@ local function new_data()
     } }
 end
 
+local COLLECTIONS = { "sources", "books", "chapters", "progress", "downloads" }
+
+local function validate_state_collections(state, path)
+    for _, name in ipairs(COLLECTIONS) do
+        if type(state.data[name]) ~= "table" then
+            return nil, Errors.new(Errors.STORAGE_ERROR, "invalid fallback storage collection", {
+                path = path, collection = name,
+            })
+        end
+    end
+    return true
+end
+
 local function list_values(map, field)
     local values = {}
     for _, value in pairs(map) do values[#values + 1] = copy(value) end
@@ -173,6 +186,8 @@ function Storage.new(options)
     else
         state = new_data()
     end
+    local valid, validation_error = validate_state_collections(state, path)
+    if not valid then return nil, validation_error end
     local self = setmetatable({ fs = fs, path = path, state = state, backend = "lua", sqlite_error = sqlite_error }, Storage)
     local saved, save_error = self:_save()
     if not saved then return nil, save_error end

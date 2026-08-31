@@ -9,6 +9,11 @@ DownloadManager.__index = DownloadManager
 
 local terminal = { cancelled = true, failed = true, completed = true }
 local CLEAR = {}
+local MAX_SAFE_QUEUE_SEQUENCE = 9007199254740991
+local RESTORABLE_STATUS = {
+    queued = true, running = true, cancelling = true, interrupted = true,
+    failed = true, cancelled = true, completed = true,
+}
 
 local function copy(value, seen)
     if type(value) ~= "table" then return value end
@@ -46,8 +51,20 @@ end
 local function valid_queue_sequence(value)
     local numeric = tonumber(value)
     if not numeric or numeric ~= numeric or numeric == math.huge or numeric == -math.huge
-        or numeric <= 0 or numeric % 1 ~= 0 then return nil end
+        or numeric <= 0 or numeric > MAX_SAFE_QUEUE_SEQUENCE or numeric % 1 ~= 0
+        or numeric + 1 <= numeric then return nil end
     return numeric
+end
+
+local function sequence_error()
+    return Errors.new(Errors.STORAGE_ERROR, "download queue sequence space is exhausted", {
+        sequence_exhausted = true,
+    })
+end
+
+local function is_sequence_error(value)
+    return type(value) == "table" and type(value.details) == "table"
+        and value.details.sequence_exhausted == true
 end
 
 local function queued_before(a, b)
@@ -72,14 +89,27 @@ local function sorted_queued_tasks(tasks)
 end
 
 function DownloadManager:_migrateAndRebuildQueue()
-    local maximum = tonumber(self.queue_sequence) or 0
+    local maximum = valid_queue_sequence(self.queue_sequence) or 0
     for _, task in pairs(self.tasks) do
         maximum = math.max(maximum, valid_queue_sequence(task.queue_sequence) or 0)
     end
     self.queue_sequence = maximum
+    local seen, legacy = {}, {}
     for _, task in ipairs(sorted_queued_tasks(self.tasks)) do
-        if valid_queue_sequence(task.queue_sequence) == nil then
+        local sequence = valid_queue_sequence(task.queue_sequence)
+        if sequence == nil or seen[sequence] then
+            legacy[task] = true
+        else
+            seen[sequence] = true
+        end
+    end
+    for _, task in ipairs(sorted_queued_tasks(self.tasks)) do
+        if legacy[task] then
+            if maximum >= MAX_SAFE_QUEUE_SEQUENCE then return nil, sequence_error() end
             local next_sequence = maximum + 1
+            if next_sequence <= maximum or valid_queue_sequence(next_sequence) == nil then
+                return nil, sequence_error()
+            end
             local saved, err = self:_transition(task, { queue_sequence = next_sequence })
             if not saved then return nil, err end
             maximum = next_sequence
@@ -89,6 +119,91 @@ function DownloadManager:_migrateAndRebuildQueue()
     self.queue_sequence = maximum
     self.queue = {}
     for _, task in ipairs(sorted_queued_tasks(self.tasks)) do self.queue[#self.queue + 1] = task.id end
+    return true
+end
+
+
+local function validate_download_listing(value)
+    if type(value) ~= "table" then
+        return nil, Errors.new(Errors.STORAGE_ERROR, "invalid persisted download collection")
+    end
+    local count, highest = 0, 0
+    for key in pairs(value) do
+        if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then
+            return nil, Errors.new(Errors.STORAGE_ERROR, "invalid persisted download collection")
+        end
+        count, highest = count + 1, math.max(highest, key)
+    end
+    if highest ~= count then
+        return nil, Errors.new(Errors.STORAGE_ERROR, "invalid persisted download collection")
+    end
+    local tasks, order, ids = {}, {}, {}
+    for index = 1, count do
+        local task = value[index]
+        local queue_type = type(task) == "table" and type(task.queue_sequence) or "nil"
+        local created_type = type(task) == "table" and type(task.created_at) or "nil"
+        local updated_type = type(task) == "table" and type(task.updated_at) or "nil"
+        if type(task) ~= "table" or type(task.id) ~= "string" or task.id == ""
+            or type(task.status) ~= "string" or not RESTORABLE_STATUS[task.status] or ids[task.id]
+            or (queue_type ~= "nil" and queue_type ~= "number" and queue_type ~= "string")
+            or (created_type ~= "nil" and created_type ~= "number" and created_type ~= "string")
+            or (updated_type ~= "nil" and updated_type ~= "number" and updated_type ~= "string") then
+            return nil, Errors.new(Errors.STORAGE_ERROR, "invalid persisted download task", { index = index })
+        end
+        ids[task.id] = true
+        tasks[task.id], order[#order + 1] = task, task.id
+    end
+    return tasks, order
+end
+
+function DownloadManager:_readPersistedTasks()
+    local ok, value = pcall(self.storage.listDownloadTasks, self.storage)
+    if not ok then
+        return nil, error_value(value, "cannot load persisted download tasks")
+    end
+    local validated, tasks, order_or_error = pcall(validate_download_listing, value)
+    if not validated then
+        return nil, error_value(tasks, "cannot validate persisted download tasks")
+    end
+    return tasks, order_or_error
+end
+
+function DownloadManager:_restoreFromStorage(require_sequence_capacity)
+    local tasks, order_or_error = self:_readPersistedTasks()
+    if not tasks then return nil, order_or_error, true end
+    self.tasks, self.order, self.queue = tasks, order_or_error, {}
+    self.active, self.pump_scheduled, self.queue_sequence = nil, false, 0
+    local recovered = false
+    for _, id in ipairs(self.order) do
+        local task = self.tasks[id]
+        if task.status == "running" or task.status == "cancelling" then
+            local persisted, persist_error = self:_transition(task, {
+                status = "interrupted", cancel_requested = false, current = CLEAR,
+                error = { code = Errors.STORAGE_ERROR, message = "download interrupted by restart" },
+            })
+            if not persisted then
+                local fallback_saved, fallback_error = self:_transition(task, {
+                    status = "failed", cancel_requested = false, current = CLEAR,
+                    error = { code = persist_error.code, message = persist_error.message },
+                })
+                if not fallback_saved then
+                    if type(self.standby.releaseAll) == "function" then self.standby:releaseAll() end
+                    return nil, error_value(fallback_error or persist_error, "startup persistence recovery failed")
+                end
+            end
+            recovered = true
+        end
+    end
+    if recovered and type(self.standby.releaseAll) == "function" then self.standby:releaseAll() end
+    local migrated, migration_error = self:_migrateAndRebuildQueue()
+    if not migrated then
+        return nil, error_value(migration_error, "legacy download queue migration failed"),
+            is_sequence_error(migration_error)
+    end
+    if require_sequence_capacity then
+        local _, capacity_error = self:_nextQueueSequence()
+        if capacity_error then return nil, capacity_error, true end
+    end
     return true
 end
 
@@ -106,34 +221,15 @@ function DownloadManager.new(options)
         now = options.now or os.time, open_final = options.open_final,
         tasks = {}, order = {}, queue = {}, callbacks = {}, callback_delivered = {}, active = nil,
         sequence = 0, queue_sequence = 0, pump_scheduled = false,
-        persistence_blocked = false, init_error = nil,
+        persistence_blocked = false, init_error = nil, reload_required = false,
+        sequence_allocation_blocked = false,
     }, DownloadManager)
-    local recovered = false
-    for _, task in ipairs(self.storage:listDownloadTasks() or {}) do
-        if type(task) == "table" and type(task.id) == "string" then
-            self.tasks[task.id] = task; self.order[#self.order + 1] = task.id
-            if task.status == "running" or task.status == "cancelling" then
-                local persisted, persist_error = self:_transition(task, {
-                    status = "interrupted", cancel_requested = false, current = CLEAR,
-                    error = { code = Errors.STORAGE_ERROR, message = "download interrupted by restart" },
-                })
-                if not persisted then
-                    local fallback_saved, fallback_error = self:_transition(task, { status = "failed", cancel_requested = false, current = CLEAR,
-                        error = { code = persist_error.code, message = persist_error.message } })
-                    if not fallback_saved then
-                        self.persistence_blocked = true
-                        self.init_error = error_value(fallback_error or persist_error, "startup persistence recovery failed")
-                    end
-                end
-                recovered = true
-            end
-        end
-    end
-    if recovered and type(self.standby.releaseAll) == "function" then self.standby:releaseAll() end
-    local migrated, migration_error = self:_migrateAndRebuildQueue()
-    if not migrated then
+    local restored, restore_error, reload_required = self:_restoreFromStorage()
+    if not restored then
         self.persistence_blocked = true
-        self.init_error = error_value(migration_error, "legacy download queue migration failed")
+        self.init_error = error_value(restore_error, "download persistence initialization failed")
+        self.reload_required = reload_required == true
+        self.sequence_allocation_blocked = is_sequence_error(restore_error)
         self.queue = {}
     end
     if #self.queue > 0 and not self.persistence_blocked then self:_schedulePump() end
@@ -162,7 +258,7 @@ function DownloadManager:_transition(task, changes)
 end
 
 function DownloadManager:_release_active(task)
-    if self.active == task.id then
+    if task and self.active == task.id then
         self.active = nil
         self.standby:release()
     end
@@ -171,10 +267,28 @@ end
 function DownloadManager:_block_persistence(task, err)
     err = error_value(err, "download persistence is unavailable")
     self.persistence_blocked, self.init_error = true, err
-    self:_cancel_request(task)
-    self:_release_active(task)
+    task = task or (self.active and self.tasks[self.active])
+    if task then self:_cancel_request(task); self:_release_active(task) end
     self.pump_scheduled = false
     return nil, err
+end
+
+function DownloadManager:_nextQueueSequence()
+    local current = self.queue_sequence
+    if current == 0 then return 1 end
+    if valid_queue_sequence(current) == nil or current >= MAX_SAFE_QUEUE_SEQUENCE then
+        return nil, sequence_error()
+    end
+    local next_sequence = current + 1
+    if next_sequence <= current or valid_queue_sequence(next_sequence) == nil then
+        return nil, sequence_error()
+    end
+    return next_sequence
+end
+
+function DownloadManager:_blockSequenceAllocation(err)
+    self.reload_required, self.sequence_allocation_blocked = true, true
+    return self:_block_persistence(nil, err or sequence_error())
 end
 
 function DownloadManager:_interrupt_for_persistence(task, persist_error)
@@ -392,14 +506,16 @@ function DownloadManager:enqueue(book, chapters, callback)
     local created = self.now()
     local id = "download-" .. Identity.hash(book.id .. "\n" .. tostring(created) .. "\n" .. tostring(self.sequence))
     while self.tasks[id] do self.sequence = self.sequence + 1; id = "download-" .. Identity.hash(id .. self.sequence) end
-    self.queue_sequence = self.queue_sequence + 1
+    local next_queue_sequence, sequence_allocation_error = self:_nextQueueSequence()
+    if not next_queue_sequence then return self:_blockSequenceAllocation(sequence_allocation_error) end
     local task = { id = id, book_id = book.id, source_id = book.source_id, book = copy(book), chapters = copy(chapters),
         status = "queued", total = 0, completed = 0, failed = 0, current = nil, cancel_requested = false,
-        created_at = created, updated_at = created, queue_sequence = self.queue_sequence,
+        created_at = created, updated_at = created, queue_sequence = next_queue_sequence,
         final_path = self.output_root .. "/" .. EpubBuilder.exportFilename(book),
     }
     local saved, save_error = self:_persist(task)
     if not saved then return nil, save_error end
+    self.queue_sequence = next_queue_sequence
     self.tasks[id], self.order[#self.order + 1], self.queue[#self.queue + 1] = task, id, id
     if type(callback) == "function" then self.callbacks[id] = callback end
     self:_schedulePump()
@@ -444,12 +560,14 @@ function DownloadManager:_requeue(id, allowed)
     if not task then return nil, Errors.new(Errors.INVALID_INPUT, "download task does not exist") end
     if self.persistence_blocked then return nil, self.init_error end
     if not allowed[task.status] then return false end
-    self.queue_sequence = self.queue_sequence + 1
+    local next_queue_sequence, sequence_allocation_error = self:_nextQueueSequence()
+    if not next_queue_sequence then return self:_blockSequenceAllocation(sequence_allocation_error) end
     local saved, save_error = self:_transition(task, {
         status = "queued", cancel_requested = false, current = CLEAR, completed = 0, failed = 0,
-        error = CLEAR, warning = CLEAR, published_diagnostic = CLEAR, queue_sequence = self.queue_sequence,
+        error = CLEAR, warning = CLEAR, published_diagnostic = CLEAR, queue_sequence = next_queue_sequence,
     })
     if not saved then return nil, save_error end
+    self.queue_sequence = next_queue_sequence
     self.callback_delivered[id] = nil
     self.queue[#self.queue + 1] = id
     self:_schedulePump(); return true
@@ -460,6 +578,20 @@ function DownloadManager:resume(id) return self:_requeue(id, { interrupted = tru
 
 function DownloadManager:recoverPersistence()
     if not self.persistence_blocked then return true end
+    if self.reload_required then
+        local restored, restore_error, reload_required = self:_restoreFromStorage(self.sequence_allocation_blocked)
+        if not restored then
+            self.init_error = error_value(restore_error, "download persistence is unavailable")
+            self.reload_required = reload_required == true
+            self.sequence_allocation_blocked = self.sequence_allocation_blocked or is_sequence_error(restore_error)
+            self.queue = {}
+            return nil, self.init_error
+        end
+        self.reload_required, self.sequence_allocation_blocked = false, false
+        self.persistence_blocked, self.init_error = false, nil
+        self:_schedulePump()
+        return true
+    end
     for _, id in ipairs(self.order) do
         local task = self.tasks[id]
         if task and (task.status == "running" or task.status == "cancelling") then
@@ -476,6 +608,8 @@ function DownloadManager:recoverPersistence()
     local migrated, migration_error = self:_migrateAndRebuildQueue()
     if not migrated then
         self.init_error = error_value(migration_error, "legacy download queue migration failed")
+        self.reload_required = is_sequence_error(migration_error)
+        self.sequence_allocation_blocked = is_sequence_error(migration_error)
         return nil, self.init_error
     end
     self.persistence_blocked, self.init_error = false, nil
