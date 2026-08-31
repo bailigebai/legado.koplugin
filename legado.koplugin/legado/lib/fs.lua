@@ -420,16 +420,17 @@ local function posix_dirfd_atomic(self, path, data, options)
                 if matches and retry(function() return sys:renameat(parent_fd, backup_name, parent_fd, target_name) end) == 0 then
                     names[backup_name] = nil
                     local restored_fd = retry(function() return sys:openat(parent_fd, target_name, read_flags, 0) end)
-                    if restored_fd >= 0 then
-                        remember(restored_fd)
-                        local restored = same_identity(backup_identity, fd_identity(restored_fd))
-                        local restored_closed, restored_close_error = close_fd(restored_fd)
-                        if not restored_closed then return nil, restored_close_error end
-                        if restored then return true end
+                    if restored_fd < 0 then
+                        return nil, "restored target unavailable for verification", { recoverable_target = true }
                     end
-                    if retry(function() return sys:unlinkat(parent_fd, target_name, 0) end) ~= 0 then
-                        return nil, "cannot remove mismatched restored target"
+                    remember(restored_fd)
+                    local restored = same_identity(backup_identity, fd_identity(restored_fd))
+                    local restored_closed, restored_close_error = close_fd(restored_fd)
+                    if not restored_closed then
+                        return nil, restored_close_error, { recoverable_target = true }
                     end
+                    if restored then return true end
+                    return nil, "restored atomic target identity mismatch", { recoverable_target = true }
                 end
             end
         end
@@ -461,10 +462,11 @@ local function posix_dirfd_atomic(self, path, data, options)
     end
     local function abort_after_commit(message, details)
         details = details or {}
-        local restored, restore_error = restore_previous()
+        local restored, restore_error, restore_details = restore_previous()
         local synced, sync_error = sync_parent()
         if not restored then
             details.restore_cause = restore_error
+            if restore_details then for key, value in pairs(restore_details) do details[key] = value end end
             if backup_name and names[backup_name] then
                 protected_names[backup_name] = true
                 details.recoverable_backup = true
@@ -514,10 +516,11 @@ local function posix_dirfd_atomic(self, path, data, options)
     local valid, validation_error = true
     if validate then valid, validation_error = validate(path, "after_replace") end
     if not valid then
-        local restored, restore_error = restore_previous()
+        local restored, restore_error, restore_details = restore_previous()
         local synced, sync_error = sync_parent()
         if not restored or not synced then
             local details = { cause = tostring(validation_error), restore_cause = restore_error, restore_fsync_cause = sync_error }
+            if restore_details then for key, value in pairs(restore_details) do details[key] = value end end
             if not restored and backup_name and names[backup_name] then
                 protected_names[backup_name] = true
                 details.recoverable_backup = true
@@ -533,7 +536,12 @@ local function posix_dirfd_atomic(self, path, data, options)
         if not removed then return abort_after_commit("atomic backup cleanup failed", { cleanup_cause = remove_error }) end
     end
     local cleanup_synced, cleanup_sync_error = sync_parent()
-    if not cleanup_synced then return abort_after_commit("atomic cleanup fsync failed", { cause = cleanup_sync_error }) end
+    if not cleanup_synced then
+        local cleaned, cleanup_error = cleanup()
+        local details = { cause = cleanup_sync_error, published = true }
+        if not cleaned then details.cleanup_cause = cleanup_error end
+        return true, true, Errors.new(Errors.STORAGE_ERROR, "published target cleanup fsync failed", details)
+    end
     local cleaned, cleanup_error = cleanup()
     if not cleaned then
         local diagnostic = Errors.new(Errors.STORAGE_ERROR, "atomic descriptor cleanup failed", {

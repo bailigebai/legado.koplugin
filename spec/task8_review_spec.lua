@@ -84,16 +84,29 @@ end
 do
     local scheduled = {}
     local scheduler = { scheduleIn = function(_, _, action) scheduled[#scheduled + 1] = action end }
-    local value = book("persist-outage-running")
+    local value, next_value = book("persist-outage-running"), book("persist-outage-next")
     local manager, state = fixture({ scheduler = scheduler,
         fail_put = function(_, _, current) return current.storage_down end })
     local task = assert(manager:enqueue(value, { chapter(value, 1) }))
+    local next_task = assert(manager:enqueue(next_value, { chapter(next_value, 1) }))
     state.storage_down = true
     scheduled[1]()
     truthy(manager.persistence_blocked, "running transition persistent outage blocks the manager")
     equal("queued", state.tasks[task.id].status, "failed running transition leaves queued durable truth")
     equal(0, #state.pending, "failed running persistence starts no network request")
     equal(0, state.refs, "failed running persistence holds no standby reference")
+    state.storage_down = false
+    truthy(manager:recoverPersistence(), "queued start recovers after storage returns")
+    scheduled[2]()
+    equal(value.id, state.pending[1] and state.pending[1].book.id,
+        "recovery rebuilds persisted FIFO so the popped queued task runs first")
+    equal("running", manager:get(task.id).status, "recovered first queued task persists running before network")
+    equal("queued", manager:get(next_task.id).status, "later persisted task remains queued without duplication")
+    state.pending[1].callback({ content = "<p>first</p>" }, nil)
+    scheduled[3]()
+    equal(2, #state.pending, "recovered FIFO starts each queued task exactly once")
+    equal(next_value.id, state.pending[2] and state.pending[2].book.id,
+        "later persisted task starts only after the recovered first task completes")
 end
 
 do

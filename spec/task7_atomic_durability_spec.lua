@@ -49,6 +49,7 @@ local function posix_fake(initial, behavior)
             if not state.dirs[path] then return fail(2) end
             return alloc({ kind = "dir", path = path })
         end
+        if behavior.restored_target_recheck_open_failure and state.restored_target == path then return fail(5) end
         if bit.band(flags, 64) ~= 0 then
             if state.files[path] then return fail(17) end
             state.files[path] = inode("")
@@ -74,6 +75,9 @@ local function posix_fake(initial, behavior)
     end
     function sys:identity(fd)
         local item = state.fds[fd]; if not item then return nil end
+        if behavior.restored_target_identity_failure and state.restored_target == item.path then
+            return { dev = "1", ino = "unexpected" }
+        end
         return { dev = "1", ino = tostring(item.kind == "file" and item.file.ino or (item.path == "" and 1 or 2)) }
     end
     function sys:size(fd)
@@ -85,7 +89,9 @@ local function posix_fake(initial, behavior)
         state.operations[#state.operations + 1] = "rename:" .. tostring(oldpath) .. ">" .. tostring(newpath)
         if not oldpath or not newpath or not state.files[oldpath] then return fail(2) end
         if behavior.backup_restore_rename_failure and oldname:find("^.backup%-") then return fail(5) end
-        state.files[newpath], state.files[oldpath] = state.files[oldpath], nil; return 0
+        state.files[newpath], state.files[oldpath] = state.files[oldpath], nil
+        if oldname:find("^%.backup%-") then state.restored_target = newpath end
+        return 0
     end
     function sys:unlinkat(fd, name)
         local path = child(fd, name); if not path then return fail(9) end
@@ -268,6 +274,51 @@ do
     equal(1, #backups, "generic cleanup protects the sole recoverable backup")
     equal("old", backups[1], "recoverable backup retains the exact old bytes")
     equal(nil, tostring(err):find(".backup-", 1, true), "structured rollback error never leaks the random backup path")
+end
+
+-- Once backup->target restore has succeeded, a failed recheck must never unlink
+-- the restored old inode: it is now the sole remaining old copy.
+do
+    for _, case in ipairs({
+        { name = "open", behavior = { restored_target_recheck_open_failure = true } },
+        { name = "close", behavior = { close_eio_path = "root/book.epub", close_eio_occurrence = 3 } },
+        { name = "identity", behavior = { restored_target_identity_failure = true } },
+    }) do
+        local sys, state = posix_fake({ ["root/book.epub.part"] = "new", ["root/book.epub"] = "old" }, case.behavior)
+        local published, err = injected_fs(sys):atomicReplacePreparedFile("root/book.epub.part", "root/book.epub", {
+            root = "root", root_identity = { dev = "1", ino = "2" }, expected_size = 3,
+            validate = function(_, phase)
+                if phase == "after_replace" then return nil, { code = "INVALID_INPUT", message = "reject" } end
+                return true
+            end,
+        })
+        equal(nil, published, case.name .. " restored-target recheck failure is not reported as publication")
+        equal("STORAGE_ERROR", err and err.code, case.name .. " restored-target recheck failure is structured")
+        equal(true, err and err.details and err.details.recoverable_target,
+            case.name .. " diagnostic reports that the restored old target remains recoverable")
+        equal("old", state.files["root/book.epub"] and state.files["root/book.epub"].content,
+            case.name .. " failed restored-target recheck preserves the sole old inode at target")
+        local old_count = 0
+        for _, file in pairs(state.files) do if file.content == "old" then old_count = old_count + 1 end end
+        equal(1, old_count, case.name .. " failure retains exactly one old copy")
+    end
+end
+
+-- After the backup has been unlinked, a later cleanup-directory fsync cannot
+-- roll back. The result must truthfully report that the new EPUB is published.
+do
+    local sys, state = posix_fake({ ["root/book.epub.part"] = "new", ["root/book.epub"] = "old" }, {
+        fsync_dir_fail_on = 2,
+    })
+    local published, diagnostic = injected_fs(sys):atomicReplacePreparedFile("root/book.epub.part", "root/book.epub", {
+        root = "root", root_identity = { dev = "1", ino = "2" }, expected_size = 3,
+    })
+    truthy(published, "irreversible post-backup cleanup fsync failure reports actual publication")
+    equal("STORAGE_ERROR", diagnostic and diagnostic.code, "irreversible cleanup fsync returns a structured diagnostic")
+    equal(true, diagnostic and diagnostic.details and diagnostic.details.published,
+        "irreversible cleanup fsync diagnostic marks published=true")
+    equal("new", state.files["root/book.epub"] and state.files["root/book.epub"].content,
+        "irreversible cleanup fsync diagnostic retains the published target")
 end
 
 -- The Windows test runtime drives the production dirfd transaction through an

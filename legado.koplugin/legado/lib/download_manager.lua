@@ -429,6 +429,18 @@ function DownloadManager:recoverPersistence()
             end
         end
     end
+    local queued = {}
+    for _, task in pairs(self.tasks) do
+        if task.status == "queued" then queued[#queued + 1] = task end
+    end
+    table.sort(queued, function(a, b)
+        local aq, bq = tonumber(a.queue_sequence), tonumber(b.queue_sequence)
+        if aq and bq and aq ~= bq then return aq < bq end
+        if (a.created_at or 0) ~= (b.created_at or 0) then return (a.created_at or 0) < (b.created_at or 0) end
+        return a.id < b.id
+    end)
+    self.queue = {}
+    for _, task in ipairs(queued) do self.queue[#self.queue + 1] = task.id end
     self.persistence_blocked, self.init_error = false, nil
     self:_schedulePump()
     return true
