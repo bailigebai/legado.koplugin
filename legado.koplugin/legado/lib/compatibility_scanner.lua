@@ -18,7 +18,9 @@ local function add_issue(issues, field, code, message)
 end
 
 local function dangerous_construct(value, path)
-    return Capabilities.findUnsupported(path .. "\n" .. value)
+    local code, message = Capabilities.findUnsupported(value)
+    if code then return code, message end
+    return Capabilities.findUnsupported(path)
 end
 
 local function sorted_keys(value)

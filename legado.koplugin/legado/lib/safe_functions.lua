@@ -9,6 +9,8 @@ local function trim(value)
 end
 
 local function utf8_character(codepoint)
+    if type(codepoint) ~= "number" or codepoint < 0 or codepoint > 0x10ffff
+        or (codepoint >= 0xd800 and codepoint <= 0xdfff) then return nil end
     if codepoint <= 0x7f then return string.char(codepoint) end
     if codepoint <= 0x7ff then
         return string.char(0xc0 + math.floor(codepoint / 0x40), 0x80 + codepoint % 0x40)
@@ -42,10 +44,12 @@ local function html_decode(value)
     return (tostring(value or ""):gsub("&(#?x?[%w]+);", function(entity)
         if entity:sub(1, 2):lower() == "#x" then
             local number = tonumber(entity:sub(3), 16)
-            return number and utf8_character(number) or "&" .. entity .. ";"
+            local decoded = number and utf8_character(number)
+            return decoded or "&" .. entity .. ";"
         elseif entity:sub(1, 1) == "#" then
             local number = tonumber(entity:sub(2), 10)
-            return number and utf8_character(number) or "&" .. entity .. ";"
+            local decoded = number and utf8_character(number)
+            return decoded or "&" .. entity .. ";"
         end
         return html_entities[entity] or "&" .. entity .. ";"
     end))
@@ -70,6 +74,10 @@ for index = 1, #alphabet do decode64[alphabet:sub(index, index)] = index - 1 end
 local function base64_decode(value)
     local input = tostring(value or ""):gsub("%s+", "")
     if #input % 4 ~= 0 or input:find("[^A-Za-z0-9+/=]") then error("invalid Base64") end
+    local data, padding = input:match("^(.-)(=*)$")
+    if #padding > 2 or data:find("=", 1, true) then error("invalid Base64 padding") end
+    if #padding == 2 and band(decode64[data:sub(-1)] or -1, 0x0f) ~= 0 then error("non-canonical Base64 padding") end
+    if #padding == 1 and band(decode64[data:sub(-1)] or -1, 0x03) ~= 0 then error("non-canonical Base64 padding") end
     local output = {}
     for index = 1, #input, 4 do
         local chars = { input:sub(index, index), input:sub(index + 1, index + 1), input:sub(index + 2, index + 2), input:sub(index + 3, index + 3) }
@@ -219,24 +227,39 @@ end
 
 local function normalize_path(path)
     local parts = {}
+    local trailing = path:sub(-1) == "/" or path:match("/%.%.?$") ~= nil
     for part in path:gmatch("[^/]+") do
         if part == ".." then if #parts > 0 then parts[#parts] = nil end
         elseif part ~= "." and part ~= "" then parts[#parts + 1] = part end
     end
-    return "/" .. table.concat(parts, "/")
+    local normalized = "/" .. table.concat(parts, "/")
+    if trailing and normalized ~= "/" then normalized = normalized .. "/" end
+    return normalized
 end
 
 local function resolve_url(base, relative)
     base, relative = tostring(base or ""), tostring(relative or "")
     if relative:match("^[%a][%w+.-]*:") then return relative end
-    local scheme, authority, path = base:match("^([%a][%w+.-]*):%/%/([^/]+)(/[^?#]*)")
+    local scheme, authority, remainder = base:match("^([%a][%w+.-]*):%/%/([^/?#]+)(.*)$")
     if not scheme then return relative end
     if relative:sub(1, 2) == "//" then return scheme .. ":" .. relative end
+    local origin = scheme .. "://" .. authority
+    local base_path = remainder:match("^([^?#]*)") or ""
+    if base_path == "" then base_path = "/" end
+    local base_query = remainder:match("(%?[^#]*)") or ""
+    if relative == "" then return origin .. base_path .. base_query end
+    if relative:sub(1, 1) == "#" then return origin .. base_path .. base_query .. relative end
+    if relative:sub(1, 1) == "?" then return origin .. base_path .. relative end
+
     local suffix = relative:match("([?#].*)$") or ""
     local clean = relative:gsub("[?#].*$", "")
-    if clean == "" then return scheme .. "://" .. authority .. path .. suffix end
-    local target = clean:sub(1, 1) == "/" and clean or path:gsub("[^/]*$", "") .. clean
-    return scheme .. "://" .. authority .. normalize_path(target) .. suffix
+    local target
+    if clean:sub(1, 1) == "/" then target = clean
+    else
+        local directory = base_path:sub(-1) == "/" and base_path or base_path:gsub("[^/]*$", "")
+        target = directory .. clean
+    end
+    return origin .. normalize_path(target) .. suffix
 end
 
 Safe.resolve_url = resolve_url

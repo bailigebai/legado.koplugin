@@ -12,4 +12,6 @@ vendored module obeys the plugin's module namespace; the parser logic is
 otherwise unchanged.
 
 The upstream license notice and exception are reproduced verbatim in
-`legado.koplugin/legado/vendor/htmlparser/LICENSE`.
+`legado.koplugin/legado/vendor/htmlparser/LICENSE`. The complete GNU Lesser
+General Public License version 3 terms referenced by that notice are included
+alongside it in `legado.koplugin/legado/vendor/htmlparser/COPYING.LESSER`.

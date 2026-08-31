@@ -1,0 +1,21 @@
+Task 4 review fix round 1 RED evidence
+=====================================
+
+Command:
+  .tools\python\python.exe scripts\run_lua_specs.py --spec spec\rule_engine_review_spec.lua
+
+Observed before fix-round production edits:
+  [RED] selector recursion and supplied DOMs share bounded validation
+  [RED] obfuscated executable tokens are rejected before parsing and by scanner
+  [RED] relative URL resolution handles authority roots and reference forms
+  [RED] DOM text extraction follows text-node order and XPath directness
+  [RED] mixed templates explicitly evaluate dynamic selectors and every extractor
+  [RED] template delimiter matching ignores quoted escaped closing braces
+  [RED] Base64 padding is canonical and invalid Unicode entities are preserved
+  [RED] template interpolation preserves false and only empties nil
+  [RED] CSS pseudo arity and positive child positions are validated
+  Specs: 0 passed, 1 failed; Assertions: 0
+
+Each failure was an observable behavior mismatch in the committed Task 4
+implementation, not a harness or fixture error. The full failure messages are
+retained in the task report's fix-round section.
