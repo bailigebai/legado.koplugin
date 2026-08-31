@@ -303,17 +303,29 @@ assertx.truthy(directories["/mnt"] and directories["/mnt/us"] and directories["/
 local atomic_path = temporary_path("restore")
 assert(Fs.new():atomicWrite(atomic_path, "old atomic value"))
 local rename_calls = 0
-local restore_fs = Fs.new({ rename = function(from, to)
+local secure_paths = {}
+local restore_fs = Fs.new({ secureTemp = function(target, purpose)
+    local candidate = target .. "." .. purpose .. "-testnonce"
+    secure_paths[purpose] = candidate
+    os.remove(candidate)
+    local handle, err = io.open(candidate, "wbx")
+    return candidate, handle or err
+end, rename = function(from, to)
     rename_calls = rename_calls + 1
     if rename_calls == 2 then return os.rename(from, to) end
     return nil, "simulated rename failure " .. rename_calls
 end })
 local atomic_ok, atomic_error = restore_fs:atomicWrite(atomic_path, "new atomic value")
 assertx.equal(nil, atomic_ok, "failed replacement reports error when backup restore also fails")
-assertx.equal(atomic_path .. ".bak", atomic_error.details.recovery_path, "failed restoration exposes recoverable backup path")
-local backup = assert(io.open(atomic_path .. ".bak", "rb"))
+assertx.equal(Errors.STORAGE_ERROR, atomic_error.code, "failed restoration is a compound storage error")
+assertx.equal("replacement and recovery failed", atomic_error.message, "failed restoration reports compound failure")
+assertx.equal("simulated rename failure 4", atomic_error.details and atomic_error.details.restore_cause, "failed restoration retains the restore cause without exposing a random path")
+assertx.equal(nil, atomic_error.details.recovery_path, "secure random backup name is not exposed in diagnostics")
+local backup = assert(io.open(secure_paths.backup, "rb"))
 assertx.equal("old atomic value", backup:read("*a"), "backup retains old content after failed restoration")
 backup:close()
+os.remove(secure_paths.backup)
+os.remove(secure_paths.temp)
 cleanup(atomic_path)
 
 local writes, fail_write = 0, false

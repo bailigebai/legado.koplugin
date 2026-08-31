@@ -138,7 +138,12 @@ function ReaderSession:_open_cached(state, index, restore_fraction)
 end
 
 function ReaderSession:_fetch_then_open(state, index, restore_fraction)
-    if not self.service or type(self.service.getContent) ~= "function" then return nil, Errors.new(Errors.STORAGE_ERROR, "chapter is not cached for offline reading") end
+    if not self.service or type(self.service.getContent) ~= "function" then
+        state.fetching, state.end_handled = false, false
+        local error_value = Errors.new(Errors.STORAGE_ERROR, "chapter is not cached and BookService is unavailable")
+        self.diagnostics("read", error_value)
+        return nil, error_value
+    end
     local chapter = state.chapters[index]
     self:_cancelForeground()
     local generation = self.foreground_generation
@@ -183,14 +188,15 @@ function ReaderSession:_end(state, document)
     self:_save(state, document)
     local next_index = state.index + 1
     if next_index > #state.chapters then
-        if type(self.ui.endOfBook) == "function" then self.ui:endOfBook(document) end
-        return
+        if type(self.ui.endOfBook) == "function" then return self.ui:endOfBook(document) end
+        return false
     end
     -- A user-initiated page turn outranks speculative requests.  Cancelling
     -- them avoids two requests for the same next chapter on slow sources.
     self:_cancelPrefetch()
     local opened = self:_open_cached(state, next_index, nil)
-    if not opened then self:_fetch_then_open(state, next_index, nil) end
+    if opened then return opened end
+    return self:_fetch_then_open(state, next_index, nil)
 end
 
 local function cancel_handles(handles)

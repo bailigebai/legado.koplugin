@@ -48,11 +48,11 @@ function App:startReading(book, chapters)
     local source
     for _, candidate in ipairs(self.storage:listSources() or {}) do if Models.sourceId(candidate) == book.source_id then source = candidate; break end end
     if not source then return "书源不存在" end
-    if type(chapters) == "table" and #chapters > 0 then return self.reader_session:resume(source, book, chapters) end
     local function offline()
         return self.reader_session:openOffline(source, book)
     end
     if not self.service then return offline() end
+    if type(chapters) == "table" and #chapters > 0 then return self.reader_session:resume(source, book, chapters) end
     return self.service:getChapters(source, book, function(values, err)
         if err or not values then offline(); return end
         if type(self.storage.replaceChapters) == "function" then self.storage:replaceChapters(book.id, values) end

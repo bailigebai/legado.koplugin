@@ -52,7 +52,7 @@ do
         onGotoPercentage = function(_, value) paging_goto = value end,
     } }
     local reader_ui = { instance = rolling_reader }
-    function reader_ui:showReader(_, _, _, _, ready) ready() end
+    function reader_ui:showReader(_, _, _, _, ready) ready(self.instance) end
     local adapter = ReaderAdapter.new({ ReaderUI = reader_ui })
     local rolling = assert(adapter:openDocument("rolling.html", { ready = function() end }))
     equal(0.375, rolling:getProgressFraction(), "rolling progress uses getLastPercent")

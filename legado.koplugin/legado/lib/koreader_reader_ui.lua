@@ -27,8 +27,7 @@ function Adapter:openDocument(path, callbacks)
     end
     local proxy = { is_legado_document = true }
     local ready_error
-    local function after_open()
-        local reader = reader_ui.instance
+    local function after_open(reader)
         if not reader then
             ready_error = failure("KOReader did not expose the opened reader")
             if callbacks and callbacks.failure then pcall(callbacks.failure, ready_error) end
@@ -40,6 +39,9 @@ function Adapter:openDocument(path, callbacks)
                 return math.max(0, math.min(1, tonumber(reader.rolling:getLastPercent()) or 0))
             end
             local paging, document = reader.paging, reader.document
+            if paging and type(paging.getLastPercent) == "function" then
+                return math.max(0, math.min(1, tonumber(paging:getLastPercent()) or 0))
+            end
             local pages = paging and tonumber(paging.number_of_pages)
             local page = paging and tonumber(paging.current_page)
             if not pages and document and type(document.getPageCount) == "function" then pages = tonumber(document:getPageCount()) end

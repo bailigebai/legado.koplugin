@@ -92,7 +92,10 @@ end
 function Cleaner.normalize(input, options)
     if type(input) ~= "string" then return nil, Errors.new(Errors.INVALID_INPUT, "chapter content must be a string") end
     options = options or {}
-    local regexes = options.replaceRegex or options.replace_regex or {}
+    local regexes
+    if options.replaceRegex ~= nil then regexes = options.replaceRegex
+    elseif options.replace_regex ~= nil then regexes = options.replace_regex
+    else regexes = {} end
     local regex_error
     regexes, regex_error = validate_regexes(regexes)
     if not regexes then return nil, regex_error end

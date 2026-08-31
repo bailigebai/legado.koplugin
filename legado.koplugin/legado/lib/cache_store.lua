@@ -21,7 +21,15 @@ local function utf8(v)
 end
 local function hex(v) return (v:gsub(".", function(c) return string.format("%02x", c:byte()) end)) end
 local function unhex(v) if type(v) ~= "string" or #v % 2 ~= 0 or v:find("[^%da-fA-F]") then return nil end return (v:gsub("..", function(p) return string.char(tonumber(p, 16)) end)) end
-function CacheStore.new(o) o = o or {}; assert(type(o.root) == "string" and o.root ~= "", "CacheStore requires root"); local self = setmetatable({ fs = o.fs or Fs.new(), root = o.root:gsub("[/\\]+$", ""), quarantine = o.quarantine ~= false, encoder = o.encoder or Json.encode, max_catalog_chapters = o.max_catalog_chapters or 100000 }, CacheStore); self.fs:ensureDirectory(self.root); return self end
+function CacheStore.new(o)
+    o = o or {}; assert(type(o.root) == "string" and o.root ~= "", "CacheStore requires root")
+    local self = setmetatable({ fs = o.fs or Fs.new(), root = o.root:gsub("[/\\]+$", ""), quarantine = o.quarantine ~= false, encoder = o.encoder or Json.encode, max_catalog_chapters = o.max_catalog_chapters or 100000 }, CacheStore)
+    local valid, validation_error = self:_validatePath(self.root)
+    if not valid then self.init_error = validation_error; return self end
+    local ensured, ensure_error = self.fs:ensureDirectory(self.root)
+    if not ensured then self.init_error = ensure_error end
+    return self
+end
 local function path_prefixes(path)
     local normalized=path:gsub("\\","/")
     local prefix,rest="",normalized
@@ -54,12 +62,13 @@ function CacheStore:_validatePath(path)
         for candidate in pairs(checked) do
             local info=type(lfs.symlinkattributes)=="function" and lfs.symlinkattributes(candidate) or nil
             if not info and type(lfs.attributes)=="function" then info=lfs.attributes(candidate) end
-            if linked(info) then return nil,Errors.new(Errors.INVALID_INPUT,"cache path contains link or reparse point",{path=candidate}) end
+            if linked(info) then return nil,Errors.new(Errors.INVALID_INPUT,"cache path contains link or reparse point") end
         end
     end
     return true
 end
 function CacheStore:_path(s,b,kind,chapter)
+    if self.init_error then return nil,self.init_error end
     if not extensions[kind] then return nil, Errors.new(Errors.INVALID_INPUT, "unknown cache kind") end; s,b = safe_id(s),safe_id(b); if not s or not b then return nil, Errors.new(Errors.INVALID_INPUT, "cache ids must be opaque") end
     local pieces={s,b,kind}; if chapter then local uid=safe_id(type(chapter)=="table" and chapter.uid or chapter); if not uid then return nil, Errors.new(Errors.INVALID_INPUT,"chapter uid must be opaque") end; pieces[#pieces+1]=uid end
     local path,err=self.fs:join(self.root,unpack(pieces)); if not path then return nil,err end; path=path..extensions[kind]
