@@ -18,22 +18,8 @@ end
 
 local function redact_query(value)
     value = value:gsub("^([%a][%w+.-]*://)([^/@]+)@", "%1[REDACTED]@")
-    return value:gsub("([?&])([%w_%-]+)=([^&#]*)", function(prefix, key, ignored)
-        local lower = key:lower()
-        if lower:find("token", 1, true)
-            or lower:find("password", 1, true)
-            or lower:find("passwd", 1, true)
-            or lower:find("secret", 1, true)
-            or lower:find("authorization", 1, true)
-            or lower == "auth"
-            or lower == "api_key"
-            or lower == "api-key"
-            or lower == "apikey"
-            or lower == "signature"
-            or lower == "session" then
-            return prefix .. key .. "=[REDACTED]"
-        end
-        return prefix .. key .. "=" .. ignored
+    return value:gsub("([?&])([^=&#]+)=([^&#]*)", function(prefix, key)
+        return prefix .. key .. "=[REDACTED]"
     end)
 end
 

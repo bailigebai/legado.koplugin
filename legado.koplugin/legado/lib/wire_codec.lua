@@ -1,6 +1,13 @@
 local Wire = {}
 Wire.MAX_DEPTH = 64
 Wire.MAX_ENTRIES = 100000
+Wire.MAX_BYTES = 4 * 1024 * 1024 + 128 * 1024
+
+local function append(state, value)
+    state.bytes = state.bytes + #value
+    if state.bytes > Wire.MAX_BYTES then error("wire payload exceeds byte limit") end
+    state.parts[#state.parts + 1] = value
+end
 
 local function sized(marker, value)
     value = tostring(value)
@@ -10,17 +17,17 @@ end
 local function encode_value(value, output, seen, depth)
     if depth > Wire.MAX_DEPTH then error("wire value exceeds maximum depth") end
     local value_type = type(value)
-    if value_type == "nil" then output[#output + 1] = "N"
-    elseif value_type == "boolean" then output[#output + 1] = value and "B1" or "B0"
-    elseif value_type == "number" then output[#output + 1] = sized("D", value)
-    elseif value_type == "string" then output[#output + 1] = sized("S", value)
+    if value_type == "nil" then append(output, "N")
+    elseif value_type == "boolean" then append(output, value and "B1" or "B0")
+    elseif value_type == "number" then append(output, sized("D", value))
+    elseif value_type == "string" then append(output, sized("S", value))
     elseif value_type == "table" then
         if seen[value] then error("wire value contains a cycle") end
         seen[value] = true
         local count = 0
         for _ in pairs(value) do count = count + 1 end
         if count > Wire.MAX_ENTRIES then error("wire table has too many entries") end
-        output[#output + 1] = "T" .. tostring(count) .. ":"
+        append(output, "T" .. tostring(count) .. ":")
         for key, child in pairs(value) do
             encode_value(key, output, seen, depth + 1)
             encode_value(child, output, seen, depth + 1)
@@ -32,10 +39,10 @@ local function encode_value(value, output, seen, depth)
 end
 
 function Wire.encode(value)
-    local output = {}
+    local output = { parts = {}, bytes = 0 }
     local ok, err = pcall(encode_value, value, output, {}, 1)
     if not ok then return nil, tostring(err) end
-    return table.concat(output), nil
+    return table.concat(output.parts), nil
 end
 
 local function length_at(input, index)
@@ -92,6 +99,7 @@ end
 
 function Wire.decode(input)
     if type(input) ~= "string" then return nil, "wire payload must be a string" end
+    if #input > Wire.MAX_BYTES then return nil, "wire payload exceeds byte limit" end
     local value, cursor, err = decode_value(input, 1, 1)
     if err then return nil, err end
     if cursor ~= #input + 1 then return nil, "trailing wire data" end

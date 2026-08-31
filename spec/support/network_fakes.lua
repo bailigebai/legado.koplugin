@@ -52,10 +52,19 @@ function Fakes.scheduler()
 end
 
 function Fakes.transport(script)
-    local transport = { script = script or {}, requests = {}, aborted = 0 }
+    local transport = { script = script or {}, requests = {}, aborted = 0, total_deadline_safe = true }
 
     function transport:request(request, sink)
-        self.requests[#self.requests + 1] = request
+        local snapshot = {}
+        for key, value in pairs(request) do
+            if key == "headers" and type(value) == "table" then
+                snapshot.headers = {}
+                for name, header in pairs(value) do snapshot.headers[name] = header end
+            else
+                snapshot[key] = value
+            end
+        end
+        self.requests[#self.requests + 1] = snapshot
         local response = table.remove(self.script, 1)
         if type(response) == "function" then response = response(request) end
         response = response or { status = 200, headers = {}, chunks = { "" } }
@@ -78,6 +87,7 @@ function Fakes.transport(script)
 end
 
 function Fakes.subprocess(options)
+    local Wire = require("legado.lib.wire_codec")
     options = options or {}
     local adapter = {
         enabled = options.enabled ~= false,
@@ -91,6 +101,9 @@ function Fakes.subprocess(options)
         before_job = options.before_job,
         after_job = options.after_job,
         poll_error = options.poll_error,
+        never_reap = options.never_reap,
+        reaps_before_done = options.reaps_before_done or 0,
+        reap_polls = 0,
     }
 
     function adapter:available()
@@ -117,7 +130,8 @@ function Fakes.subprocess(options)
         if not child.payload and not child.terminated then
             if self.before_job then self.before_job() end
             local ok, payload = pcall(child.job)
-            child.payload = self.malformed or (ok and payload or { panic = tostring(payload) })
+            local value = ok and payload or { panic = tostring(payload) }
+            child.payload = self.malformed or assert(Wire.encode(value))
             if self.after_job then self.after_job() end
         end
         return true, child.payload
@@ -131,6 +145,9 @@ function Fakes.subprocess(options)
     end
 
     function adapter:reap(child)
+        if self.never_reap then return false end
+        self.reap_polls = self.reap_polls + 1
+        if self.reap_polls <= self.reaps_before_done then return false end
         if not child.reaped then
             child.reaped = true
             self.reaped = self.reaped + 1

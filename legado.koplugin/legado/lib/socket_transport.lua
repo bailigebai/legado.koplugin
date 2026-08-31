@@ -27,6 +27,9 @@ function SocketTransport.new(options)
         http = options.http or loaded("socket.http"),
         https = options.https or loaded("ssl.https"),
         ltn12 = options.ltn12 or loaded("ltn12"),
+        -- LuaSocket's timeout is per blocking operation. Only the subprocess
+        -- parent can enforce the engine's absolute, interruptible deadline.
+        total_deadline_safe = false,
     }, SocketTransport)
 end
 

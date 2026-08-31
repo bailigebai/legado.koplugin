@@ -18,6 +18,8 @@ RequestEngine.MAX_REDIRECTS = 5
 RequestEngine.DEFAULT_CONCURRENCY = 2
 RequestEngine.MAX_CONCURRENCY = 3
 RequestEngine.POLL_INTERVAL = 0.05
+RequestEngine.MAX_HEADER_BYTES = 64 * 1024
+RequestEngine.MAX_CLEANUP_POLLS = 6
 
 local function optional_require(name)
     local ok, value = pcall(require, name)
@@ -44,8 +46,12 @@ local function set_default_header(headers, name, value)
 end
 
 local function remove_header(headers, wanted)
-    local _, name = header_value(headers, wanted)
-    if name ~= nil then headers[name] = nil end
+    wanted = wanted:lower()
+    local matches = {}
+    for name in pairs(headers or {}) do
+        if tostring(name):lower() == wanted then matches[#matches + 1] = name end
+    end
+    for _, name in ipairs(matches) do headers[name] = nil end
 end
 
 local function clamp(value, fallback, maximum, integer, allow_zero)
@@ -115,7 +121,10 @@ local function form_encode(value)
     if type(value) == "string" then return value end
     if type(value) ~= "table" then error("form body must be a string or table") end
     local keys, output = {}, {}
-    for key in pairs(value) do keys[#keys + 1] = tostring(key) end
+    for key in pairs(value) do
+        if type(key) ~= "string" then error("form body keys must be strings") end
+        keys[#keys + 1] = key
+    end
     table.sort(keys)
     for _, key in ipairs(keys) do
         output[#output + 1] = SafeFunctions.functions.urlencode(key)
@@ -168,6 +177,44 @@ end
 local function safe_log(logger, level, value)
     if not logger or type(logger[level]) ~= "function" then return end
     logger[level](logger, Logger.redact(value))
+end
+
+local function header_names(headers)
+    local names = {}
+    for name in pairs(headers or {}) do names[#names + 1] = tostring(name) end
+    table.sort(names, function(left, right) return left:lower() < right:lower() end)
+    return names
+end
+
+local function metadata_bytes(headers)
+    local total = 0
+    for name, value in pairs(headers or {}) do
+        total = total + #tostring(name) + 2
+        if type(value) == "table" then
+            for _, child in ipairs(value) do total = total + #tostring(child) + 2 end
+        else
+            total = total + #tostring(value) + 2
+        end
+        if total > RequestEngine.MAX_HEADER_BYTES then return total end
+    end
+    return total
+end
+
+local function split_set_cookie(value)
+    if type(value) == "table" then return value end
+    value = tostring(value or "")
+    local result, start = {}, 1
+    for index = 1, #value do
+        if value:sub(index, index) == "," then
+            local following = value:sub(index + 1)
+            if following:match("^%s*[^%s=;,]+%s*=") then
+                result[#result + 1] = value:sub(start, index - 1)
+                start = index + 1
+            end
+        end
+    end
+    result[#result + 1] = value:sub(start)
+    return result
 end
 
 function RequestEngine.new(options)
@@ -232,9 +279,17 @@ function RequestEngine:_normalize(request)
     return normalized, nil
 end
 
-function RequestEngine:_request_once(request)
+function RequestEngine:_request_once(request, deadline)
     local chunks, received, limit_error = {}, 0, nil
+    if self.now() >= deadline then
+        return nil, Errors.new(Errors.TIMEOUT, "source request timed out", { url = request.url })
+    end
+    request.timeout = math.max(0, deadline - self.now())
     local response, err = self.transport:request(request, function(chunk)
+        if self.now() >= deadline then
+            limit_error = Errors.new(Errors.TIMEOUT, "source request timed out", { url = request.url })
+            return nil, "total request deadline reached"
+        end
         if type(chunk) ~= "string" then return nil, "invalid response chunk" end
         received = received + #chunk
         if received > request.max_bytes then
@@ -249,13 +304,23 @@ function RequestEngine:_request_once(request)
     end)
     if limit_error then return nil, limit_error end
     if not response then return nil, transport_error(err, request.url) end
+    if self.now() >= deadline then
+        return nil, Errors.new(Errors.TIMEOUT, "source request timed out", { url = request.url })
+    end
+    local header_bytes = metadata_bytes(response.headers)
+    if header_bytes > RequestEngine.MAX_HEADER_BYTES or header_bytes + received > request.max_bytes then
+        return nil, Errors.new(Errors.RESPONSE_TOO_LARGE, "source response metadata exceeds byte limit", {
+            reason = "response_metadata", max_bytes = request.max_bytes,
+            received_bytes = header_bytes + received,
+        })
+    end
     response.body = table.concat(chunks)
     response.headers = response.headers or {}
     response.final_url = request.url
     return response, nil
 end
 
-function RequestEngine:_perform(request)
+function RequestEngine:_perform(request, deadline)
     local current = shallow_copy(request)
     current.headers = shallow_copy(request.headers)
     local seen = { [current.url] = true }
@@ -266,6 +331,9 @@ function RequestEngine:_perform(request)
         return value
     end
     while true do
+        if self.now() >= deadline then
+            return outcome({ error = Errors.new(Errors.TIMEOUT, "source request timed out", { url = current.url }) })
+        end
         local jar_cookie = type(self.cookies.header) == "function"
             and self.cookies:header(current.source_id, current.url) or nil
         if jar_cookie then
@@ -274,19 +342,22 @@ function RequestEngine:_perform(request)
             current.headers[cookie_name or "Cookie"] = supplied and (supplied .. "; " .. jar_cookie) or jar_cookie
         end
         safe_log(self.logger, "debug", {
-            event = "source_request", url = current.url, method = current.method, headers = current.headers,
+            event = "source_request", url = current.url, method = current.method, header_names = header_names(current.headers),
         })
-        local response, request_error = self:_request_once(current)
+        local response, request_error = self:_request_once(current, deadline)
         if not response then return outcome({ error = request_error }) end
 
         local set_cookie = header_value(response.headers, "set-cookie")
         if set_cookie and type(self.cookies.store) == "function" then
-            self.cookies:store(current.source_id, current.url, set_cookie)
-            cookie_updates[#cookie_updates + 1] = {
-                source_id = current.source_id,
-                url = current.url,
-                value = set_cookie,
-            }
+            local cookie_values = split_set_cookie(set_cookie)
+            self.cookies:store(current.source_id, current.url, cookie_values)
+            for _, cookie_value in ipairs(cookie_values) do
+                cookie_updates[#cookie_updates + 1] = {
+                    source_id = current.source_id,
+                    url = current.url,
+                    value = cookie_value,
+                }
+            end
         end
 
         local status = tonumber(response.status)
@@ -315,6 +386,7 @@ function RequestEngine:_perform(request)
             current.url = target
             if prior_origin ~= origin(target) then
                 remove_header(current.headers, "authorization")
+                remove_header(current.headers, "proxy-authorization")
                 remove_header(current.headers, "cookie")
             else
                 remove_header(current.headers, "cookie")
@@ -360,8 +432,8 @@ function RequestEngine:_apply_cookie_updates(updates)
     end
 end
 
-function RequestEngine:_run_work(request)
-    local ok, payload = pcall(self._perform, self, request)
+function RequestEngine:_run_work(request, deadline)
+    local ok, payload = pcall(self._perform, self, request, deadline)
     if not ok then return { panic = tostring(payload) } end
     return payload
 end
@@ -394,7 +466,8 @@ function RequestEngine:_schedule(delay, action)
     return action
 end
 
-function RequestEngine:_cleanup_child(state, after)
+function RequestEngine:_cleanup_child(state, after, attempt)
+    attempt = attempt or 1
     if not state.child then after(); return end
     local done = self.subprocess:reap(state.child)
     if done then
@@ -403,20 +476,31 @@ function RequestEngine:_cleanup_child(state, after)
         after()
         return
     end
-    state.scheduled = self:_schedule(RequestEngine.POLL_INTERVAL, function()
-        self:_cleanup_child(state, after)
+    if attempt >= RequestEngine.MAX_CLEANUP_POLLS then
+        self.subprocess:close(state.child)
+        state.child = nil
+        after()
+        return
+    end
+    local delay = RequestEngine.POLL_INTERVAL * (2 ^ (attempt - 1))
+    state.cleanup_scheduled = self:_schedule(delay, function()
+        self:_cleanup_child(state, after, attempt + 1)
     end)
 end
 
 function RequestEngine:execute(request, callback)
     assert(type(callback) == "function", "RequestEngine callback must be a function")
     local normalized, normalize_error = self:_normalize(request)
-    local state = { cancelled = false, completed = false, child = nil, scheduled = nil }
+    local state = { cancelled = false, completed = false, child = nil, scheduled = nil, timeout_scheduled = nil }
     local engine = self
 
     local function finish(response, err)
         if state.completed or state.cancelled then return end
         state.completed = true
+        if state.timeout_scheduled and type(engine.scheduler.unschedule) == "function" then
+            engine.scheduler:unschedule(state.timeout_scheduled)
+            state.timeout_scheduled = nil
+        end
         callback(response, err)
     end
 
@@ -427,6 +511,10 @@ function RequestEngine:execute(request, callback)
         if state.scheduled and type(engine.scheduler.unschedule) == "function" then
             engine.scheduler:unschedule(state.scheduled)
             state.scheduled = nil
+        end
+        if state.timeout_scheduled and type(engine.scheduler.unschedule) == "function" then
+            engine.scheduler:unschedule(state.timeout_scheduled)
+            state.timeout_scheduled = nil
         end
         if state.child then
             engine.subprocess:terminate(state.child)
@@ -442,19 +530,23 @@ function RequestEngine:execute(request, callback)
 
     local subprocess_available = self.subprocess and type(self.subprocess.available) == "function"
         and self.subprocess:available()
+    local deadline = self.now() + normalized.timeout
     if subprocess_available then
-        local child, start_error = self.subprocess:start(function() return self:_run_work(normalized) end)
+        local child, start_error = self.subprocess:start(function() return self:_run_work(normalized, deadline) end)
         if child then
             state.child = child
-            local deadline = self.now() + normalized.timeout
+            local function timeout_child()
+                if state.cancelled or state.completed then return end
+                self.subprocess:terminate(child)
+                finish(nil, Errors.new(Errors.TIMEOUT, "source request timed out", { url = normalized.url }))
+                self:_cleanup_child(state, function() end)
+            end
+            state.timeout_scheduled = self:_schedule(normalized.timeout, timeout_child)
             local poll
             poll = function()
                 if state.cancelled or state.completed then return end
                 if self.now() >= deadline then
-                    self.subprocess:terminate(child)
-                    self:_cleanup_child(state, function()
-                        finish(nil, Errors.new(Errors.TIMEOUT, "source request timed out", { url = normalized.url }))
-                    end)
+                    timeout_child()
                     return
                 end
                 local done, payload, poll_error = self.subprocess:poll(child)
@@ -476,7 +568,14 @@ function RequestEngine:execute(request, callback)
 
     state.scheduled = self:_schedule(0, function()
         if state.cancelled then return end
-        local payload = self:_run_work(normalized)
+        local safe_deadline = self.transport and self.transport.total_deadline_safe
+        if not safe_deadline then
+            finish(nil, Errors.new(Errors.NETWORK_ERROR, "synchronous transport cannot enforce a total deadline", {
+                reason = "deadline_unavailable", url = normalized.url,
+            }))
+            return
+        end
+        local payload = self:_run_work(normalized, deadline)
         local decoded, decode_error = self:_decode_child_payload(payload)
         if not decoded then finish(nil, decode_error); return end
         self:_apply_cookie_updates(decoded.cookie_updates)

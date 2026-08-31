@@ -15,7 +15,7 @@ end
 
 local function run_fallback(script, request, options)
     options = options or {}
-    local scheduler = Fakes.scheduler()
+    local scheduler = options.scheduler or Fakes.scheduler()
     local transport = Fakes.transport(script)
     local callbacks = {}
     local engine = RequestEngine.new({
@@ -54,6 +54,27 @@ do
 end
 
 do
+    local _, scheduler, transport, callbacks = run_fallback({
+        { status = 302, headers = { location = "https://cdn.test/final" }, chunks = {} },
+        { status = 200, chunks = { "final" } },
+    }, {
+        url = "https://books.test/start",
+        headers = {
+            Authorization = "one", authorization = "two",
+            ["Proxy-Authorization"] = "three", ["proxy-authorization"] = "four",
+            Cookie = "a=1", cookie = "b=2",
+        },
+    })
+    scheduler:runAll()
+    equal(nil, callbacks[1].err, "duplicate sensitive headers redirect safely")
+    for name in pairs(transport.requests[2].headers) do
+        local lower = tostring(name):lower()
+        truthy(lower ~= "authorization" and lower ~= "proxy-authorization" and lower ~= "cookie",
+            "cross-origin redirect strips every sensitive header casing")
+    end
+end
+
+do
     local engine, scheduler, transport, callbacks = run_fallback({
         { status = 200, chunks = { "json" } },
         { status = 200, chunks = { "form" } },
@@ -84,6 +105,34 @@ do
 end
 
 do
+    local _, scheduler, _, callbacks = run_fallback({
+        { status = 200, headers = { ["X-Huge"] = string.rep("h", 40) }, chunks = {} },
+    }, { url = "https://books.test/header-limit", max_bytes = 24 })
+    scheduler:runAll()
+    equal("RESPONSE_TOO_LARGE", callbacks[1].err.code, "headers count toward response bound")
+    equal("response_metadata", callbacks[1].err.details.reason, "header overflow diagnostic")
+end
+
+do
+    local deadline_scheduler = Fakes.scheduler()
+    local _, scheduler, transport, callbacks = run_fallback({
+        function(request)
+            deadline_scheduler:advance(0.06)
+            return { status = 302, headers = { location = "/second" }, chunks = {} }
+        end,
+        function(request)
+            deadline_scheduler:advance(0.06)
+            return { status = 200, chunks = { "late" } }
+        end,
+    }, { url = "https://books.test/first", timeout = 0.1 }, { scheduler = deadline_scheduler })
+    scheduler:runAll()
+    equal(1, #callbacks, "redirect deadline callback once")
+    equal("TIMEOUT", callbacks[1].err.code, "one absolute deadline spans redirects")
+    truthy(transport.requests[2].timeout < transport.requests[1].timeout,
+        "each redirect receives only remaining timeout")
+end
+
+do
     local engine, scheduler, transport, callbacks = run_fallback({
         { status = 302, headers = { Location = "/next", ["Set-Cookie"] = "sid=alpha; Path=/; Secure" }, chunks = {} },
         { status = 200, headers = {}, chunks = { "done" } },
@@ -105,6 +154,15 @@ do
 end
 
 do
+    local _, scheduler, transport, callbacks = run_fallback({}, {
+        url = "https://books.test/form", method = "POST", body_type = "form", body = { [1] = "lost" },
+    })
+    scheduler:runAll()
+    equal("INVALID_INPUT", callbacks[1].err.code, "form rejects non-string keys")
+    equal(0, #transport.requests, "invalid form never reaches transport")
+end
+
+do
     local _, scheduler, transport, callbacks = run_fallback({
         { status = 301, headers = { location = "/loop" }, chunks = {} },
         { status = 301, headers = { location = "/loop" }, chunks = {} },
@@ -118,6 +176,27 @@ do
 end
 
 do
+    local engine, scheduler, transport, callbacks = run_fallback({
+        {
+            status = 200,
+            headers = { ["Set-Cookie"] = "a=1; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Path=/, b=2; Path=/" },
+            chunks = { "first" },
+        },
+        { status = 200, chunks = { "second" } },
+        { status = 200, chunks = { "isolated" } },
+    }, { url = "https://books.test/first", source_id = "source-a" })
+    scheduler:runAll()
+    equal(nil, callbacks[1].err, "combined Set-Cookie response succeeds")
+    engine:execute({ url = "https://books.test/second", source_id = "source-a" }, function() end)
+    scheduler:runAll()
+    truthy(transport.requests[2].headers.Cookie:find("a=1", 1, true), "Expires comma remains in first cookie")
+    truthy(transport.requests[2].headers.Cookie:find("b=2", 1, true), "combined second cookie is stored")
+    engine:execute({ url = "https://books.test/third", source_id = "source-b" }, function() end)
+    scheduler:runAll()
+    equal(nil, transport.requests[3].headers.Cookie, "combined cookies remain source isolated")
+end
+
+do
     local _, scheduler, transport, callbacks = run_fallback({
         { status = 302, headers = { location = "/next" }, chunks = {} },
     }, { url = "https://books.test/no-redirect", max_redirects = 0 })
@@ -125,6 +204,48 @@ do
     equal("NETWORK_ERROR", callbacks[1].err.code, "zero redirect budget is honored")
     equal("max_redirects", callbacks[1].err.details.reason, "zero redirect diagnostic")
     equal(1, #transport.requests, "zero redirect budget stops at first response")
+end
+
+do
+    local scheduler = Fakes.scheduler()
+    local subprocess = Fakes.subprocess({ never_reap = true, polls_before_done = 1000 })
+    local callbacks = {}
+    local callback_at
+    local engine = RequestEngine.new({
+        transport = Fakes.transport({ { status = 200, chunks = { "late" } } }),
+        scheduler = scheduler, subprocess = subprocess, logger = silent_logger,
+    })
+    engine:execute({ url = "https://books.test/unreapable", timeout = 0.1 }, function(response, err)
+        callback_at = scheduler:now()
+        callbacks[#callbacks + 1] = { response, err }
+    end)
+    scheduler:runAll(200)
+    equal(1, #callbacks, "unreapable timeout callback once")
+    equal(0.1, callback_at, "timeout callback fires exactly at deadline")
+    equal("TIMEOUT", callbacks[1][2].code, "unreapable child reports timeout")
+    equal(1, subprocess.terminated, "unreapable child terminated once")
+    equal(1, subprocess.closed, "unreapable child pipe eventually closes")
+    equal(0, #scheduler.queue, "bounded cleanup becomes idle")
+end
+
+do
+    local scheduler = Fakes.scheduler()
+    local subprocess = Fakes.subprocess({ reaps_before_done = 2, polls_before_done = 1000 })
+    local callbacks, callback_at = {}, nil
+    local engine = RequestEngine.new({
+        transport = Fakes.transport({ { status = 200, chunks = { "late" } } }),
+        scheduler = scheduler, subprocess = subprocess, logger = silent_logger,
+    })
+    engine:execute({ url = "https://books.test/delayed-reap", timeout = 0.1 }, function(response, err)
+        callback_at = scheduler:now()
+        callbacks[#callbacks + 1] = { response, err }
+    end)
+    scheduler:runAll()
+    equal(0.1, callback_at, "delayed reap cannot delay timeout callback")
+    equal(1, #callbacks, "delayed reap callback once")
+    equal(1, subprocess.reaped, "delayed child eventually reaped")
+    equal(1, subprocess.closed, "delayed child pipe closes once")
+    truthy(subprocess.reap_polls >= 3, "cleanup retries reap with backoff")
 end
 
 do
@@ -385,14 +506,32 @@ do
 end
 
 do
+    local scheduler = Fakes.scheduler()
+    local transport = Fakes.transport({ { status = 200, chunks = { "unsafe" } } })
+    transport.total_deadline_safe = false
+    local callbacks = {}
+    local engine = RequestEngine.new({
+        transport = transport, scheduler = scheduler,
+        subprocess = Fakes.subprocess({ enabled = false }), logger = silent_logger,
+    })
+    engine:execute({ url = "https://books.test/unsafe-fallback" }, function(response, err)
+        callbacks[#callbacks + 1] = { response, err }
+    end)
+    scheduler:runAll()
+    equal("NETWORK_ERROR", callbacks[1][2].code, "unsafe synchronous fallback fails closed")
+    equal("deadline_unavailable", callbacks[1][2].details.reason, "fail-closed diagnostic is explicit")
+    equal(0, #transport.requests, "unsafe fallback performs no blocking socket work")
+end
+
+do
     local logs = {}
     local logger = {
         debug = function(_, value) logs[#logs + 1] = value end,
         warn = function(_, value) logs[#logs + 1] = value end,
     }
     local _, scheduler = run_fallback({ { status = 200, chunks = { "full chapter secret" } } }, {
-        url = "https://books.test/search?q=ok&token=query-secret&password=pw",
-        headers = { Authorization = "Bearer credential", Cookie = "sid=secret" },
+        url = "https://books.test/search?q=visible-query&appKey=app-secret&X-Amz-Credential=aws-secret&sign=s1&signature=s2&jwt=j1&na%6De=encoded-secret",
+        headers = { Authorization = "Bearer credential", Cookie = "sid=secret", ["X-App-Key"] = "header-secret", ["X-Display"] = "ordinary-secret" },
         body = "request body secret",
     }, { logger = logger })
     scheduler:runAll()
@@ -403,10 +542,17 @@ do
     end
     flatten(logs)
     truthy(rendered:find("%[REDACTED%]"), "diagnostics include redaction markers")
-    equal(nil, rendered:find("query-secret", 1, true), "query token never reaches logger")
-    equal(nil, rendered:find("password=pw", 1, true), "query password never reaches logger")
+    equal(nil, rendered:find("visible-query", 1, true), "even ordinary query values never reach logger")
+    equal(nil, rendered:find("app-secret", 1, true), "appKey query value never reaches logger")
+    equal(nil, rendered:find("aws-secret", 1, true), "AWS credential query value never reaches logger")
+    equal(nil, rendered:find("s1", 1, true), "sign query value never reaches logger")
+    equal(nil, rendered:find("s2", 1, true), "signature query value never reaches logger")
+    equal(nil, rendered:find("j1", 1, true), "jwt query value never reaches logger")
+    equal(nil, rendered:find("encoded-secret", 1, true), "encoded query name value never reaches logger")
     equal(nil, rendered:find("Bearer credential", 1, true), "authorization never reaches logger")
     equal(nil, rendered:find("sid=secret", 1, true), "cookies never reach logger")
+    equal(nil, rendered:find("header-secret", 1, true), "X-App-Key value never reaches logger")
+    equal(nil, rendered:find("ordinary-secret", 1, true), "arbitrary header values never reach logger")
     equal(nil, rendered:find("request body secret", 1, true), "request body never reaches logger")
     equal(nil, rendered:find("full chapter secret", 1, true), "response body never reaches logger")
 end

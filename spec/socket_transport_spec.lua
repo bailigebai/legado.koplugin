@@ -43,6 +43,8 @@ local ltn12 = {
     },
 }
 local transport = SocketTransport.new({ http = http, https = https, ltn12 = ltn12 })
+assertx.equal(false, transport.total_deadline_safe,
+    "blocking LuaSocket transport does not claim an interruptible total deadline")
 
 local chunks = {}
 local response, response_error = transport:request({
@@ -76,4 +78,4 @@ local invalid, invalid_error = transport:request({ url = "file:///etc/passwd" },
 assertx.equal(nil, invalid, "non-network scheme is rejected")
 assertx.equal("unsupported URL scheme", invalid_error, "scheme rejection is diagnostic")
 
-return 15
+return 16

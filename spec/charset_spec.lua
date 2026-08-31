@@ -27,6 +27,17 @@ local meta_text, meta_name = charset:decode("<meta charset=GBK>\214\208", {})
 assertx.equal("<meta charset=GBK>中", meta_text, "HTML meta charset drives conversion")
 assertx.equal("gbk", meta_name, "meta charset is normalized")
 
+local description_text, description_name = charset:decode(
+    '<meta name="description" content="example charset=gbk">plain utf8', {})
+assertx.equal('<meta name="description" content="example charset=gbk">plain utf8', description_text,
+    "description content cannot declare charset")
+assertx.equal("utf-8", description_name, "invalid meta content leaves UTF-8 default")
+
+local equiv_text, equiv_name = charset:decode(
+    '<meta http-equiv="Content-Type" content="text/html; charset=GBK">\214\208', {})
+assertx.equal("中", equiv_text:sub(-#"中"), "http-equiv content-type charset is honored")
+assertx.equal("gbk", equiv_name, "http-equiv charset is normalized")
+
 local utf8_text, utf8_name = charset:decode("plain utf8", {})
 assertx.equal("plain utf8", utf8_text, "UTF-8 is left unchanged")
 assertx.equal("utf-8", utf8_name, "UTF-8 is the safe default")
@@ -46,4 +57,4 @@ assertx.equal(nil, failed_text, "decode failure returns no body")
 assertx.equal("gbk", failed_name, "decode failure preserves charset")
 assertx.equal("ENCODING_ERROR", failed_error.code, "decode failure is structured")
 
-return 14
+return 18

@@ -1,4 +1,5 @@
 local Errors = require("legado.lib.errors")
+local IconvAdapter = require("legado.lib.iconv_adapter")
 
 local Charset = {}
 Charset.__index = Charset
@@ -37,8 +38,29 @@ end
 local function detect_meta(body)
     local head = body:sub(1, 8192)
     for tag in head:gmatch("<[Mm][Ee][Tt][Aa][^>]*>") do
-        local direct = tag:match("[Cc][Hh][Aa][Rr][Ss][Ee][Tt]%s*=%s*['\"]?([%w._%-]+)")
-        if direct then return direct end
+        local attributes, cursor = {}, 6
+        while cursor <= #tag do
+            local _, finish, name = tag:find("%s*([%w:_%-]+)%s*=%s*", cursor)
+            if not finish then break end
+            cursor = finish + 1
+            local quote = tag:sub(cursor, cursor)
+            local value
+            if quote == '"' or quote == "'" then
+                local close = tag:find(quote, cursor + 1, true)
+                if not close then break end
+                value, cursor = tag:sub(cursor + 1, close - 1), close + 1
+            else
+                local value_finish = tag:find("[%s>]", cursor) or (#tag + 1)
+                value, cursor = tag:sub(cursor, value_finish - 1), value_finish
+            end
+            attributes[name:lower()] = value
+        end
+        if attributes.charset and attributes.charset:match("^[%w._%-]+$") then return attributes.charset end
+        if attributes["http-equiv"] and attributes["http-equiv"]:lower() == "content-type" then
+            local declared = attributes.content and attributes.content:match(
+                "[Cc][Hh][Aa][Rr][Ss][Ee][Tt]%s*=%s*([%w._%-]+)")
+            if declared then return declared end
+        end
     end
     return nil
 end
@@ -67,7 +89,10 @@ end
 function Charset.new(options)
     options = options or {}
     local converter = options.converter
-    if converter == nil then converter = iconv_converter() end
+    if converter == nil then
+        local native = IconvAdapter.new()
+        converter = native:available() and native or iconv_converter()
+    end
     if converter == false then converter = nil end
     return setmetatable({ converter = converter }, Charset)
 end
