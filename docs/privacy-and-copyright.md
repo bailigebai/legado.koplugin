@@ -2,7 +2,7 @@
 
 ## 本地数据
 
-插件设置单独原子保存在版本化的 `${DataStorage:getDataDir()}/settings/legado.json`。旧版 `${DataStorage:getDataDir()}/settings/legado.lua` 仅由受限数据解析器读取，不会作为 Lua 执行；成功写入 JSON 后以新文件为准。书源、书架、目录、阅读进度和下载任务保存在 `${DataStorage:getDataDir()}/legado/legado.sqlite`；SQLite 不可用时，同一路径保存 Lua 降级索引。正文目录/章节缓存位于 `${DataStorage:getDataDir()}/legado/cache/`，封面位于 `${DataStorage:getDataDir()}/legado/covers/`，生成的 EPUB 与 `.part` 位于 `${DataStorage:getDataDir()}/legado/downloads/`。卸载插件目录不会自动删除这些数据或设置；删除前请自行备份。
+插件设置单独原子保存在版本化的 `${DataStorage:getDataDir()}/settings/legado.json`。旧版 `${DataStorage:getDataDir()}/settings/legado.lua` 仅由受限数据解析器读取，不会作为 Lua 执行；成功写入 JSON 后以新文件为准。设置损坏时，只有用户明确确认“备份后重置”才会生成 `legado.json.corrupt-*` 原始字节备份并写入默认设置。书源、书架、目录、阅读进度和下载任务保存在 `${DataStorage:getDataDir()}/legado/legado.sqlite`；SQLite 不可用时，同一路径保存 Lua 降级索引。正文目录/章节缓存位于 `${DataStorage:getDataDir()}/legado/cache/`，封面位于 `${DataStorage:getDataDir()}/legado/covers/`，生成的 EPUB 与 `.part` 位于 `${DataStorage:getDataDir()}/legado/downloads/`。卸载插件目录不会自动删除这些数据或设置；删除前请自行备份。
 
 Cookie Jar 只驻留内存，按书源标识隔离，并在 KOReader 进程结束后丢弃。它不会写入数据库。需要注意：用户导入的书源 JSON 会完整保存书源配置，因此配置中自带的 `Header`、`Cookie`、`Authorization` 或其他凭据字段会持久化到 `legado.sqlite`；这些值用于该书源请求，不应把数据库或原始书源文件分享给他人。插件不会把数据上传到项目作者的服务，也没有遥测、广告或自动更新功能。
 
@@ -11,7 +11,7 @@ Cookie Jar 只驻留内存，按书源标识隔离，并在 KOReader 进程结�
 1. 完全退出 KOReader，避免数据库或缓存仍在写入。
 2. 备份希望保留的 `/legado/downloads/*.epub`。
 3. 删除 `koreader/plugins/legado.koplugin/` 以卸载插件。
-4. 要完整清除个人数据与设置，必须同时删除 `${DataStorage:getDataDir()}/legado/`、`${DataStorage:getDataDir()}/settings/legado.json`，以及仍存在的旧版 `${DataStorage:getDataDir()}/settings/legado.lua`。前者清除书源 Header/凭据、书架、进度、任务、缓存、封面和 EPUB，设置文件则清除插件设置；只删除 `legado/` 不会清除设置。
+4. 要完整清除个人数据与设置，必须同时删除 `${DataStorage:getDataDir()}/legado/`、`${DataStorage:getDataDir()}/settings/legado.json`、对应的 `legado.json.corrupt-*` 备份，以及仍存在的旧版 `${DataStorage:getDataDir()}/settings/legado.lua`。前者清除书源 Header/凭据、书架、进度、任务、缓存、封面和 EPUB，设置文件与备份则清除插件设置；只删除 `legado/` 不会清除设置。
 
 若只清缓存，可在退出 KOReader 后分别删除 `/legado/cache/` 和 `/legado/covers/`；若只清导出文件，可删除 `/legado/downloads/`。删除 `legado.sqlite` 不可撤销，并会清除全部书源和阅读状态。运行期 Cookie 无需单独删除，退出 KOReader 即消失。
 

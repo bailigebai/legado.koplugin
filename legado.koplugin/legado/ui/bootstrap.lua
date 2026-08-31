@@ -30,12 +30,13 @@ local function native_appearance(plugin)
     end
 end
 
-function Bootstrap.build(plugin)
-    local settings = Settings.new()
+function Bootstrap.build(plugin, options)
+    options = options or {}
+    local settings, settings_error = Settings.new(options.settings_adapter, options.settings_options)
     local speech_provider = require("legado.lib.speech_provider").new()
     local storage, service, source_manager, cover_loader, reader_session, download_manager, root
     local DataStorage = optional("datastorage")
-    local fs = Fs.new()
+    local fs = options.fs or Fs.new()
     if DataStorage and type(DataStorage.getDataDir) == "function" then
         root = DataStorage:getDataDir() .. "/legado"
         fs:ensureDirectory(root)
@@ -105,6 +106,7 @@ function Bootstrap.build(plugin)
     local app
     app = App.new({
         storage = storage, book_service = service, source_manager = source_manager, settings = settings,
+        settings_error = settings_error,
         appearance = native_appearance(plugin),
         cover_loader = cover_loader,
         reader_session = reader_session,

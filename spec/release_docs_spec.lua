@@ -27,6 +27,9 @@ truthy(readme:find("## 卸载与清理", 1, true), "README has uninstall guidanc
 truthy(readme:find("DataStorage:getDataDir()", 1, true), "README identifies the actual KOReader data root")
 truthy(readme:find("${DataStorage:getDataDir()}/settings/legado.json", 1, true),
     "README identifies the actual KOReader settings file")
+truthy(readme:find("设置文件损坏", 1, true) and readme:find("备份后重置", 1, true),
+    "README documents explicit corrupt-settings recovery")
+truthy(readme:find("legado.json.corrupt%-"), "README identifies non-overwriting corrupt settings backups")
 truthy(readme:find("同时删除", 1, true), "README says full cleanup removes both data locations")
 for _, token in ipairs({ "/legado/cache/", "/legado/covers/", "/legado/downloads/", "/legado/legado.sqlite" }) do
     truthy(readme:find(token, 1, true), "README documents cleanup location " .. token)
@@ -47,6 +50,7 @@ truthy(privacy:find("Header", 1, true) and privacy:find("legado.sqlite", 1, true
     "privacy document explains persisted source headers and credentials")
 truthy(privacy:find("${DataStorage:getDataDir()}/settings/legado.json", 1, true),
     "privacy document identifies the separately persisted settings file")
+truthy(privacy:find("legado.json.corrupt%-"), "privacy document identifies recovery backup files")
 truthy(privacy:find("同时删除", 1, true), "privacy full-cleanup procedure removes data and settings")
 
 local testing = read("docs/testing.md")
@@ -60,5 +64,6 @@ for _ in checklist:gmatch("%- %[ %]") do unchecked = unchecked + 1 end
 truthy(unchecked >= 10, "KPW6 checklist contains the required manual scenarios")
 equal(nil, checklist:lower():find("%- %[x%]"), "no physical-device item is claimed as passed")
 truthy(checklist:find("尚未执行", 1, true), "checklist explicitly says hardware testing is pending")
+truthy(checklist:find("损坏 JSON", 1, true), "hardware checklist includes corrupt settings recovery")
 
 return count

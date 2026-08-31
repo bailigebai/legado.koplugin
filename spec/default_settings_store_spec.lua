@@ -16,8 +16,8 @@ local function memory_fs(initial)
     end
     function fs:atomicWrite(path, value)
         state.writes = state.writes + 1
-        if state.mode == "fail" then return nil, { code = "STORAGE_ERROR" } end
-        if state.mode == "throw" then error("atomic backend panic") end
+        if state.mode == "fail" or state.fail_path == path then return nil, { code = "STORAGE_ERROR" } end
+        if state.mode == "throw" or state.throw_path == path then error("atomic backend panic") end
         state.files[path] = value
         return true
     end
@@ -76,9 +76,101 @@ equal(1, Settings.new(nil, { data_dir = "settings-root", fs = fs }):get("prefetc
 local corrupted_fs, corrupted = memory_fs({ [json_path] = "{broken" })
 local corrupted_settings, corrupted_error = Settings.new(nil, { data_dir = "settings-root", fs = corrupted_fs })
 equal("table", type(corrupted_settings), "corrupt settings still return an inspectable object")
-equal("STORAGE_ERROR", corrupted_error and corrupted_error.code, "corrupt JSON reports initialization failure")
+equal("RECOVERY_REQUIRED", corrupted_error and corrupted_error.code, "corrupt JSON requires explicit recovery")
 equal(0, corrupted.writes, "corrupt JSON is never overwritten with defaults")
 equal("{broken", corrupted.files[json_path], "corrupt settings remain available for manual recovery")
+saved, write_error = corrupted_settings:set("prefetch", 4)
+equal(nil, saved, "ordinary set is locked while canonical recovery is required")
+equal("RECOVERY_REQUIRED", write_error and write_error.code, "locked set returns RECOVERY_REQUIRED")
+equal("{broken", corrupted.files[json_path], "locked set preserves corrupt canonical bytes")
+local retried, retry_error = corrupted_settings:retryRecovery()
+equal(nil, retried, "retry remains locked while canonical bytes are still corrupt")
+equal("RECOVERY_REQUIRED", retry_error and retry_error.code, "failed retry remains structured")
+corrupted.files[json_path] = Json.encode({ schema_version = 1, settings = { prefetch = 8 } })
+equal(true, corrupted_settings:retryRecovery(), "retry succeeds after external canonical repair")
+equal(8, corrupted_settings:get("prefetch"), "successful retry adopts repaired settings")
+equal(false, corrupted_settings.recovery_required, "successful retry clears recovery mode")
+
+local reset_original = '{"schema_version":1,"settings":{"prefetch":3,"prefetch":4}}'
+local reset_fs, reset_state = memory_fs({ [json_path] = reset_original,
+    [json_path .. ".corrupt-1"] = "older backup" })
+local reset_settings = Settings.new(nil, { data_dir = "settings-root", fs = reset_fs })
+local backup_path, reset_error = reset_settings:resetCorrupt()
+equal(nil, reset_error, "explicit corrupt reset succeeds")
+equal(json_path .. ".corrupt-2", backup_path, "reset never overwrites an existing backup")
+equal(reset_original, reset_state.files[backup_path], "reset backup preserves exact corrupt bytes")
+local reset_envelope = Json.decode(reset_state.files[json_path])
+equal(3, reset_envelope.settings.prefetch, "reset publishes versioned safe defaults")
+equal(false, reset_settings.recovery_required, "successful reset clears recovery mode")
+equal(3, Settings.new(nil, { data_dir = "settings-root", fs = reset_fs }):get("prefetch"),
+    "reset canonical settings survive restart")
+
+local backup_fail_fs, backup_fail = memory_fs({ [json_path] = reset_original })
+backup_fail.fail_path = json_path .. ".corrupt-1"
+local backup_fail_settings = Settings.new(nil, { data_dir = "settings-root", fs = backup_fail_fs })
+backup_path, reset_error = backup_fail_settings:resetCorrupt()
+equal(nil, backup_path, "backup failure aborts reset")
+equal("STORAGE_ERROR", reset_error and reset_error.code, "backup failure is structured")
+equal(reset_original, backup_fail.files[json_path], "backup failure preserves original canonical bytes")
+equal(true, backup_fail_settings.recovery_required, "backup failure remains recovery-locked")
+
+local publish_fail_fs, publish_fail = memory_fs({ [json_path] = reset_original })
+publish_fail.fail_path = json_path
+local publish_fail_settings = Settings.new(nil, { data_dir = "settings-root", fs = publish_fail_fs })
+backup_path, reset_error = publish_fail_settings:resetCorrupt()
+equal(nil, backup_path, "canonical publication failure aborts reset")
+equal("STORAGE_ERROR", reset_error and reset_error.code, "canonical publication failure is structured")
+equal(reset_original, publish_fail.files[json_path], "canonical publication failure preserves original bytes")
+equal(true, publish_fail_settings.recovery_required, "canonical publication failure remains recovery-locked")
+local first_failed_backup = publish_fail.files[json_path .. ".corrupt-1"]
+publish_fail.fail_path = json_path
+backup_path, reset_error = publish_fail_settings:resetCorrupt()
+equal(nil, backup_path, "a repeated failed reset remains blocked")
+equal(reset_original, first_failed_backup, "the first successful backup retains the corrupt bytes")
+equal(reset_original, publish_fail.files[json_path .. ".corrupt-1"],
+    "a repeated reset never overwrites the first backup")
+equal(reset_original, publish_fail.files[json_path .. ".corrupt-2"],
+    "a repeated reset allocates the next unused backup name")
+
+local backup_throw_fs, backup_throw = memory_fs({ [json_path] = reset_original })
+backup_throw.throw_path = json_path .. ".corrupt-1"
+local backup_throw_settings = Settings.new(nil, { data_dir = "settings-root", fs = backup_throw_fs })
+backup_path, reset_error = backup_throw_settings:resetCorrupt()
+equal(nil, backup_path, "throwing backup aborts reset")
+equal("STORAGE_ERROR", reset_error and reset_error.code, "throwing backup is structured")
+equal(reset_original, backup_throw.files[json_path], "throwing backup preserves original bytes")
+equal(true, backup_throw_settings.recovery_required, "throwing backup remains recovery-locked")
+
+local publish_throw_fs, publish_throw = memory_fs({ [json_path] = reset_original })
+publish_throw.throw_path = json_path
+local publish_throw_settings = Settings.new(nil, { data_dir = "settings-root", fs = publish_throw_fs })
+backup_path, reset_error = publish_throw_settings:resetCorrupt()
+equal(nil, backup_path, "throwing canonical publication aborts reset")
+equal("STORAGE_ERROR", reset_error and reset_error.code, "throwing canonical publication is structured")
+equal(reset_original, publish_throw.files[json_path], "throwing canonical publication preserves original bytes")
+equal(true, publish_throw_settings.recovery_required, "throwing canonical publication remains recovery-locked")
+
+local read_error_fs, read_error_state = memory_fs()
+function read_error_fs:read(candidate)
+    if candidate == json_path then return nil, { code = "STORAGE_ERROR", details = { reason = "permission denied" } } end
+    return nil, { code = "STORAGE_ERROR", details = { reason = "missing" } }
+end
+local read_error_settings, read_error = Settings.new(nil, { data_dir = "settings-root", fs = read_error_fs })
+equal("RECOVERY_REQUIRED", read_error and read_error.code,
+    "a canonical read error is distinct from an absent canonical file")
+equal(true, read_error_settings.recovery_required, "a canonical read error locks ordinary writes")
+equal(0, read_error_state.writes, "a canonical read error performs no writes")
+
+local read_throw_fs, read_throw_state = memory_fs()
+function read_throw_fs:read(candidate)
+    if candidate == json_path then error("read backend panic") end
+    return nil, { code = "STORAGE_ERROR", details = { reason = "missing" } }
+end
+local read_throw_settings, read_throw_error = Settings.new(nil, { data_dir = "settings-root", fs = read_throw_fs })
+equal("RECOVERY_REQUIRED", read_throw_error and read_throw_error.code,
+    "a throwing canonical read is contained as explicit recovery")
+equal(true, read_throw_settings.recovery_required, "a throwing canonical read stays locked")
+equal(0, read_throw_state.writes, "a throwing canonical read performs no writes")
 
 local legacy = [[-- settings-root/settings/legado.lua
 return {
@@ -117,8 +209,22 @@ truthy(type(migration_failed.files[json_path]) == "string", "recovered migration
 local invalid_envelope = Json.encode({ schema_version = 1, settings = { prefetch = 99 } })
 local invalid_json_fs, invalid_json = memory_fs({ [json_path] = invalid_envelope })
 local _, invalid_json_error = Settings.new(nil, { data_dir = "settings-root", fs = invalid_json_fs })
-equal("STORAGE_ERROR", invalid_json_error and invalid_json_error.code, "out-of-range canonical settings fail closed")
+equal("RECOVERY_REQUIRED", invalid_json_error and invalid_json_error.code, "out-of-range canonical settings fail closed")
 equal(0, invalid_json.writes, "invalid canonical settings are not normalized and overwritten")
+
+for _, duplicate_json in ipairs({
+    '{"schema_version":1,"schema_version":1,"settings":{}}',
+    '{"schema_version":1,"settings":{},"settings":{}}',
+    '{"schema_version":1,"settings":{"prefetch":3,"prefetch":4}}',
+    '{"schema_version":1,"settings":{"nested":{"key":1,"key":2}}}',
+}) do
+    local duplicate_fs, duplicate_state = memory_fs({ [json_path] = duplicate_json })
+    local _, duplicate_error = Settings.new(nil, { data_dir = "settings-root", fs = duplicate_fs })
+    equal("RECOVERY_REQUIRED", duplicate_error and duplicate_error.code,
+        "duplicate canonical JSON enters explicit recovery mode")
+    equal(0, duplicate_state.writes, "duplicate canonical JSON is never overwritten")
+    equal(duplicate_json, duplicate_state.files[json_path], "duplicate canonical bytes remain unchanged")
+end
 
 for _, hostile in ipairs({
     'return { ["legado_settings"] = { ["prefetch"] = os.execute("bad") } }',

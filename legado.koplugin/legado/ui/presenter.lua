@@ -369,6 +369,36 @@ end
 function Presenter:_settings(view)
     local values = type(view.refresh) == "function" and view:refresh() or view.values or {}
     local items = {}
+    local status = type(view.status) == "function" and view:status() or {}
+    if status.recovery_required then
+        items[#items + 1] = { text = "设置文件损坏，正在使用安全默认值，普通保存已锁定", enabled = false }
+        items[#items + 1] = { text = "重试读取", callback = function()
+            local retried, err = view:retryRecovery()
+            if not retried then
+                return self:_info("设置文件仍无法读取（" .. safe_token(type(err) == "table" and err.code, "RECOVERY_REQUIRED") .. "）", "设置恢复")
+            end
+            return self:_info("设置文件已重新读取", "设置恢复")
+        end }
+        items[#items + 1] = { text = "备份后重置", callback = function()
+            local dialog
+            local function reset(value)
+                if (value == nil or value == "") and dialog and type(dialog.getInputText) == "function" then value = dialog:getInputText() end
+                if value ~= "重置" then return self:_info("请输入“重置”以确认", "设置恢复") end
+                if not self:_closeWidget(dialog) then return false end
+                local backup, err = view:resetCorrupt()
+                if not backup then
+                    return self:_info("设置重置失败（" .. safe_token(type(err) == "table" and err.code, "STORAGE_ERROR") .. "）", "设置恢复")
+                end
+                return self:_info("设置已重置，备份：" .. tostring(backup), "设置恢复")
+            end
+            dialog = construct(self.input_dialog, { title = "备份后重置设置", input_hint = "输入“重置”确认",
+                input_type = "string", buttons = { { { text = "取消", callback = function() return self:_closeWidget(dialog) end },
+                    { text = "确认重置", is_enter_default = true, callback = reset } } } })
+            return self:_showInput(dialog)
+        end }
+    elseif status.initial_write_failed then
+        items[#items + 1] = { text = "设置持久化暂不可用，修改后将重试保存", enabled = false }
+    end
     local function editable(text, key, hint)
         items[#items + 1] = { text = text, callback = function()
             local dialog

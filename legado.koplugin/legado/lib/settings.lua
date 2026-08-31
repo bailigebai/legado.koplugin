@@ -217,33 +217,77 @@ local function default_adapter(options)
     local fs = options.fs or Fs.new()
     local path = data_dir:gsub("[/\\]+$", "") .. "/settings/legado.json"
     local legacy_path = data_dir:gsub("[/\\]+$", "") .. "/settings/legado.lua"
-    return {
-        path = path,
-        read = function()
+    local adapter = { path = path, fs = fs }
+    local function recovery_failure(raw, message)
+        adapter.recovery_required = true
+        adapter.canonical_bytes = raw
+        error(message)
+    end
+    adapter.read = function()
             local ok, raw, read_error = pcall(fs.read, fs, path)
-            if not ok then error("settings read failed") end
+            if not ok then recovery_failure(nil, "settings read failed") end
             if raw then
-                if #raw > MAX_SETTINGS_BYTES then error("settings file too large") end
+                adapter.canonical_bytes = raw
+                if #raw > MAX_SETTINGS_BYTES then recovery_failure(raw, "settings file too large") end
                 local decoded_ok, envelope = pcall(Json.decode, raw)
                 if not decoded_ok or type(envelope) ~= "table" or envelope.schema_version ~= Settings.SCHEMA_VERSION
-                    or type(envelope.settings) ~= "table" then error("invalid settings JSON") end
-                for key in pairs(envelope) do if key ~= "schema_version" and key ~= "settings" then error("unknown settings envelope key") end end
-                return validate_settings(envelope.settings)
-            elseif not missing(read_error) then error("settings read failed") end
+                    or type(envelope.settings) ~= "table" then recovery_failure(raw, "invalid settings JSON") end
+                for key in pairs(envelope) do
+                    if key ~= "schema_version" and key ~= "settings" then recovery_failure(raw, "unknown settings envelope key") end
+                end
+                local valid, settings = pcall(validate_settings, envelope.settings)
+                if not valid then recovery_failure(raw, "invalid settings values") end
+                adapter.recovery_required, adapter.source = false, "canonical"
+                return settings
+            elseif not missing(read_error) then recovery_failure(nil, "settings read failed") end
+            adapter.canonical_bytes = nil
             local legacy_ok, legacy, legacy_error = pcall(fs.read, fs, legacy_path)
             if not legacy_ok then error("legacy settings read failed") end
             if not legacy then
                 if not missing(legacy_error) then error("legacy settings read failed") end
+                adapter.recovery_required, adapter.source = false, "fresh"
                 return {}
             end
-            return validate_settings(parse_legacy(legacy))
-        end,
-        write = function(value)
-            validate_settings(value)
-            local encoded = Json.encode({ schema_version = Settings.SCHEMA_VERSION, settings = value })
-            return fs:atomicWrite(path, encoded)
-        end,
-    }
+            local parsed_ok, parsed = pcall(parse_legacy, legacy)
+            if not parsed_ok then error("invalid legacy settings") end
+            local valid, settings = pcall(validate_settings, parsed)
+            if not valid then error("invalid legacy settings values") end
+            adapter.recovery_required, adapter.source = false, "legacy"
+            return settings
+        end
+    adapter.write = function(value)
+        validate_settings(value)
+        local encoded = Json.encode({ schema_version = Settings.SCHEMA_VERSION, settings = value })
+        local written, write_error = fs:atomicWrite(path, encoded)
+        if written then adapter.canonical_bytes, adapter.source = encoded, "canonical" end
+        return written, write_error
+    end
+    adapter.backupAndReset = function(value)
+        if not adapter.recovery_required or type(adapter.canonical_bytes) ~= "string" then
+            return nil, Errors.new(Errors.RECOVERY_REQUIRED, "corrupt settings bytes are unavailable")
+        end
+        local backup_path
+        for suffix = 1, 1000 do
+            local candidate = path .. ".corrupt-" .. tostring(suffix)
+            local read_ok, existing, read_error = pcall(fs.read, fs, candidate)
+            if not read_ok then return nil, Errors.new(Errors.STORAGE_ERROR, "settings backup path cannot be checked") end
+            if not existing then
+                if not missing(read_error) then return nil, Errors.new(Errors.STORAGE_ERROR, "settings backup path cannot be checked") end
+                backup_path = candidate
+                break
+            end
+        end
+        if not backup_path then return nil, Errors.new(Errors.STORAGE_ERROR, "settings backup name limit reached") end
+        local backup_ok, backed = pcall(fs.atomicWrite, fs, backup_path, adapter.canonical_bytes)
+        if not backup_ok or not backed then return nil, Errors.new(Errors.STORAGE_ERROR, "corrupt settings backup failed") end
+        local encoded_ok, encoded = pcall(Json.encode, { schema_version = Settings.SCHEMA_VERSION, settings = value })
+        if not encoded_ok then return nil, Errors.new(Errors.STORAGE_ERROR, "default settings encoding failed") end
+        local write_ok, written = pcall(fs.atomicWrite, fs, path, encoded)
+        if not write_ok or not written then return nil, Errors.new(Errors.STORAGE_ERROR, "settings reset publication failed") end
+        adapter.canonical_bytes, adapter.recovery_required, adapter.source = encoded, false, "canonical"
+        return backup_path
+    end
+    return adapter
 end
 
 function Settings.new(adapter, options)
@@ -257,11 +301,14 @@ function Settings.new(adapter, options)
     values.schema_version = Settings.SCHEMA_VERSION
     local self = setmetatable({ adapter = adapter, values = values, storage_path = adapter.path }, Settings)
     if not read_ok or type(stored) ~= "table" then
-        self.init_error = Errors.new(Errors.STORAGE_ERROR, "settings could not be loaded")
+        self.recovery_required = adapter.recovery_required == true
+        self.init_error = self.recovery_required
+            and Errors.new(Errors.RECOVERY_REQUIRED, "settings file recovery is required")
+            or Errors.new(Errors.STORAGE_ERROR, "settings could not be loaded")
         return self, self.init_error
     end
     local written, write_error = self:_write(values)
-    if not written then self.init_error = write_error end
+    if not written then self.init_error, self.initial_write_failed = write_error, true end
     return self, self.init_error
 end
 
@@ -280,12 +327,62 @@ function Settings:get(key)
 end
 
 function Settings:set(key, value)
+    if self.recovery_required then
+        return nil, Errors.new(Errors.RECOVERY_REQUIRED, "ordinary settings save is locked until recovery")
+    end
     local candidate = copy(self.values)
     candidate[key] = normalized(key, value)
     local written, err = self:_write(candidate)
-    if not written then self.init_error = err; return nil, err end
-    self.values, self.init_error = candidate, nil
+    if not written then self.init_error, self.initial_write_failed = err, true; return nil, err end
+    self.values, self.init_error, self.initial_write_failed = candidate, nil, false
     return candidate[key]
+end
+
+function Settings:retryRecovery()
+    if not self.recovery_required then return true end
+    local ok, stored = pcall(self.adapter.read)
+    if not ok or type(stored) ~= "table" then
+        self.recovery_required = true
+        self.init_error = Errors.new(Errors.RECOVERY_REQUIRED, "settings file recovery is still required")
+        return nil, self.init_error
+    end
+    local candidate = copy(Settings.DEFAULTS)
+    for key, value in pairs(stored) do candidate[key] = normalized(key, value) end
+    candidate.schema_version = Settings.SCHEMA_VERSION
+    local written, write_error = self:_write(candidate)
+    if not written then
+        self.recovery_required = true
+        self.init_error = write_error
+        return nil, write_error
+    end
+    self.values, self.recovery_required, self.init_error, self.initial_write_failed = candidate, false, nil, false
+    return true
+end
+
+function Settings:resetCorrupt()
+    if not self.recovery_required or type(self.adapter.backupAndReset) ~= "function" then
+        return nil, Errors.new(Errors.RECOVERY_REQUIRED, "settings reset is unavailable")
+    end
+    local candidate = copy(Settings.DEFAULTS)
+    candidate.schema_version = Settings.SCHEMA_VERSION
+    local ok, backup_path, reset_error = pcall(self.adapter.backupAndReset, candidate)
+    if not ok or not backup_path then
+        self.recovery_required = true
+        self.init_error = type(reset_error) == "table" and reset_error
+            or Errors.new(Errors.STORAGE_ERROR, "settings reset failed")
+        return nil, self.init_error
+    end
+    self.values, self.recovery_required, self.init_error, self.initial_write_failed = candidate, false, nil, false
+    return backup_path
+end
+
+function Settings:status()
+    return {
+        recovery_required = self.recovery_required == true,
+        initial_write_failed = self.initial_write_failed == true,
+        error = self.init_error,
+        storage_path = self.storage_path,
+    }
 end
 
 function Settings:all()

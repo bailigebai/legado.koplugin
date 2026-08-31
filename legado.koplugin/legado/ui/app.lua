@@ -13,7 +13,7 @@ function App.new(options)
     options = options or {}
     return setmetatable({
         storage = options.storage, service = options.book_service, source_manager = options.source_manager,
-        settings = options.settings, appearance = options.appearance,
+        settings = options.settings, settings_error = options.settings_error, appearance = options.appearance,
         reading_hook = options.reading_hook, download_hook = options.download_hook,
         reader_session = options.reader_session,
         download_manager = options.download_manager,
@@ -50,7 +50,10 @@ function App:openDownloads()
     if not self.download_manager then return self:_present({ title = "下载管理", empty_text = "下载功能尚未初始化" }) end
     return self:_present(Downloads.new({ manager = self.download_manager, scheduler = self.scheduler }))
 end
-function App:openSettings() return self:_present(SettingsView.new({ settings = self.settings, appearance = self.appearance })) end
+function App:openSettings()
+    return self:_present(SettingsView.new({ settings = self.settings, settings_error = self.settings_error,
+        appearance = self.appearance }))
+end
 function App:openAbout() return self:_present(About) end
 function App:openSpeech()
     return self:_present({ kind = "speech_unavailable", title = "听书", text = "听书功能尚未配置" })

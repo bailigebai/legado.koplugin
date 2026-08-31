@@ -139,12 +139,14 @@ function Json.decode(input)
 
     local function parse_object()
         index = index + 1
-        local result = {}
+        local result, seen = {}, {}
         whitespace()
         if input:sub(index, index) == "}" then index = index + 1 return result end
         while true do
             whitespace()
             local key = parse_string()
+            if seen[key] then error("duplicate JSON object key: " .. key) end
+            seen[key] = true
             whitespace()
             if input:sub(index, index) ~= ":" then error("expected JSON object colon") end
             index = index + 1

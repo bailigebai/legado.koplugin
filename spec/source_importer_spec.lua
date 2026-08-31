@@ -116,6 +116,12 @@ local malformed_report = assert(importer:importJson("{ definitely not json", "C:
 assertx.equal(1, malformed_report.rejected, "malformed JSON is rejected")
 assertx.equal("PARSE_ERROR", malformed_report.error.code, "malformed JSON produces a structured parse error")
 
+local duplicate_report = assert(importer:importJson(
+    '{"bookSourceName":"First","bookSourceName":"Second","bookSourceUrl":"https://example.test/duplicate"}',
+    "C:/sources/duplicate.json"))
+assertx.equal(1, duplicate_report.rejected, "duplicate source JSON keys are rejected")
+assertx.equal("PARSE_ERROR", duplicate_report.error.code, "duplicate source keys fail through the strict shared decoder")
+
 for _, invalid_number in ipairs({ "1.", "1e", "1e+", "01", "-01" }) do
     local invalid_number_report = assert(importer:importJson(
         "{\"bookSourceName\":\"Numeric source\",\"bookSourceUrl\":\"https://example.test/numeric\",\"customNumber\":" .. invalid_number .. "}",
