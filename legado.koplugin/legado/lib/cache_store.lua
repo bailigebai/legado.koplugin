@@ -27,7 +27,13 @@ function CacheStore.new(o)
     local valid, validation_error = self:_validatePath(self.root)
     if not valid then self.init_error = validation_error; return self end
     local ensured, ensure_error = self.fs:ensureDirectory(self.root)
-    if not ensured then self.init_error = ensure_error end
+    if not ensured then self.init_error = ensure_error; return self end
+    valid, validation_error = self:_validatePath(self.root)
+    if not valid then self.init_error = validation_error; return self end
+    if type(self.fs.identity)=="function" then self.root_identity=self.fs:identity(self.root) end
+    if jit and jit.os~="Windows" and not self.root_identity then
+        self.init_error=Errors.new(Errors.STORAGE_ERROR,"cache root identity unavailable")
+    end
     return self
 end
 local function path_prefixes(path)
@@ -88,7 +94,7 @@ function CacheStore:_write(s,b,k,c,content)
         or decoded.bytes~=expected.bytes or decoded.checksum~=expected.checksum or decoded.content~=expected.content then
         return nil,Errors.new(Errors.STORAGE_ERROR,"cache envelope failed self-validation")
     end
-    local ok,write_err=self.fs:atomicWrite(path,envelope,{validate=function(candidate) return self:_validatePath(candidate) end}); if not ok then return nil,write_err end; return path
+    local ok,write_err=self.fs:atomicWrite(path,envelope,{root=self.root,root_identity=self.root_identity,validate=function(candidate) return self:_validatePath(candidate) end}); if not ok then return nil,write_err end; return path
 end
 function CacheStore:_read(s,b,k,c)
     local path,err=self:_path(s,b,k,c); if not path then return nil,err end; local raw=self.fs:readBounded(path,self.MAX_BODY_BYTES*3); if not raw then return nil,Errors.new(Errors.STORAGE_ERROR,"cache entry unavailable",{path=path}) end
