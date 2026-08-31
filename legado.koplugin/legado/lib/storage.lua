@@ -243,6 +243,23 @@ function Storage:deleteSource(id)
     return self:_mutate(function(candidate) candidate.data.sources[id] = nil end)
 end
 function Storage:listSources() if self.adapter then return self.adapter:listSources() end return list_values(self:_map("sources"), "name") end
+function Storage:replaceSources(sources)
+    local replacement = {}
+    for _, source in ipairs(sources or {}) do
+        local value = copy(source or {})
+        local id = value.id or value.bookSourceUrl
+        if not id then return nil, Errors.new(Errors.INVALID_INPUT, "source requires id") end
+        value.id = id
+        replacement[id] = value
+    end
+    if self.adapter then
+        if type(self.adapter.replaceSources) ~= "function" then
+            return nil, Errors.new(Errors.STORAGE_ERROR, "source batch replacement unsupported")
+        end
+        return self.adapter:replaceSources(list_values(replacement, "name"))
+    end
+    return self:_mutate(function(candidate) candidate.data.sources = replacement end)
+end
 
 function Storage:createBook(book)
     book = copy(book or {})

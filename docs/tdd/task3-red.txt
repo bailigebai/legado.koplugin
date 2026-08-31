@@ -1,0 +1,19 @@
+[FAIL] spec\source_importer_spec.lua: ....worktrees/legado-koplugin/spec/source_importer_spec.lua:5: module 'legado.lib.source_importer' not found:
+	no field package.preload['legado.lib.source_importer']
+	no file 'C:/Users/98199/Documents/ChatGPT/AA/.worktrees/legado-koplugin/legado.koplugin/legado\lib\source_importer.lua'
+	no file 'C:/Users/98199/Documents/ChatGPT/AA/.worktrees/legado-koplugin/legado.koplugin/legado\lib\source_importer/init.lua'
+	no file 'C:/Users/98199/Documents/ChatGPT/AA/.worktrees/legado-koplugin/spec/legado\lib\source_importer.lua'
+	no file '.\legado\lib\source_importer.lua'
+	no file 'C:\Users\98199\Documents\ChatGPT\AA\.worktrees\legado-koplugin\.tools\python\lua\legado\lib\source_importer.lua'
+	no file 'C:\Users\98199\Documents\ChatGPT\AA\.worktrees\legado-koplugin\.tools\python\lua\legado\lib\source_importer\init.lua'
+	no file '.\legado\lib\source_importer.dll'
+	no file 'C:\Users\98199\Documents\ChatGPT\AA\.worktrees\legado-koplugin\.tools\python\legado\lib\source_importer.dll'
+	no file 'C:\Users\98199\Documents\ChatGPT\AA\.worktrees\legado-koplugin\.tools\python\loadall.dll'
+	no file '.\legado.dll'
+	no file 'C:\Users\98199\Documents\ChatGPT\AA\.worktrees\legado-koplugin\.tools\python\legado.dll'
+	no file 'C:\Users\98199\Documents\ChatGPT\AA\.worktrees\legado-koplugin\.tools\python\loadall.dll'
+stack traceback:
+	[C]: in function 'require'
+	....worktrees/legado-koplugin/spec/source_importer_spec.lua:5: in main chunk
+	[builtin#25]: at 0x7ffa8c7f6cc0
+Specs: 0 passed, 1 failed; Assertions: 0

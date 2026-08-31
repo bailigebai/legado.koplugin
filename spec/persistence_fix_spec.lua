@@ -89,6 +89,8 @@ local function fake_sqlite(state)
                         state.payloads[deleted][key] = nil
                     end
                 end
+                local deleted_all = statement:match("DELETE FROM legado_v1_(%w+)%s*$")
+                if deleted_all then state.payloads[deleted_all] = {} end
             end
             return {}
         end
@@ -152,6 +154,9 @@ assertx.equal("Synthetic SQL source", assert(sqlite_restarted:getSource("source-
 assertx.equal("Synthetic SQL book", assert(sqlite_restarted:getBook("book-sql")).name, "sqlite book survives restart")
 assertx.equal("sql-chapter", assert(sqlite_restarted:listChapters("book-sql"))[1].uid, "sqlite chapters survive restart")
 assertx.equal(0.5, assert(sqlite_restarted:getProgress("book-sql")).fraction, "sqlite progress survives restart")
+assert(sqlite_restarted:replaceSources({ { id = "source-sql-replaced", name = "Replacement", url = "https://example.test/replaced" } }))
+assertx.equal(nil, sqlite_restarted:getSource("source-sql"), "sqlite source replacement removes omitted rows as one batch")
+assertx.equal("Replacement", assert(sqlite_restarted:getSource("source-sql-replaced")).name, "sqlite source replacement stores replacement rows")
 
 cleanup(sqlite_path)
 local migration_state = { tables = { meta = true }, schema_version = 999 }
@@ -206,6 +211,13 @@ assertx.equal(nil, fallback_storage:updateSource(fallback_source.id, { name = "n
 assertx.equal("old name", assert(fallback_storage:getSource(fallback_source.id)).name, "failed update keeps live state unchanged")
 assert(fallback_storage:updateSource(fallback_source.id, { name = "new name" }))
 assertx.equal("new name", assert(fallback_storage:getSource(fallback_source.id)).name, "next update succeeds after failed write")
+assert(fallback_storage:replaceSources({ { id = "source-batch", name = "batch source" } }))
+assertx.equal(nil, fallback_storage:getSource(fallback_source.id), "fallback source replacement removes omitted rows")
+assertx.equal("batch source", assert(fallback_storage:getSource("source-batch")).name, "fallback source replacement stores every new row")
+fail_write = true
+assertx.equal(nil, fallback_storage:replaceSources({ { id = "source-failed-batch", name = "failed batch" } }), "failed source batch replacement is rejected")
+assertx.equal("batch source", assert(fallback_storage:getSource("source-batch")).name, "failed source batch replacement preserves live state")
+assertx.equal(nil, fallback_storage:getSource("source-failed-batch"), "failed source batch replacement commits no new row")
 fail_write = true
 assertx.equal(nil, fallback_storage:replaceChapters(fallback_book.id, { { uid = "new-chapter", index = 1, title = "new" } }), "failed chapter replacement is rejected")
 assertx.equal("old-chapter", assert(fallback_storage:listChapters(fallback_book.id))[1].uid, "failed chapter replacement keeps old rows")
@@ -228,4 +240,4 @@ local identity_key = Identity.source("https://user:synthetic-secret@example.test
 assertx.equal("source-nativehash", identity_key, "available KOReader hash is preferred")
 assertx.truthy(not sha_inputs[1]:find("synthetic%-secret", 1, false), "native hash input excludes credentials")
 
-return 34
+return 42

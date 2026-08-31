@@ -1,0 +1,7 @@
+[FAIL] spec\source_importer_spec.lua: ....worktrees/legado-koplugin/spec/source_importer_spec.lua:79: injected KOReader-compatible decoder is supported: expected 1, got 0
+stack traceback:
+	[C]: in function 'error'
+	...hatGPT/AA/.worktrees/legado-koplugin/spec/assertions.lua:5: in function 'equal'
+	....worktrees/legado-koplugin/spec/source_importer_spec.lua:79: in main chunk
+	[builtin#25]: at 0x7ffa8c7f6cc0
+Specs: 0 passed, 1 failed; Assertions: 0

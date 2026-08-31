@@ -211,6 +211,17 @@ function SqliteBackend:putSource(value) return self:_put("sources", "id", value.
 function SqliteBackend:getSource(id) return self:_get("sources", "id=" .. quote(id)) end
 function SqliteBackend:deleteSource(id) return self:_exec("DELETE FROM " .. TABLE .. "sources WHERE id=" .. quote(id)) end
 function SqliteBackend:listSources() return self:_list("sources", nil, "id") end
+function SqliteBackend:replaceSources(sources)
+    local started, start_error = self:_exec("BEGIN IMMEDIATE")
+    if not started then return nil, start_error end
+    local deleted, delete_error = self:_exec("DELETE FROM " .. TABLE .. "sources")
+    if not deleted then self:_exec("ROLLBACK"); return nil, delete_error end
+    for _, source in ipairs(sources or {}) do
+        local saved, save_error = self:putSource(source)
+        if not saved then self:_exec("ROLLBACK"); return nil, save_error end
+    end
+    return self:_exec("COMMIT")
+end
 function SqliteBackend:putBook(value) return self:_put("books", "id", value.id, value, { source_id = value.source_id or "" }) end
 function SqliteBackend:getBook(id) return self:_get("books", "id=" .. quote(id)) end
 function SqliteBackend:deleteBook(id) return self:_exec("DELETE FROM " .. TABLE .. "books WHERE id=" .. quote(id)) end
