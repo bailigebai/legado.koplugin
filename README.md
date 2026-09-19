@@ -1,10 +1,10 @@
 # KOReader 书源阅读插件 · legado.koplugin
 
-当前已发布安装包：**v0.10.13（2026-09-19）**。本仓库提供经过 KOReader 兼容检查的纯净安装包。
+当前已发布安装包：**v0.10.14（2026-09-19）**。本仓库提供经过 KOReader 兼容检查的纯净安装包。v0.10.14 修复部分 Kindle 文件系统无法替换既有设置文件导致的授权保存失败：授权收据会使用同目录独立文件保存，并支持重启后离线验证。
 
 ## 下载安装包
 
-[下载 legado.koplugin-v0.10.13-20260919.zip](https://github.com/bailigebai/legado.koplugin/raw/refs/heads/main/downloads/legado.koplugin-v0.10.13-20260919.zip)
+[下载 legado.koplugin-v0.10.14-20260919.zip](https://github.com/bailigebai/legado.koplugin/raw/refs/heads/main/downloads/legado.koplugin-v0.10.14-20260919.zip)
 
 这是纯净安装包，**不内置书源合集，也不会自动下载或恢复默认书源**。首次使用需要自行从本地 JSON 文件或地址导入书源。升级不会主动清除设备上已导入的书源、书架、阅读进度或设置。
 
