@@ -1,0 +1,5 @@
+[FAIL] spec\persistence_fix_spec.lua: ....worktrees/legado-koplugin/spec/persistence_fix_spec.lua:157: attempt to call method 'replaceSources' (a nil value)
+stack traceback:
+	....worktrees/legado-koplugin/spec/persistence_fix_spec.lua:157: in main chunk
+	[builtin#25]: at 0x7ffa8c7f6cc0
+Specs: 0 passed, 1 failed; Assertions: 0

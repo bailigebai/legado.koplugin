@@ -1,0 +1,10 @@
+[FAIL] spec\source_importer_spec.lua: ....worktrees/legado-koplugin/spec/source_importer_spec.lua:124: attempt to index field 'error' (a nil value)
+stack traceback:
+	....worktrees/legado-koplugin/spec/source_importer_spec.lua:124: in main chunk
+	[builtin#25]: at 0x7ffa841f6cc0
+[FAIL] spec\persistence_fix_spec.lua: ....worktrees/legado-koplugin/spec/persistence_fix_spec.lua:269: assertion failed!
+stack traceback:
+	[C]: in function 'assert'
+	....worktrees/legado-koplugin/spec/persistence_fix_spec.lua:269: in main chunk
+	[builtin#25]: at 0x7ffa841f6cc0
+Specs: 0 passed, 2 failed; Assertions: 0

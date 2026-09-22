@@ -1,0 +1,15 @@
+Task 4 false-scalar RED evidence
+================================
+
+Command:
+  .tools\python\python.exe scripts\run_lua_specs.py --spec spec\rule_engine_spec.lua
+
+Observed for `$.store.books[1].active`:
+  [FAIL] spec\rule_engine_spec.lua
+  [RED] jsonpath properties, indexes, wildcards, filters, and copies
+  expected false, got nil
+  Specs: 0 passed, 1 failed; Assertions: 0
+
+Root cause: an `and/or` scalar-return idiom treated the valid JSON boolean
+`false` like an absent value. The minimal fix checks only for `nil` before
+copying and returning the selected scalar.

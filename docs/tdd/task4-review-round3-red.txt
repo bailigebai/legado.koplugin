@@ -1,0 +1,23 @@
+Task 4 review fix round 3 RED evidence
+=====================================
+
+Command:
+  .tools\python\python.exe scripts\run_lua_specs.py --spec spec\rule_engine_review_round3_spec.lua
+
+Observed against commit 01318e8 before round-3 production edits:
+  [RED] unsafe scanning ignores quoted literal data but blocks executable tokens outside strings:
+        div:contains('function')@text returned UNSUPPORTED_RULE
+  [RED] absolute hierarchical URLs normalize dot segments without changing opaque schemes:
+        expected https://cdn/y, got https://cdn/x/../y
+  [RED] markup validation uses HTML quote rules and skips raw-text element contents:
+        <div title="x\">ok</div> returned PARSE_ERROR: malformed HTML input
+  [RED] templated CSS pseudos accept complete dynamic argument slots only:
+        expected B, got literal li:nth-child(2)@text
+
+Runner summary:
+  Specs: 0 passed, 1 failed; Assertions: 0
+
+All expectations are hand-derived public-boundary behavior. The unsafe case
+also includes parser/decoder spies and scanner status checks so subsequent
+GREEN evidence must preserve pre-parser rejection of genuinely executable
+forms rather than merely relaxing the detector.

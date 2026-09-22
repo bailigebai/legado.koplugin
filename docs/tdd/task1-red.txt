@@ -1,0 +1,35 @@
+Task 1 pre-production RED evidence
+
+This is a contemporaneous record of the Task 1 RED run captured before
+legado.koplugin/_meta.lua and legado.koplugin/main.lua existed. It is not a
+rerun against the current implementation.
+
+Command:
+  & '.tools\python\python.exe' scripts\run_lua_specs.py
+
+Exit code: 1
+
+Output:
+  [FAIL] spec\meta_spec.lua: cannot open C:\Users\98199\Documents\ChatGPT\AA\.worktrees\legado-koplugin\legado.koplugin/_meta.lua: No such file or directory
+  stack traceback:
+    [C]: in function 'dofile'
+    ...ChatGPT/AA/.worktrees/legado-koplugin/spec/meta_spec.lua:4: in main chunk
+
+  [FAIL] spec\optional_services_spec.lua: ...orktrees/legado-koplugin/spec/optional_services_spec.lua:11: module 'main' not found:
+    no field package.preload['main']
+    no file 'C:/Users/98199/Documents/ChatGPT/AA/.worktrees/legado-koplugin/legado.koplugin/main.lua'
+    no file 'C:/Users/98199/Documents/ChatGPT/AA/.worktrees/legado-koplugin/legado.koplugin/main/init.lua'
+
+  [FAIL] spec\plugin_smoke_spec.lua: cannot open C:\Users\98199\Documents\ChatGPT\AA\.worktrees\legado-koplugin\legado.koplugin/_meta.lua: No such file or directory
+  stack traceback:
+    [C]: in function 'dofile'
+    ...AA/.worktrees/legado-koplugin/spec/plugin_smoke_spec.lua:22: in main chunk
+
+  Specs: 0 passed, 3 failed; Assertions: 0
+
+Why this was expected:
+  meta_spec.lua and plugin_smoke_spec.lua load _meta.lua directly, and the
+  plugin specs require main through the plugin package path. Both production
+  entry files were intentionally absent during the RED phase, so these missing
+  file/module errors proved the new behavioral specs exercised the required
+  entry points before implementation.

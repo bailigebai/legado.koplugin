@@ -1,0 +1,31 @@
+Task 4 review fix round 4 RED evidence
+=====================================
+
+Command:
+  .tools\python\python.exe scripts\run_lua_specs.py --spec spec\rule_engine_review_round4_spec.lua
+
+Observed against commit abf37bf before round-4 production edits:
+  [RED] unsafe scanning establishes original quote boundaries before Unicode decoding:
+        div:contains('\u0027function')@text returned UNSUPPORTED_RULE
+  [RED] absolute hierarchical URLs include empty-authority and path-only scheme forms:
+        expected file:///b, got file:///a/../b
+  [RED] raw-text masking prevents phantom DOM nodes while preserving raw text:
+        div result length expected 1, got 2
+  [RED] numeric pseudo template substitution ignores quoted and partial marker text:
+        expected literal div:contains(':eq(2)')@text, got selected text :eq(2)
+
+Runner summary:
+  Specs: 0 passed, 1 failed; Assertions: 0
+
+The cases exercise the public RuleEngine and compatibility-scanner boundaries
+with literal expected values. Executable Unicode/comment adversaries use
+parser/decoder spies, and the raw-text case queries both surrounding elements
+and the raw-text element itself without modifying the pinned parser.
+
+Self-review offset RED:
+  After the first same-length raw-text mask, restoring the entire original HTML
+  conflicted with the vendor parser's normal comment removal. With
+  `<!--lead-->` before a masked style element, `div@text` returned `st` instead
+  of `ok`. This was added before the follow-up production change, then passed
+  after choosing unused one-byte placeholders and reversing only those bytes
+  in the parser-produced `root._text`.

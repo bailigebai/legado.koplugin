@@ -1,0 +1,16 @@
+Task 4 structured-error RED evidence
+====================================
+
+Command:
+  .tools\python\python.exe scripts\run_lua_specs.py --spec spec\rule_engine_spec.lua
+
+Observed with an intentionally incomplete injected safe-function table:
+  [FAIL] spec\rule_engine_spec.lua
+  [RED] malformed inputs and bounded resources return structured errors
+  attempt to call field 'htmldecode' (a nil value)
+  Specs: 0 passed, 1 failed; Assertions: 0
+
+Root cause: dependency-specific guards covered parser/decoder failures, but
+the public evaluation boundary did not translate an unexpected injected
+dependency exception into an `AppError`. The minimal fix wraps only that
+boundary and returns `PARSE_ERROR`; it does not evaluate or retry rule code.
