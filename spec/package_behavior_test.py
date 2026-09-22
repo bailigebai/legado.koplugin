@@ -44,10 +44,16 @@ def main() -> int:
     powershell = shutil.which("powershell") or "powershell"
     package = root / "scripts" / "package.ps1"
     verify = root / "scripts" / "verify-package.ps1"
-    artifact = root / "dist" / "legado.koplugin-v0.1.0.zip"
+    artifact = root / "dist" / "legado.koplugin-v0.10.22.zip"
 
-    build = [powershell, "-ExecutionPolicy", "Bypass", "-File", str(package), "-Version", "0.1.0", "-SkipTests"]
+    build = [powershell, "-ExecutionPolicy", "Bypass", "-File", str(package), "-Version", "0.10.22", "-SkipTests"]
     run(build, True, "package succeeds")
+    with zipfile.ZipFile(artifact) as release:
+        if any(name.endswith("default_sources.json") for name in release.namelist()):
+            raise AssertionError("release must not supply a bundled source collection")
+        for name in release.namelist():
+            if b"gcore.jsdelivr.net/gh/yuedu520/yuedu/260114.json" in release.read(name):
+                raise AssertionError("release contains the removed fixed source link: " + name)
     first_hash = hashlib.sha256(artifact.read_bytes()).hexdigest()
     run(build, True, "package succeeds repeatedly")
     second_hash = hashlib.sha256(artifact.read_bytes()).hexdigest()
@@ -117,7 +123,7 @@ def main() -> int:
         raise AssertionError("valid package entries do not exactly match the reviewed release manifest")
 
     def verify_command(path: Path) -> list[str]:
-        return [powershell, "-ExecutionPolicy", "Bypass", "-File", str(verify), "-Archive", str(path), "-Version", "0.1.0"]
+        return [powershell, "-ExecutionPolicy", "Bypass", "-File", str(verify), "-Archive", str(path), "-Version", "0.10.22"]
     run(verify_command(artifact), True, "valid package verifies")
 
     with tempfile.TemporaryDirectory(prefix="legado-package-test-") as temporary:
@@ -166,7 +172,7 @@ def main() -> int:
         mismatch = temporary_path / "mismatch.zip"
         def change_version(name: str, data: bytes):
             if name == "legado.koplugin/_meta.lua":
-                data = data.replace(b'version = "0.1.0"', b'version = "9.9.9"')
+                data = data.replace(b'version = "0.10.22"', b'version = "9.9.9"')
             return name, data
         rewrite(artifact, mismatch, change_version)
         run(verify_command(mismatch), False, "version mismatch is rejected")

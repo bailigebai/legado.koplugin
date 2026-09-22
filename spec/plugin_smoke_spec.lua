@@ -39,12 +39,13 @@ local labels = {}
 for _, item in ipairs(menu_items.legado.sub_item_table) do
     labels[#labels + 1] = item.text
 end
-assertx.equal("书架", labels[1], "bookshelf label")
-assertx.equal("搜索", labels[2], "search label")
-assertx.equal("书源管理", labels[3], "source management label")
-assertx.equal("下载管理", labels[4], "download management label")
-assertx.equal("设置", labels[5], "settings label")
-assertx.equal("关于", labels[6], "about label")
+assertx.equal("首页", labels[1], "home label")
+assertx.equal("书架", labels[2], "bookshelf label")
+assertx.equal("搜索", labels[3], "search label")
+assertx.equal("书源管理", labels[4], "source management label")
+assertx.equal("下载管理", labels[5], "download management label")
+assertx.equal("设置", labels[6], "settings label")
+assertx.equal("关于", labels[7], "about label")
 assertx.truthy(plugin:launch(), "launch is safe before later UI tasks")
 assertx.truthy(plugin:openBookshelf(), "bookshelf entry is safe before later UI tasks")
 

@@ -11,9 +11,11 @@ from pathlib import Path
 BASELINE = "v2026.07.1"
 EXPECTED_COMMIT = "9192014d8bd82a91dc1012473be0f238dedfdb54"
 KNOWN_EXTERNAL = {
-    "apps/reader/readerui", "bit", "datastorage", "device", "ffi", "ffi/archiver", "ffi/loadlib", "ffi/sha2", "ffi/util",
+    "apps/filemanager/filemanager",
+    "apps/reader/readerui", "bit", "datastorage", "device", "ffi", "ffi/archiver", "ffi/blitbuffer", "ffi/png", "ffi/loadlib", "ffi/sha2", "ffi/util",
     "json", "lfs", "libs/libkoreader-lfs", "ltn12", "lua-ljsqlite3/init", "luasettings", "socket", "socket.http",
-    "ssl.https",
+    "ssl", "ssl.https",
+    "document/documentregistry", "fontlist", "logger", "util",
 }
 
 
@@ -60,9 +62,16 @@ def validate(plugin_root: Path, source_root: Path, archive_path: Path) -> list[s
             missing.append("kindlehf:" + module)
 
     paired_modules = {
+        "apps/filemanager/filemanager": ("frontend/apps/filemanager/filemanager.lua",),
         "apps/reader/readerui": ("frontend/apps/reader/readerui.lua",),
+        "document/documentregistry": ("frontend/document/documentregistry.lua",),
+        "fontlist": ("frontend/fontlist.lua",),
         "device": ("frontend/device.lua",),
+        "logger": ("frontend/logger.lua",),
+        "util": ("frontend/util.lua",),
         "ffi/archiver": ("base/ffi/archiver.lua", "ffi/archiver.lua"),
+        "ffi/blitbuffer": ("base/ffi/blitbuffer.lua", "ffi/blitbuffer.lua"),
+        "ffi/png": ("base/ffi/png.lua", "ffi/png.lua"),
     }
     for module, candidates in paired_modules.items():
         if module in external:
@@ -87,6 +96,7 @@ def validate(plugin_root: Path, source_root: Path, archive_path: Path) -> list[s
         "LuaJIT core": ("luajit",),
         "filesystem": ("libs/libkoreader-lfs.so", "lfs.so"),
         "ffi/sha2": ("ffi/sha2.lua",),
+        "zlib": ("libs/libz.so.1",),
     }
     for label, alternatives in runtime_groups.items():
         if not any(suffix_present(release, item) for item in alternatives):
@@ -120,16 +130,16 @@ def self_test(plugin_root: Path) -> None:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("return {}", encoding="utf-8")
             entries.append("koreader/" + relative.as_posix())
-        for relative in ("base/ffi/archiver.lua", "frontend/apps/reader/readerui.lua", "frontend/device.lua"):
+        for relative in ("base/ffi/archiver.lua", "base/ffi/blitbuffer.lua", "base/ffi/png.lua", "frontend/apps/reader/readerui.lua", "frontend/apps/filemanager/filemanager.lua", "frontend/device.lua", "frontend/logger.lua", "frontend/document/documentregistry.lua", "frontend/fontlist.lua", "frontend/util.lua"):
             path = source / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("return {}", encoding="utf-8")
-        entries.extend(("koreader/ffi/archiver.lua", "koreader/frontend/apps/reader/readerui.lua", "koreader/frontend/device.lua"))
+        entries.extend(("koreader/ffi/archiver.lua", "koreader/ffi/blitbuffer.lua", "koreader/ffi/png.lua", "koreader/frontend/apps/reader/readerui.lua", "koreader/frontend/apps/filemanager/filemanager.lua", "koreader/frontend/device.lua", "koreader/frontend/logger.lua", "koreader/frontend/document/documentregistry.lua", "koreader/frontend/fontlist.lua", "koreader/frontend/util.lua"))
         entries.extend(
             "koreader/" + item for item in (
                 "ffi/util.lua", "ffi/loadlib.lua", "socket/http.lua", "socket/score.so",
                 "ssl/https.lua", "ssl.so", "ltn12.lua", "lua-ljsqlite3/init.lua", "json.lua", "luasettings.lua",
-                "socket.lua", "luajit", "libs/libkoreader-lfs.so", "ffi/sha2.lua",
+                "socket.lua", "luajit", "libs/libkoreader-lfs.so", "libs/libz.so.1", "ffi/sha2.lua",
             )
         )
         with zipfile.ZipFile(archive, "w") as output:
@@ -150,8 +160,14 @@ def self_test(plugin_root: Path) -> None:
         else:
             raise AssertionError("checker accepted a kindlehf fixture without Ltn12")
         for missing_suffix, expected in (
+            ("frontend/apps/filemanager/filemanager.lua", "kindlehf:apps/filemanager/filemanager"),
             ("ffi/archiver.lua", "kindlehf:ffi/archiver"),
+            ("ffi/blitbuffer.lua", "kindlehf:ffi/blitbuffer"),
+            ("libs/libz.so.1", "kindlehf:zlib"),
             ("apps/reader/readerui.lua", "kindlehf:apps/reader/readerui"),
+            ("document/documentregistry.lua", "kindlehf:document/documentregistry"),
+            ("frontend/fontlist.lua", "kindlehf:fontlist"),
+            ("frontend/util.lua", "kindlehf:util"),
         ):
             broken = root / ("broken-" + missing_suffix.replace("/", "-") + ".zip")
             with zipfile.ZipFile(broken, "w") as output:

@@ -97,7 +97,7 @@ do
     assert(cache:writeBody("source-id", "book", chapters[1], "<p>one</p>"))
     local opened, diagnostics = {}, {}
     local ui = { openDocument = function(_, _, callbacks) local doc = {}; callbacks.ready(doc); opened[#opened + 1] = { doc = doc, callbacks = callbacks }; return doc end }
-    local session = ReaderSession.new({ cache = cache, storage = { putProgress = function() end }, ui = ui,
+    local session = ReaderSession.new({ cache = cache, storage = { putProgress = function() return true end }, ui = ui,
         settings = { get = function() return 0 end }, diagnostics = function(kind, err) diagnostics[#diagnostics + 1] = { kind = kind, err = err } end })
     assert(session:open(source, book, chapters, 1))
     opened[1].callbacks.end_of_book(opened[1].doc)

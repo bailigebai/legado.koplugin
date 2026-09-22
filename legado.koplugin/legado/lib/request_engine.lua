@@ -12,7 +12,7 @@ RequestEngine.__index = RequestEngine
 RequestEngine.DEFAULT_TIMEOUT = 20
 RequestEngine.MAX_TIMEOUT = 20
 RequestEngine.DEFAULT_MAX_BYTES = 4 * 1024 * 1024
-RequestEngine.MAX_BYTES = 4 * 1024 * 1024
+RequestEngine.MAX_BYTES = 5 * 1024 * 1024
 RequestEngine.DEFAULT_REDIRECTS = 5
 RequestEngine.MAX_REDIRECTS = 5
 RequestEngine.DEFAULT_CONCURRENCY = 2
@@ -20,6 +20,7 @@ RequestEngine.MAX_CONCURRENCY = 3
 RequestEngine.POLL_INTERVAL = 0.05
 RequestEngine.MAX_HEADER_BYTES = 64 * 1024
 RequestEngine.MAX_CLEANUP_POLLS = 6
+local priorities = { foreground = 1, next = 2, background = 3 }
 
 local function optional_require(name)
     local ok, value = pcall(require, name)
@@ -153,11 +154,11 @@ end
 local function site_rejected(status, body)
     if status == 403 or status == 429 then return true end
     local lower = tostring(body or ""):lower()
-    return lower:find("captcha", 1, true) ~= nil
-        or lower:find("cloudflare", 1, true) ~= nil
-        or lower:find("cf-chl-", 1, true) ~= nil
-        or lower:find("just a moment", 1, true) ~= nil
-        or lower:find("attention required", 1, true) ~= nil
+    local title = lower:match("<title[^>]*>(.-)</title>") or ""
+    return title:find("just a moment", 1, true) ~= nil
+        or title:find("attention required", 1, true) ~= nil
+        or lower:find("window._cf_chl_opt", 1, true) ~= nil
+        or lower:find("please complete the captcha", 1, true) ~= nil
 end
 
 local function transport_error(cause, url)
@@ -267,6 +268,7 @@ function RequestEngine:_normalize(request)
     end
     local normalized = shallow_copy(request)
     normalized.headers = shallow_copy(request.headers)
+    set_default_header(normalized.headers, "Accept-Encoding", "identity")
     normalized.method = tostring(request.method or (request.body ~= nil and "POST" or "GET")):upper()
     if normalized.method ~= "GET" and normalized.method ~= "POST" and normalized.method ~= "HEAD" then
         return nil, Errors.new(Errors.INVALID_INPUT, "request method is unsupported", { method = normalized.method })
@@ -417,6 +419,10 @@ function RequestEngine:_perform(request, deadline)
                 remove_header(current.headers, "content-length")
             end
         else
+            local decompressed, compression_error = require("legado.lib.http_compression").decode(
+                response.body, header_value(response.headers, "content-encoding"), current.max_bytes)
+            if not decompressed then return outcome({ error = compression_error }) end
+            response.body = decompressed
             if status == 408 then
                 return outcome({ error = Errors.new(Errors.TIMEOUT, "source request timed out", { status = status, url = current.url }) })
             end
@@ -430,7 +436,10 @@ function RequestEngine:_perform(request, deadline)
                     status = status, url = current.url,
                 }) })
             end
-            local decoded, detected, decode_error = self.charset:decode(response.body, response.headers)
+            local content_type = tostring(header_value(response.headers, "content-type") or ""):lower()
+            local decoded, detected, decode_error
+            if current.binary == true or content_type:match("^image/") then decoded, detected = response.body, "binary"
+            else decoded, detected, decode_error = self.charset:decode(response.body, response.headers) end
             if decode_error then return outcome({ error = decode_error }) end
             response.body = decoded
             response.charset = detected
@@ -524,7 +533,14 @@ function RequestEngine:_drainPending()
     if self.draining then return end
     self.draining = true
     while self.active_count < self.concurrency and #self.pending > 0 do
-        local state = table.remove(self.pending, 1)
+        local selected = 1
+        for index, candidate in ipairs(self.pending) do
+            -- Oldest work gets a turn after four overtakes, even during sustained reading requests.
+            if candidate.bypasses >= 4 then selected = index; break end
+            if candidate.priority < self.pending[selected].priority then selected = index end
+        end
+        local state = table.remove(self.pending, selected)
+        for _, waiting in ipairs(self.pending) do waiting.bypasses = waiting.bypasses + 1 end
         state.queued = false
         if not state.cancelled and not state.completed then
             state.active = true
@@ -547,6 +563,7 @@ function RequestEngine:execute(request, callback)
     local state = {
         cancelled = false, completed = false, queued = false, active = false, slot_released = false,
         child = nil, scheduled = nil, timeout_scheduled = nil,
+        priority = priorities[normalized and normalized.priority] or priorities.background, bypasses = 0,
     }
     local engine = self
 
@@ -580,9 +597,21 @@ function RequestEngine:execute(request, callback)
     end
 
     local handle = {}
+    function handle:promote(priority)
+        local value = priorities[priority]
+        if state.completed or state.cancelled or not value or value >= state.priority then return false end
+        state.priority = value
+        return true
+    end
     function handle:cancel()
         if state.completed or state.cancelled then return false end
         state.cancelled = true
+        if state.queued then
+            for index, waiting in ipairs(engine.pending) do
+                if waiting == state then table.remove(engine.pending, index); break end
+            end
+            state.queued = false
+        end
         safe_unschedule("scheduled")
         safe_unschedule("timeout_scheduled")
         engine:_releaseSlot(state)
@@ -590,7 +619,6 @@ function RequestEngine:execute(request, callback)
             pcall(engine.subprocess.terminate, engine.subprocess, state.child)
             pcall(engine._cleanup_child, engine, state, function() end)
         end
-        if state.queued then engine:_drainPending() end
         return true
     end
 

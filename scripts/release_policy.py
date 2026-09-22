@@ -19,6 +19,7 @@ RUNTIME_FILES = frozenset({
     "legado/lib/content_cleaner.lua",
     "legado/lib/cookie_jar.lua",
     "legado/lib/cover_loader.lua",
+    "legado/lib/http_compression.lua",
     "legado/lib/diagnostic_sanitizer.lua",
     "legado/lib/diagnostics.lua",
     "legado/lib/download_manager.lua",
@@ -27,14 +28,35 @@ RUNTIME_FILES = frozenset({
     "legado/lib/fs.lua",
     "legado/lib/iconv_adapter.lua",
     "legado/lib/identity.lua",
+    "legado/lib/license.lua",
+    "legado/lib/license_activation.lua",
+    "legado/lib/license_crypto.lua",
+    "legado/lib/license_transport.lua",
+    "legado/lib/license_store.lua",
+    "legado/lib/license-public.pem",
     "legado/lib/json_codec.lua",
     "legado/lib/koreader_reader_ui.lua",
+    "legado/lib/koreader_statistics.lua",
+    "legado/lib/leko_animation.lua",
+    "legado/lib/leko_chapter_wave.lua",
+    "legado/lib/leko_native_swipe.lua",
+    "legado/lib/leko_paginator.lua",
+    "legado/lib/leko_reader_ui.lua",
+    "legado/lib/leko_text.lua",
+    "legado/lib/local_library.lua",
     "legado/lib/logger.lua",
     "legado/lib/models.lua",
+    "legado/lib/network_access.lua",
     "legado/lib/reader_session.lua",
     "legado/lib/request_engine.lua",
+    "legado/lib/reader_chrome.lua",
+    "legado/lib/reader_background.lua",
+    "legado/lib/shelf_categories.lua",
+    "legado/lib/reading_history.lua",
+    "legado/lib/receipt_styles.lua",
     "legado/lib/rule_capabilities.lua",
     "legado/lib/rule_engine.lua",
+    "legado/lib/rule_expression.lua",
     "legado/lib/safe_functions.lua",
     "legado/lib/settings.lua",
     "legado/lib/socket_transport.lua",
@@ -56,19 +78,45 @@ RUNTIME_FILES = frozenset({
     "legado/ui/catalog.lua",
     "legado/ui/compatibility_report.lua",
     "legado/ui/cover_grid.lua",
+    "legado/ui/home.lua",
+    "legado/ui/library_screen.lua",
+    "legado/ui/leko_font_selection.lua",
+    "legado/ui/leko_reader.lua",
+    "legado/ui/reading_screen.lua",
+    "legado/ui/receipt_screen.lua",
     "legado/ui/downloads.lua",
     "legado/ui/navigation.lua",
     "legado/ui/presenter.lua",
     "legado/ui/search.lua",
     "legado/ui/settings.lua",
+    "legado/ui/side_toc.lua",
+    "legado/ui/reader_sidebar.lua",
     "legado/ui/source_manager.lua",
+    "legado/ui/source_matches.lua",
     "legado/vendor/htmlparser/init.lua",
     "legado/vendor/htmlparser/ElementNode.lua",
     "legado/vendor/htmlparser/voidelements.lua",
     "legado/vendor/htmlparser/LICENSE",
     "legado/vendor/htmlparser/COPYING.LESSER",
+    "legado/vendor/licenses/leko-LICENSE",
+    "legado/vendor/licenses/swipe-LICENSE",
 })
 DOCUMENTS = frozenset({
+    "docs/reader-library-0.10.22.md",
+    "docs/reader-library-0.10.21.md",
+    "docs/reader-library-0.10.15.md",
+    "docs/reader-library-0.10.16.md",
+    "docs/reader-library-0.10.17.md",
+    "docs/reader-library-0.10.18.md",
+    "docs/reader-library-0.10.19.md",
+    "docs/reader-library-0.10.20.md",
+    "docs/reader-library-0.8.0.md",
+    "docs/reader-library-0.9.0.md",
+    "docs/reader-library-0.10.0.md",
+    "docs/reader-library-0.10.8.md",
+    "docs/reader-library-0.10.9.md",
+    "docs/reader-library-0.10.10.md",
+    "docs/reader-library-0.10.11.md",
     "README.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
@@ -76,6 +124,22 @@ DOCUMENTS = frozenset({
     "docs/privacy-and-copyright.md",
     "docs/testing.md",
     "docs/kpw6-checklist.md",
+    "docs/live-sources-2026-09-08.md",
+    "docs/acceptance-2026-09-10.md",
+    "docs/library-browser-0.3.0.md",
+    "docs/compact-shelf-reader-0.3.1.md",
+    "docs/reader-library-0.3.6.md",
+    "docs/reader-library-0.4.0.md",
+    "docs/reader-library-0.5.0.md",
+    "docs/reader-library-0.6.0.md",
+    "docs/reader-library-0.6.1.md",
+    "docs/reader-library-0.6.2.md",
+    "docs/reader-library-0.6.3.md",
+    "docs/reader-library-0.6.4.md",
+    "docs/reader-library-0.6.5.md",
+    "docs/reader-library-0.7.0.md",
+    "docs/reader-library-0.7.1.md",
+    "docs/reader-library-0.7.2.md",
 })
 ARCHIVE_FILES = frozenset(f"{TOP}/{relative}" for relative in RUNTIME_FILES | DOCUMENTS)
 RUNTIME_DIRECTORIES = frozenset(
@@ -84,7 +148,7 @@ RUNTIME_DIRECTORIES = frozenset(
     for parent in PurePosixPath(relative).parents
     if parent.as_posix() != "."
 )
-MAX_ENTRIES = 128
+MAX_ENTRIES = 129
 MAX_ENTRY_BYTES = 8 * 1024 * 1024
 MAX_TOTAL_BYTES = 32 * 1024 * 1024
 MAX_COMPRESSION_RATIO = 200
@@ -165,7 +229,7 @@ def validate_payload(name: str, data: bytes) -> None:
         raise ValueError(f"archive payload must be bytes: {name}")
     validate_entry_size(name, len(data))
     relative = name[len(TOP) + 1:]
-    textual = relative.endswith((".lua", ".md")) or relative in {"LICENSE"} or relative.endswith(("/LICENSE", "/COPYING.LESSER"))
+    textual = relative.endswith((".lua", ".md", ".json")) or relative in {"LICENSE"} or relative.endswith(("/LICENSE", "/COPYING.LESSER", "-LICENSE"))
     if textual and any(pattern.search(data) for pattern in SENSITIVE_CONTENT):
         raise ValueError(f"sensitive credential material detected in: {name}")
 

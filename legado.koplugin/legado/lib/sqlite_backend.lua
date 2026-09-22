@@ -7,7 +7,7 @@ SqliteBackend.SCHEMA_VERSION = 1
 local TABLE = "legado_v1_"
 
 local function quote(value)
-    return "'" .. tostring(value or ""):gsub("'", "''") .. "'"
+    return "'" .. tostring(value or ""):gsub("'", "''"):gsub("%z", "' || char(0) || '") .. "'"
 end
 
 local function encode(value)
@@ -94,21 +94,42 @@ function SqliteBackend.open(driver, path)
     end
     local self = setmetatable({ db = db }, SqliteBackend)
     local initialized, error_value = self:_initialize()
-    if not initialized then return nil, error_value end
+    if not initialized then
+        if type(db.close) == "function" then pcall(db.close, db) end
+        return nil, error_value
+    end
     return self
 end
 
+-- KOReader's db:exec splits on every ';', including inside quoted rule data.
+-- Prepare one statement so SQLite, rather than a string splitter, parses SQL.
+function SqliteBackend:_statement(sql)
+    if type(self.db.prepare) ~= "function" then return self.db:exec(sql) end
+    local statement = self.db:prepare(sql)
+    local ok, result, count = pcall(statement.resultset, statement)
+    statement:close()
+    if not ok then error(result) end
+    return result, count
+end
+
+local function statement_error(message, cause, operation)
+    return Errors.new(Errors.STORAGE_ERROR, message, {
+        cause = cause, operation = operation,
+        sqlite_code = tostring(cause):match("ljsqlite3%[([%a_]+)%]"),
+    })
+end
+
 function SqliteBackend:_exec(sql)
-    local ok, result, count = pcall(self.db.exec, self.db, sql)
+    local ok, result, count = pcall(self._statement, self, sql)
     if not ok or result == false or (result == nil and type(count) == "string") then
-        return nil, Errors.new(Errors.STORAGE_ERROR, "sqlite statement failed", { cause = result or count })
+        return nil, statement_error("sqlite statement failed", result or count, "write")
     end
     return true
 end
 
 function SqliteBackend:_rows(sql)
     local rows = {}
-    local executed, resultset, count = pcall(self.db.exec, self.db, sql)
+    local executed, resultset, count = pcall(self._statement, self, sql)
     if executed and resultset == nil and (count == 0 or count == nil) then return rows end
     if executed and type(resultset) == "table" and count and count > 0 then
         for index = 1, count do
@@ -121,7 +142,7 @@ function SqliteBackend:_rows(sql)
         return rows
     end
     if not executed or resultset == false or (resultset == nil and type(count) == "string") then
-        return nil, Errors.new(Errors.STORAGE_ERROR, "sqlite query failed", { cause = resultset or count })
+        return nil, statement_error("sqlite query failed", resultset or count, "read")
     end
     if type(self.db.rowexec) == "function" then
         local ok, first = pcall(self.db.rowexec, self.db, sql)
@@ -160,7 +181,7 @@ function SqliteBackend:_initialize()
             return nil, Errors.new(Errors.MIGRATION_ERROR, "unsupported sqlite migration", { from = versions[1].value, to = SqliteBackend.SCHEMA_VERSION })
         end
     end
-    local schema = table.concat({
+    local schema = {
         "PRAGMA journal_mode=WAL;", "PRAGMA synchronous=NORMAL;",
         "CREATE TABLE IF NOT EXISTS " .. TABLE .. "meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);",
         "CREATE TABLE IF NOT EXISTS " .. TABLE .. "sources (id TEXT PRIMARY KEY, payload TEXT NOT NULL);",
@@ -168,9 +189,11 @@ function SqliteBackend:_initialize()
         "CREATE TABLE IF NOT EXISTS " .. TABLE .. "chapters (uid TEXT PRIMARY KEY, book_id TEXT NOT NULL, chapter_index INTEGER NOT NULL, payload TEXT NOT NULL);",
         "CREATE TABLE IF NOT EXISTS " .. TABLE .. "progress (book_id TEXT PRIMARY KEY, payload TEXT NOT NULL);",
         "CREATE TABLE IF NOT EXISTS " .. TABLE .. "downloads (id TEXT PRIMARY KEY, book_id TEXT, payload TEXT NOT NULL);",
-    }, " ")
-    local ready, ready_error = self:_exec(schema)
-    if not ready then return nil, ready_error end
+    }
+    for _, statement in ipairs(schema) do
+        local ready, ready_error = self:_exec(statement)
+        if not ready then return nil, ready_error end
+    end
     local rows, rows_error = self:_rows("SELECT value FROM " .. TABLE .. "meta WHERE key='schema_version'")
     if not rows then return nil, rows_error end
     if not rows[1] then return self:_exec("INSERT INTO " .. TABLE .. "meta (key,value) VALUES ('schema_version'," .. SqliteBackend.SCHEMA_VERSION .. ")") end
@@ -228,8 +251,19 @@ function SqliteBackend:putBook(value) return self:_put("books", "id", value.id, 
 function SqliteBackend:getBook(id) return self:_get("books", "id=" .. quote(id)) end
 function SqliteBackend:deleteBook(id) return self:_exec("DELETE FROM " .. TABLE .. "books WHERE id=" .. quote(id)) end
 function SqliteBackend:listBooks() return self:_list("books", nil, "id") end
+function SqliteBackend:updateBooks(books)
+    local started,err=self:_exec('BEGIN IMMEDIATE');if not started then return nil,err end
+    for _,book in ipairs(books) do
+        local saved,save_error=self:putBook(book)
+        if not saved then self:_exec('ROLLBACK');return nil,save_error end
+    end
+    local saved,save_error=self:_exec('COMMIT')
+    if not saved then self:_exec('ROLLBACK');return nil,save_error end
+    return true
+end
 function SqliteBackend:getProgress(book_id) return self:_get("progress", "book_id=" .. quote(book_id)) end
 function SqliteBackend:putProgress(value) return self:_put("progress", "book_id", value.book_id, value) end
+function SqliteBackend:listProgress() return self:_list("progress", nil, "book_id") end
 function SqliteBackend:getDownload(id) return self:_get("downloads", "id=" .. quote(id)) end
 function SqliteBackend:putDownload(value) return self:_put("downloads", "id", value.id, value, { book_id = value.book_id or "" }) end
 function SqliteBackend:listDownloads() return self:_list("downloads", nil, "id") end

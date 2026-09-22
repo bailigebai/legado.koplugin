@@ -12,10 +12,17 @@ function Catalog.new(chapters, cache_lookup, on_select)
             cached = type(cache_lookup) == "function" and cache_lookup(chapter) == true or false,
         }
     end
-    return setmetatable({ kind = "catalog", items = items, on_select = on_select,
+    return setmetatable({ kind = "catalog", items = items, on_select = on_select, reverse = false,
         navigation = Navigation.new({ count = #items, columns = 1 }) }, Catalog)
 end
 
+function Catalog:setOrder(reverse)
+    reverse = reverse == true
+    if reverse == self.reverse then return end
+    local reversed = {}; for index = #self.items, 1, -1 do reversed[#reversed + 1] = self.items[index] end
+    self.items, self.reverse = reversed, reverse
+    self.navigation:setCount(#self.items)
+end
 function Catalog:onKey(key) return self.navigation:onKey(key) end
 function Catalog:focused() return self.items[self.navigation:index()] end
 function Catalog:select(position, callback)

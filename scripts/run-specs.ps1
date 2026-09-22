@@ -20,6 +20,16 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
+& $venvPython (Join-Path $repositoryRoot "spec\probe_transport_test.py")
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
+& $venvPython (Join-Path $repositoryRoot "spec\reader_document_io_test.py")
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
 & powershell -ExecutionPolicy Bypass -File (Join-Path $repositoryRoot "spec\namespace_checker_spec.ps1")
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE

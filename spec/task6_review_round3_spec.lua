@@ -1,5 +1,7 @@
+require("library_screen_stub")
 local assertx = require("assertions")
 local CoverGrid = require("legado.ui.cover_grid")
+package.preload["ui/font"] = function() return {getFace=function() return {} end} end
 local Presenter = require("legado.ui.presenter")
 
 local function class(kind)
@@ -70,7 +72,6 @@ do
     local operations = {
         { page = 1, button = "下一页" },
         { page = 2, button = "上一页" },
-        { page = 1, button = "文字模式" },
     }
     for _, operation in ipairs(operations) do
         local shelf = { kind = "bookshelf", alive = true, last_item = nil }
@@ -83,21 +84,21 @@ do
         local old = presenter:_shelf(shelf, operation.page, "cover")
         local late_item = shelf.last_item
         local button
-        for _, candidate in ipairs(old.layout[#old.layout]) do
+        for _, candidate in ipairs(old.item_table) do
             if candidate.text == operation.button then button = candidate; break end
         end
         assertx.truthy(button, operation.button .. " control is reachable")
         button.callback()
         local current = stack[#stack]
         assertx.truthy(current ~= old, operation.button .. " replaces the old cover grid")
-        assertx.equal(false, old.alive, operation.button .. " marks the old grid inactive")
+        assertx.equal(true, old.closed, operation.button .. " marks the old grid inactive")
         assertx.equal(true, shelf.alive, operation.button .. " does not terminate the shelf controller")
         assertx.equal(nil, late_item.on_update, operation.button .. " detaches old cover update callback before a late result")
         if late_item.on_update then late_item.on_update(late_item) end
         assertx.equal(1, #stack, operation.button .. " leaves exactly one active widget on the UI stack")
-        if current.kind == "cover_grid" then current:onClose() else ui:close(current) end
+        current:onClose()
     end
-    assertx.truthy(close_calls >= 6, "replacement and terminal closes both reach UIManager")
+    assertx.truthy(close_calls >= 4, "replacement and terminal closes both reach UIManager")
 end
 
 return 24

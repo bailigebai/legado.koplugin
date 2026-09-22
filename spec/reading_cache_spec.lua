@@ -65,9 +65,53 @@ do
         callbacks.ready(doc)
         return doc
     end }
-    local session = ReaderSession.new({ cache = cache, storage = { putProgress = function(_, p) saved[#saved + 1] = p end }, ui = ui })
+    local session = ReaderSession.new({ cache = cache, storage = { putProgress = function(_, p) saved[#saved + 1] = p; return true end }, ui = ui })
     assert(session:open(source, book, chapters, 1)); assert(session:_open_cached(session.active, 2, nil))
     equal("life-1", saved[1].chapter_uid, "synchronous ShowingReader close saves the immutable old chapter")
+end
+
+do
+    local cache = CacheStore.new({ fs = fs, root = "delayed-html-write-failure" })
+    local source, book = { id = "s" }, { id = "html-failure-book", source_id = "source-s" }
+    local chapters = {
+        { uid = "html-ok", index = 1, title = "One", url = "https://s/1", source_id = "source-s", book_id = book.id },
+        { uid = "html-fail", index = 2, title = "Two", url = "https://s/2", source_id = "source-s", book_id = book.id },
+    }
+    assert(cache:writeBody("source-s", book.id, chapters[1], "<p>One</p>"))
+    local pending
+    local service = { getContent = function(_, _, _, _, callback)
+        pending = callback
+        return { cancel = function() return true end }
+    end }
+    local ui = { openDocument = function(_, _, callbacks)
+        local document = { getProgressFraction = function() return 0 end }
+        callbacks.ready(document)
+        return document
+    end }
+    local session = ReaderSession.new({ cache = cache, storage = { putProgress = function() return true end },
+        service = service, ui = ui, settings = { get = function() return 0 end } })
+    assert(session:open(source, book, chapters, 1))
+    local previous = session.active
+    local original_write_html = cache.writeHtml
+    cache.writeHtml = function(self, source_id, book_id, chapter, value)
+        if chapter.uid == "html-fail" then
+            return nil, { code = "STORAGE_ERROR", message = "simulated HTML write failure" }
+        end
+        return original_write_html(self, source_id, book_id, chapter, value)
+    end
+    local completions = {}
+    local handle, immediate_error = session:open(source, book, chapters, 2, {
+        on_complete = function(value, err) completions[#completions + 1] = { value, err } end,
+    })
+    truthy(handle and type(handle.cancel) == "function", "uncached chapter returns its live request handle")
+    equal(nil, immediate_error, "pending chapter fetch does not return the old cache miss")
+    pending({ content = "Second chapter" }, nil)
+    equal(1, #completions, "delayed HTML write failure completes exactly once")
+    equal(nil, completions[1][1], "delayed HTML write failure has no document")
+    equal("STORAGE_ERROR", completions[1][2].code, "delayed HTML write failure remains structured")
+    equal("html_write", completions[1][2].details.stage, "delayed HTML write failure names its stage")
+    equal(previous, session.active, "delayed HTML write failure preserves the previous reader state")
+    equal(true, previous.active, "previous reader remains active after delayed HTML write failure")
 end
 
 do
@@ -78,11 +122,40 @@ do
     local chapter = { uid = "offline-chapter", index = 1, title = "Only", url = "https://s.test/1", source_id = "source-s", book_id = book.id }
     assert(cache:writeCatalog("source-s", book.id, { chapters = { chapter } }))
     local calls = 0
-    local session = ReaderSession.new({ cache = cache, storage = { putProgress = function() end }, ui = { openDocument = function() return {} end }, service = { getContent = function() calls = calls + 1 end } })
+    local session = ReaderSession.new({ cache = cache, storage = { putProgress = function() return true end }, ui = { openDocument = function() return {} end }, service = { getContent = function() calls = calls + 1 end } })
     local opened, err = session:openOffline(source, book, 1)
     equal(nil, opened, "offline open rejects a catalog whose body vanished")
     equal("STORAGE_ERROR", err.code, "offline miss is structured")
     equal(0, calls, "offline open makes zero network calls")
+end
+
+do
+    local cache = CacheStore.new({ fs = fs, root = "offline-resume" })
+    local source, book = { id = "s" }, { id = "resume-book", source_id = "source-s" }
+    local chapters = {
+        { uid = "resume-1", index = 1, title = "One", url = "https://s/1", source_id = "source-s", book_id = book.id },
+        { uid = "resume-2", index = 2, title = "Two", url = "https://s/2", source_id = "source-s", book_id = book.id },
+        { uid = "resume-3", index = 3, title = "Three", url = "https://s/3", source_id = "source-s", book_id = book.id },
+    }
+    assert(cache:writeCatalog(book.source_id, book.id, { chapters = chapters }))
+    assert(cache:writeBody(book.source_id, book.id, chapters[1], "<p>One</p>"))
+    assert(cache:writeBody(book.source_id, book.id, chapters[2], "<p>Two</p>"))
+    local fraction, callbacks, opened, network_calls = nil, nil, nil, 0
+    local ui = { openDocument = function(_, _, cb)
+        callbacks = cb
+        opened = { setProgressFraction = function(_, value) fraction = value; return true end }
+        cb.ready(opened)
+        return opened
+    end }
+    local session = ReaderSession.new({ cache = cache, ui = ui, storage = {
+        putProgress = function() return true end,
+        getProgress = function() return { chapter_uid = "resume-2", chapter_index = 2, fraction = 0.6 } end,
+    }, service = { getContent = function() network_calls = network_calls + 1 end } })
+    assert(session:openOffline(source, book))
+    equal(2, session.active.index, "offline resume returns to the last read chapter")
+    equal(0.6, fraction, "offline resume restores the position inside the chapter")
+    callbacks.end_of_book(opened)
+    equal(0, network_calls, "offline chapter end never starts a network request")
 end
 
 do
@@ -125,12 +198,12 @@ do
     assert(session:open(source, book, chapters, 1))
     equal(1, #pending, "opening schedules one low-priority prefetch")
     opened[1].callbacks.end_of_book(opened[1].document)
-    equal(1, cancelled, "user next chapter cancels competing low-priority prefetch")
-    equal(2, #pending, "user navigation starts its own fetch after cancellation")
-    pending[2]({ content = "<p>Two</p>" }, nil)
-    equal(2, #opened, "next chapter opens when the user-priority request completes")
+    equal(0, cancelled, "user next chapter preserves the in-flight next chapter")
+    equal(1, #pending, "user navigation shares the existing next-chapter request")
+    pending[1]({ content = "<p>Two</p>" }, nil)
+    equal(2, #opened, "next chapter opens when the shared request completes")
     session:close()
-    pending[2]({ content = "<p>late</p>" }, nil)
+    pending[1]({ content = "<p>late</p>" }, nil)
     equal(2, #opened, "late callbacks after session close cannot reopen a document")
 end
 
@@ -148,14 +221,14 @@ do
         callbacks.ready(document)
         return document
     end }
-    local session = ReaderSession.new({ cache = cache, storage = { putProgress = function() end }, ui = ui })
+    local session = ReaderSession.new({ cache = cache, storage = { putProgress = function() return true end }, ui = ui })
     session:open(source, book, chapters, 2, { on_complete = function(value, err) ready[#ready + 1] = { value, err } end })
     equal(1, #ready, "cached selected chapter reports reader readiness once")
     equal(2, ready[1][1].selected, "cached selected chapter opens the requested index")
 
     local pending = {}
     local online = ReaderSession.new({ cache = CacheStore.new({ fs = fs, root = "catalog-select-online" }),
-        storage = { putProgress = function() end }, ui = ui,
+        storage = { putProgress = function() return true end }, ui = ui,
         service = { getContent = function(_, _, _, _, callback)
             pending[#pending + 1] = callback
             return { cancel = function() end }
@@ -185,7 +258,7 @@ do
     }
     assert(cache:writeBody("source-s", book.id, chapters[1], "<p>One</p>"))
     local completions = 0
-    local session = ReaderSession.new({ cache = cache, storage = { putProgress = function() end },
+    local session = ReaderSession.new({ cache = cache, storage = { putProgress = function() return true end },
         ui = { openDocument = function(_, _, callbacks)
             callbacks.failure({ code = "OPEN_ERROR" })
             return nil
@@ -295,4 +368,45 @@ do
     equal(3, session:recoverIndex(inserted, { chapter_uid = "chapter-2", chapter_index = 2 }), "stable UID recovery wins over changed index")
 end
 
+do
+    local attempts=0
+    local chapters={{uid='one',title='One'},{uid='two',title='Two'}}
+    local session=ReaderSession.new{settings={get=function(_,key) return key=='immersive_reader' end},
+        storage={getProgress=function() end,putProgress=function() return true end},
+        cache={readCatalog=function() return {chapters=chapters,complete=true} end,
+            readBody=function(_,_,_,chapter) return chapter.uid=='two' and '<p><img src="image.png"></p>' or '<p>Earlier chapter</p>' end},
+        ui={openChapter=function(_,payload)
+            attempts=attempts+1
+            local _,err=require('legado.lib.leko_text').parse(payload.body,payload.state.chapters[payload.state.index].title)
+            return nil,err
+        end}}
+    local document,err=session:openOffline({id='source'},{id='book',source_id='source'},2)
+    equal(nil,document,'offline image chapter does not silently open an earlier text chapter')
+    equal('UNSUPPORTED_CONTENT',err.code,'offline unsupported content retains its actionable error')
+    equal(1,attempts,'render failure stops fallback while missing cache can still recover earlier chapters')
+end
+
+do
+    local chapters={{uid='one',index=1,title='One'}}
+    for _,mode in ipairs{{stored=true,temporary='native',fraction=.6},{stored=false,temporary='immersive'}} do
+        local received,backend
+        local ui={openDocument=function(_,_,cb,state)
+            backend='native'
+            local doc={setProgressFraction=function(_,value)received=value;return true end}
+            cb.ready(doc);return doc
+        end,openChapter=function(_,payload,cb)
+            backend='immersive';received=payload.state.restore_fraction
+            local doc={restored_on_open=true};cb.ready(doc);return doc
+        end}
+        local session=ReaderSession.new{settings={get=function(_,key)if key=='immersive_reader' then return mode.stored end;return 0 end},
+            storage={getProgress=function()return {chapter_uid='one',fraction=.6}end,putProgress=function()return true end},ui=ui,
+            cache={readCatalog=function()return {chapters=chapters,complete=true}end,readBody=function()return '<p>Text</p>'end,
+                writeHtml=function()return 'one.html'end}}
+        session.preferred_backend=mode.temporary
+        assert(session:openOffline({id='s'},{id='b',source_id='s'}))
+        equal(mode.temporary,backend,'offline reopening honors temporary backend')
+        equal(mode.fraction,received,'offline position uses actual backend instead of locked stored preference')
+        session:close()
+    end
+end
 return count

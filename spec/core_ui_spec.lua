@@ -25,7 +25,8 @@ function storage:deleteSource(id) for i, source in ipairs(state.sources) do if s
 do
     local shelf = Shelf.new({ storage = storage, page_size = 20, covers_enabled = true })
     local empty = shelf:page(1, "text")
-    equal("书架为空", empty.empty_text, "empty shelf has useful Chinese state")
+    equal("暂无收藏", empty.empty_text, "empty shelf has useful Chinese state")
+    equal("搜索添加", empty.empty_actions[1].text, "empty shelf offers search action")
     for index = 1, 41 do shelf:add({ id = string.format("b%02d", index), name = string.format("Book %02d", index), author = "A", cover_url = index == 2 and "https://covers.test/2.jpg" or nil }) end
     local first = shelf:page(1, "text")
     local third = shelf:page(3, "text")
@@ -34,12 +35,25 @@ do
     equal(1, #third.items, "last shelf page contains remainder")
     equal("Book 41", third.items[1].title, "text shelf preserves deterministic order")
     local cover = shelf:page(1, "cover")
+    equal(12, #cover.items, "cover shelf holds four columns and three rows")
+    equal(4, cover.page_count, "cover pages retain all books")
+    equal("Book 13", shelf:page(2, "cover").items[1].title, "next cover page has no skipped books")
     equal("无封面", cover.items[1].cover_text, "missing cover has nonblocking text fallback")
     truthy(cover.items[1].cover_pending == false, "missing URL does not schedule cover loading")
     equal("封面不可用", cover.items[2].cover_text, "unavailable cover loader falls back without blocking")
     truthy(cover.items[2].cover_pending == false, "cover URL cannot remain pending without a loader")
     equal(true, shelf:remove("b01"), "shelf removal delegates to storage")
     equal(nil, storage:getBook("b01"), "removed book leaves shelf")
+end
+
+do
+    state.books = {}
+    local opened = 0
+    local shelf = Shelf.new({ storage = storage, on_search = function() opened = opened + 1 end })
+    local empty = shelf:page(1, "cover")
+    equal("搜索添加", empty.empty_actions[1].text, "cover shelf keeps empty search action")
+    empty.empty_actions[1].callback()
+    equal(1, opened, "empty shelf search action delegates")
 end
 
 do
@@ -149,6 +163,12 @@ do
         confirm = function() return true end,
     })
     equal(2, #manager:list(), "source manager lists sources")
+    equal(0, manager:bookCount("s1"), "source manager shows zero shelf count")
+    local saved_book = require("legado.lib.models").book(state.sources[1], {name="Counted", url="https://books.test/count"})
+    storage:createBook(saved_book)
+    equal(1, manager:bookCount("s1"), "source count recognizes production book identity")
+    equal(1, manager:viewModel().sources[1].shelf_count, "source list shows actual collection count")
+    storage:deleteBook(saved_book.id)
     equal(false, manager:toggle("s1"), "source manager disables enabled source")
     equal(true, assert(manager:toggle("s1")), "source manager enables disabled source")
     equal(1, manager:importLocal("sources.json").imported, "local JSON import is supported")
@@ -181,6 +201,17 @@ do
     equal(5 * 1024 * 1024, bounded_limit, "local source import enforces the five MiB hard limit")
     equal(1, bounded_report.rejected, "bounded read failure maps to an import report")
     equal("RESPONSE_TOO_LARGE", bounded_report.error.code, "local oversize error remains structured")
+end
+
+do
+    state.sources = {}
+    local opened = 0
+    local manager = SourceManager.new({ storage = storage, on_search = function() opened = opened + 1 end })
+    local empty = manager:viewModel()
+    equal("暂无自行导入的书源", empty.empty_text, "empty source manager distinguishes user imports from defaults")
+    equal("搜索添加", empty.empty_actions[1].text, "empty source manager offers search")
+    empty.empty_actions[1].callback()
+    equal(1, opened, "empty source search action delegates")
 end
 
 do

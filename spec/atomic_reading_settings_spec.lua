@@ -1,3 +1,4 @@
+require("library_screen_stub")
 local assertx = require("assertions")
 local Settings = require("legado.lib.settings")
 local SettingsView = require("legado.ui.settings")
@@ -77,7 +78,7 @@ local read_action
 for _, item in ipairs(detail_menu.item_table) do if item.text == "开始阅读" then read_action = item end end
 local shown_before = #shown
 read_action.callback()
-equal(shown_before + 1, #shown, "immediate structured reading failure is shown once")
+equal(shown_before + 1, #shown, "immediate structured reading failure replaces loading surface once")
 late_callback(nil, { code = "NETWORK_ERROR" })
 equal(shown_before + 1, #shown, "late callback after terminal structured error is dropped")
 

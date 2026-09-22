@@ -1,6 +1,7 @@
 local Errors = require("legado.lib.errors")
 local Fs = require("legado.lib.fs")
 local Json = require("legado.lib.json_codec")
+local ReceiptStyles = require('legado.lib.receipt_styles')
 
 local Settings = {}
 Settings.__index = Settings
@@ -14,11 +15,38 @@ Settings.DEFAULTS = {
     max_concurrency = 3,
     pagination = 20,
     prefetch = 3,
+    immersive_reader = false,
     prefetch_min = 0,
     prefetch_max = 10,
     shelf_page = 20,
     covers_enabled = true,
+    progress_bar = true,
+    progress_bar_mode = "details",
+    progress_bar_font_size = 12,
+    progress_bar_height = 24,
+    receipt_style = 'classic',
+    receipt_width = 75,
+    receipt_height = 90,
+    receipt_background = '',
+    reader_background = '',
+    reader_background_scale = 100,
+    reader_background_y = 50,
+    reader_background_x = 0,
+    reader_header_font_size = 11,
+    reader_footer_font_size = 11,
+    search_timeout = 10,
+    shelf_source = "sources",
+    side_toc_position = "left",
+    shelf_categories = {},
+    reader_corner_tl = "time", reader_corner_tc = "title", reader_corner_tr = "chapter_page",
+    reader_corner_bl = "chapter", reader_corner_br = "progress",
+    local_dir = "",
     log_level = "info",
+    cache_limit_mb = 500,
+    cache_cleanup_threshold_mb = 300,
+    cache_retain_mb = 200,
+    license_receipt = '',
+    license_installation_id = '',
 }
 
 local function copy(source)
@@ -34,12 +62,69 @@ local function normalized(key, value)
     elseif key == "concurrency" then
         return math.max(2, math.min(Settings.DEFAULTS.max_concurrency,
             math.floor(tonumber(value) or Settings.DEFAULTS.concurrency)))
-    elseif key == "timeout" then
+    elseif key == "timeout" or key == "search_timeout" then
         return math.max(1, math.min(20, tonumber(value) or Settings.DEFAULTS.timeout))
+    elseif key=='reader_header_font_size' or key=='reader_footer_font_size' then
+        local n=tonumber(value)
+        if not n or n~=n or n==math.huge or n==-math.huge then n=Settings.DEFAULTS[key] end
+        return math.max(8,math.min(18,math.floor(n)))
     elseif key == "shelf_page" then
         return math.max(5, math.min(50, math.floor(tonumber(value) or Settings.DEFAULTS.shelf_page)))
+    elseif key == "cache_limit_mb" or key == "cache_cleanup_threshold_mb" or key == "cache_retain_mb" then
+        local n = tonumber(value)
+        if not n or n ~= n or n == math.huge or n == -math.huge then n = Settings.DEFAULTS[key] end
+        return math.max(50, math.min(8192, math.floor(n)))
+    elseif key == "immersive_reader" then
+        return value == true
+    elseif key == "progress_bar" then
+        return value ~= false
+    elseif key == "progress_bar_mode" then
+        return (value == "hidden" or value == "bar") and value or "details"
+    elseif key == "progress_bar_font_size" or key == "progress_bar_height" then
+        local n = tonumber(value)
+        if not n or n ~= n or n == math.huge or n == -math.huge then n = Settings.DEFAULTS[key] end
+        local font = key == "progress_bar_font_size"
+        return math.max(font and 8 or 16, math.min(font and 22 or 48, math.floor(n)))
+    elseif key == "shelf_source" then
+        return (value == "local" or value == "mixed") and value or "sources"
+    elseif key == "side_toc_position" then
+        return value == "right" and "right" or "left"
+    elseif key == 'receipt_style' then
+        return ReceiptStyles.normalize(value)
+    elseif key == 'receipt_width' or key == 'receipt_height' then
+        local n=tonumber(value)
+        if not n or n~=n or n==math.huge or n==-math.huge then n=Settings.DEFAULTS[key] end
+        return math.max(key=='receipt_width' and 50 or 55,math.min(95,math.floor(n)))
+    elseif key == 'reader_background_scale' or key == 'reader_background_y' or key == 'reader_background_x' then
+        local n=tonumber(value)
+        if not n or n~=n or n==math.huge or n==-math.huge then n=Settings.DEFAULTS[key] end
+        local low=key=='reader_background_scale' and 25 or key=='reader_background_x' and -100 or 0
+        return math.max(low,math.min(key=='reader_background_scale' and 200 or 100,math.floor(n)))
+    elseif key == "shelf_categories" then
+        local output, seen = {}, {}
+        for _, name in ipairs(type(value) == "table" and value or {}) do
+            name = tostring(name or ""):match("^%s*(.-)%s*$")
+            if name ~= "" and #name <= 40 and not seen[name] then output[#output + 1], seen[name] = name, true end
+        end
+        return output
+    elseif key:match("^reader_corner_") then
+        local allowed = { time=true, title=true, chapter_page=true, chapter=true, progress=true, off=true }
+        return allowed[value] and value or Settings.DEFAULTS[key]
+    elseif key == "license_receipt" or key == "license_installation_id"
+        or key == "local_dir" or key == 'receipt_background' or key=='reader_background' then
+        return type(value) == "string" and value:sub(1, 4096) or ""
     end
     return value
+end
+
+local function loaded_values(stored)
+    local values = copy(Settings.DEFAULTS)
+    for key,value in pairs(stored or {}) do values[key] = normalized(key,value) end
+    if stored and stored.progress_bar_mode == nil and stored.progress_bar == false then values.progress_bar_mode = "hidden" end
+    if stored and stored.progress_bar ~= nil then values.progress_bar = normalized("progress_bar", stored.progress_bar)
+    else values.progress_bar = values.progress_bar_mode ~= "hidden" end
+    values.schema_version = Settings.SCHEMA_VERSION
+    return values
 end
 
 local MAX_SETTINGS_BYTES = 64 * 1024
@@ -178,6 +263,8 @@ local function validate_settings(value)
         if key == "schema_version" then
             if child ~= Settings.SCHEMA_VERSION then error("unsupported settings schema") end
         elseif expected == nil or type(child) ~= type(expected) then error("unknown or invalid setting")
+        elseif key == "shelf_categories" then
+            for _, name in ipairs(child) do if type(name) ~= "string" or #name == 0 or #name > 40 then error("invalid shelf category") end end
         elseif type(child) == "table" then error("settings values must be scalar") end
     end
     local function integer_range(key, low, high)
@@ -186,14 +273,36 @@ local function validate_settings(value)
     end
     integer_range("prefetch", 0, 10); integer_range("concurrency", 2, 3)
     integer_range("shelf_page", 5, 50); integer_range("redirects", 0, 5)
+    integer_range("cache_limit_mb", 50, 8192); integer_range("cache_cleanup_threshold_mb", 50, 8192)
+    integer_range("cache_retain_mb", 50, 8192)
+    local cache_limit = value.cache_limit_mb or Settings.DEFAULTS.cache_limit_mb
+    local cache_threshold = value.cache_cleanup_threshold_mb or Settings.DEFAULTS.cache_cleanup_threshold_mb
+    local cache_retain = value.cache_retain_mb or Settings.DEFAULTS.cache_retain_mb
+    if cache_retain > cache_threshold or cache_threshold > cache_limit then
+        error("cache limits must satisfy retain <= threshold <= limit")
+    end
+    integer_range("progress_bar_font_size", 8, 22); integer_range("progress_bar_height", 16, 48)
+    integer_range('receipt_width',50,95);integer_range('receipt_height',55,95)
+    integer_range('reader_background_scale',25,200);integer_range('reader_background_y',0,100);integer_range('reader_background_x',-100,100)
+    integer_range('reader_header_font_size',8,18);integer_range('reader_footer_font_size',8,18)
+    if value.receipt_style~=nil and not ReceiptStyles.allowed[value.receipt_style] then error('invalid receipt style') end
+    if value.progress_bar_mode ~= nil and not ({hidden=true,bar=true,details=true})[value.progress_bar_mode] then error("invalid progress bar mode") end
     integer_range("pagination", 1, 20); integer_range("max_response_bytes", 1, 4 * 1024 * 1024)
     if value.timeout ~= nil and (value.timeout < 1 or value.timeout > 20) then error("setting out of range") end
+    if value.search_timeout ~= nil and (value.search_timeout < 1 or value.search_timeout > 20) then error("setting out of range") end
     if value.max_concurrency ~= nil and value.max_concurrency ~= 3 then error("invalid settings bound") end
     if value.prefetch_min ~= nil and value.prefetch_min ~= 0 then error("invalid settings bound") end
     if value.prefetch_max ~= nil and value.prefetch_max ~= 10 then error("invalid settings bound") end
     if value.log_level ~= nil and not ({ debug = true, info = true, warn = true, error = true })[value.log_level] then
         error("invalid log level")
     end
+    if value.shelf_source ~= nil and not ({sources=true, ["local"]=true, mixed=true})[value.shelf_source] then error("invalid shelf source") end
+    if value.side_toc_position ~= nil and not ({left=true,right=true})[value.side_toc_position] then error("invalid side TOC position") end
+    local corners = { time=true, title=true, chapter_page=true, chapter=true, progress=true, off=true }
+    for _, key in ipairs({ "reader_corner_tl", "reader_corner_tc", "reader_corner_tr", "reader_corner_bl", "reader_corner_br" }) do
+        if value[key] ~= nil and not corners[value[key]] then error("invalid reader corner") end
+    end
+    if value.local_dir ~= nil and (#value.local_dir > 4096 or value.local_dir:find('%z')) then error("invalid local directory") end
     return value
 end
 
@@ -294,11 +403,7 @@ function Settings.new(adapter, options)
     adapter = adapter or default_adapter(options) or { read = function() return {} end, write = function() return true end }
     local read_ok, stored = true, {}
     if adapter.read then read_ok, stored = pcall(adapter.read) end
-    local values = copy(Settings.DEFAULTS)
-    if read_ok and type(stored) == "table" then
-        for key, value in pairs(stored) do values[key] = normalized(key, value) end
-    end
-    values.schema_version = Settings.SCHEMA_VERSION
+    local values = loaded_values(read_ok and type(stored) == "table" and stored or nil)
     local self = setmetatable({ adapter = adapter, values = values, storage_path = adapter.path }, Settings)
     if not read_ok or type(stored) ~= "table" then
         self.recovery_required = adapter.recovery_required == true
@@ -332,6 +437,7 @@ function Settings:set(key, value)
     end
     local candidate = copy(self.values)
     candidate[key] = normalized(key, value)
+    if key == "progress_bar_mode" then candidate.progress_bar = candidate[key] ~= "hidden" end
     local written, err = self:_write(candidate)
     if not written then self.init_error, self.initial_write_failed = err, true; return nil, err end
     self.values, self.init_error, self.initial_write_failed = candidate, nil, false
@@ -346,9 +452,7 @@ function Settings:retryRecovery()
         self.init_error = Errors.new(Errors.RECOVERY_REQUIRED, "settings file recovery is still required")
         return nil, self.init_error
     end
-    local candidate = copy(Settings.DEFAULTS)
-    for key, value in pairs(stored) do candidate[key] = normalized(key, value) end
-    candidate.schema_version = Settings.SCHEMA_VERSION
+    local candidate = loaded_values(stored)
     local written, write_error = self:_write(candidate)
     if not written then
         self.recovery_required = true

@@ -5,7 +5,7 @@ local Sanitizer = require("legado.lib.diagnostic_sanitizer")
 local Diagnostics = {}
 Diagnostics.__index = Diagnostics
 
-local step_names = { "search", "result", "catalog", "content" }
+local step_names = { "search", "book_info", "catalog", "content" }
 
 local function safe_number(value)
     local ok, number = pcall(tonumber, value)
@@ -179,7 +179,11 @@ function Diagnostics:run(source, keyword, callback)
         return self.service:search(keyword, { safe_field(source, "id") or safe_field(source, "bookSourceUrl") }, 1,
             function(result, err, metadata)
                 if state.completed or state.cancelled then return end
-                if err or type(result) ~= "table" then fail(1, err, metadata, "SEARCH_FAILED"); return end
+                if err or type(result) ~= "table" then
+                    local failures = safe_field(result, "errors")
+                    fail(1, safe_field(failures, 1) or err, metadata, "SEARCH_FAILED")
+                    return
+                end
                 local groups = safe_field(result, "groups")
                 if type(groups) ~= "table" then fail(1, nil, metadata, "SEARCH_FAILED"); return end
                 finish_step(search_step, metadata)
@@ -189,17 +193,20 @@ function Diagnostics:run(source, keyword, callback)
                 local result_step = begin(2)
                 local first = safe_field(groups, 1)
                 local selected = type(first) == "table" and safe_field(first, "book") or nil
-                finish_step(result_step, nil)
                 if type(selected) ~= "table" then
-                    result_step.status = "failed"
-                    result_step.error = { code = "NO_SEARCH_RESULT", message = "诊断步骤失败" }
-                    skip_after(2)
-                    complete("failed")
+                    fail(2, nil, nil, "NO_SEARCH_RESULT")
                     return
                 end
-                result_step.status = "success"
-                result_step.field_counts.fields = count_fields(selected, { "name", "author", "url", "cover_url", "intro", "kind", "last_chapter" })
-                run_catalog(selected)
+                attach(2, function()
+                    return self.service:getBookInfo(source, selected, function(info, info_error, info_metadata)
+                        if state.completed or state.cancelled then return end
+                        if info_error or type(info) ~= "table" then fail(2, info_error, info_metadata, "BOOK_INFO_FAILED"); return end
+                        finish_step(result_step, info_metadata)
+                        result_step.status = "success"
+                        result_step.field_counts.fields = count_fields(info, { "name", "author", "url", "cover_url", "intro", "kind", "last_chapter", "toc_url" })
+                        run_catalog(info)
+                    end)
+                end, "BOOK_INFO_FAILED")
             end)
     end, "SEARCH_FAILED")
 

@@ -89,7 +89,7 @@ do
     truthy(transport.requests[1].body:find('"q":"A b"', 1, true), "JSON body encoded")
     equal("yes", transport.requests[1].headers["X-Custom"], "custom header retained")
     equal(20, transport.requests[1].timeout, "timeout hard limit")
-    equal(4 * 1024 * 1024, transport.requests[1].max_bytes, "byte hard limit")
+    equal(5 * 1024 * 1024, transport.requests[1].max_bytes, "byte hard limit matches source import")
     equal(5, transport.requests[1].max_redirects, "redirect hard limit")
     equal(3, engine:getConcurrencyLimit(), "concurrency contract clamps at three")
 
@@ -301,6 +301,12 @@ do
     equal("SITE_REJECTED", mapped_error({ status = 429, chunks = { "slow down" } }).code, "429 mapping")
     equal("SITE_REJECTED", mapped_error({ status = 200, chunks = { "<title>Just a moment...</title> Cloudflare" } }).code, "Cloudflare page mapping")
     equal("SITE_REJECTED", mapped_error({ status = 200, chunks = { "Please complete the CAPTCHA challenge" } }).code, "captcha page mapping")
+    equal(nil, mapped_error({ status = 200, chunks = {
+        '<html><title>Book details</title><h1>Book</h1><script src="https://turing.captcha.qcloud.com/TCaptcha.js"></script></html>',
+    } }), "optional SF login CAPTCHA script does not block public book details")
+    equal(nil, mapped_error({ status = 200, chunks = {
+        '<html><title>Book details</title><script src="https://cdnjs.cloudflare.com/ajax/libs/example.js"></script></html>',
+    } }), "ordinary CDN assets are not a challenge page")
 end
 
 do
@@ -613,6 +619,16 @@ do
     scheduler:runAll()
     equal(nil, second[1][2], "host with port remains valid")
     equal("https://books.test:8443/path", transport.requests[2].url, "port authority is preserved")
+end
+
+do
+    local body = string.rep(" ", 4 * 1024 * 1024 + 256 * 1024) .. "[]"
+    local _, scheduler, _, callbacks = run_fallback({
+        { status = 200, headers = { ["Content-Type"] = "application/json; charset=utf-8" }, chunks = { body } },
+    }, { url = "https://sources.test/collection.json", max_bytes = 5 * 1024 * 1024 })
+    scheduler:runAll()
+    equal(nil, callbacks[1].err, "a source collection larger than 4 MiB is accepted within the import limit")
+    equal(#body, #callbacks[1].response.body, "the complete collection reaches the importer")
 end
 
 return assertions

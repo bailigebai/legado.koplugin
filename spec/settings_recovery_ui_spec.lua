@@ -50,6 +50,26 @@ end
 truthy(type(retry_item and retry_item.callback) == "function", "retry action is keyboard-focusable")
 truthy(type(reset_item and reset_item.callback) == "function", "reset action is keyboard-focusable")
 
+local nested_view = {
+    values = { progress_bar = true, progress_bar_mode = "details", progress_bar_font_size = 12, progress_bar_height = 24 },
+    refresh = function(self) return self.values end,
+    status = function() return { recovery_required = true } end,
+    set = function() return nil, { code = "RECOVERY_REQUIRED" } end,
+    retryRecovery = function() return false, { code = "RECOVERY_REQUIRED" } end,
+}
+local progress_menu = presenter:_readerProgressSettings(nested_view)
+local progress_recovery = false
+for _, item in ipairs(progress_menu.item_table) do
+    if item.text == "设置文件损坏，普通保存已锁定" then progress_recovery = true end
+end
+truthy(progress_recovery, "bottom progress settings expose recovery state")
+local chrome_menu = presenter:_readerChromeSettings(nested_view)
+local chrome_recovery = false
+for _, item in ipairs(chrome_menu.item_table) do
+    if item.text == "设置文件损坏，普通保存已锁定" then chrome_recovery = true end
+end
+truthy(chrome_recovery, "header footer settings expose recovery state")
+
 retry_item.callback()
 equal(true, view:status().recovery_required, "retry against unchanged corrupt bytes remains locked")
 equal(corrupt, files[path], "failed retry preserves corrupt canonical bytes")

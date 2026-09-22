@@ -21,6 +21,7 @@ local function dependencies(injected)
         frame = injected.frame or require("ui/widget/container/framecontainer"),
         image = injected.image or require("ui/widget/imagewidget"),
         text = injected.text or require("ui/widget/textwidget"),
+        font = injected.font or require("ui/font"),
         ui_manager = injected.ui_manager or require("ui/uimanager"),
         device = injected.device or optional("device"),
     }
@@ -30,37 +31,58 @@ function CoverGrid.new(options)
     options = options or {}
     local deps = dependencies(options.dependencies)
     local model, layout, rows, cells = options.model or { items = {} }, {}, {}, {}
+    local close_grid
+    local function navigate(callback, ...)
+        if not close_grid() then return false end
+        return callback(...)
+    end
+    local screen = deps.device and deps.device.screen
+    local function scale(value) return screen and screen.scaleBySize and screen:scaleBySize(value) or value end
+    local cell_width = math.floor((screen and screen:getWidth() or 600) / 3) - scale(12)
+    local cover_width = math.min(options.cover_width or scale(120), cell_width)
+    local cover_height = options.cover_height or scale(160)
+    local function cover_for(item)
+        if item.cover then return deps.image:new({ file = item.cover, width = cover_width, height = cover_height, scale_factor = 0 }) end
+        return deps.text:new({ text = item.cover_text or "无封面", face = deps.font:getFace("cfont", 18),
+            max_width = cover_width, forced_height = cover_height, forced_baseline = math.floor(cover_height / 2) })
+    end
     for offset = 1, #(model.items or {}), 3 do
         local focus_row, visual_row = {}, {}
         for column = 0, 2 do
             local item = model.items[offset + column]
             if item then
-                local cover
-                if item.cover then cover = deps.image:new({ file = item.cover, width = options.cover_width or 120, height = options.cover_height or 160, scale_factor = 0 })
-                else cover = deps.text:new({ text = item.cover_text or "无封面", width = options.cover_width or 120 }) end
-                local button = deps.button:new({ text = item.title or "未命名", callback = function() if options.on_select then return options.on_select(item.book) end end })
+                local cover = cover_for(item)
+                local button = deps.button:new({ text = item.title or "未命名", width = cell_width, radius = scale(10), avoid_text_truncation = false,
+                    callback = function() if options.on_select then return navigate(options.on_select, item.book) end end })
                 local visual = deps.vertical_group:new({ cover, button })
                 cells[#cells + 1] = { item = item, visual = visual, button = button }
-                visual_row[#visual_row + 1] = deps.frame:new({ visual })
+                visual_row[#visual_row + 1] = deps.frame:new({ padding = scale(4), bordersize = scale(1), radius = scale(8), visual })
                 focus_row[#focus_row + 1] = button
             end
         end
         rows[#rows + 1] = deps.horizontal_group:new(visual_row)
         layout[#layout + 1] = focus_row
     end
-    local controls, focus_controls = {}, {}
-    local close_grid
+    local controls = {}
     local function control(text, callback)
         if callback then
-            local button = deps.button:new({ text = text, callback = callback })
-            controls[#controls + 1], focus_controls[#focus_controls + 1] = button, button
+            local button = deps.button:new({ text = text, callback = callback, width = cell_width, radius = scale(10), avoid_text_truncation = false })
+            controls[#controls + 1] = button
         end
     end
     control("上一页", options.on_prev)
     control("文字模式", options.on_toggle)
     control("下一页", options.on_next)
+    for _, extra in ipairs(options.extra_controls or {}) do
+        if extra.callback then control(extra.text, function() return navigate(extra.callback) end) end
+    end
     control("返回", function() return close_grid() end)
-    if #controls > 0 then rows[#rows + 1] = deps.horizontal_group:new(controls); layout[#layout + 1] = focus_controls end
+    for offset = 1, #controls, 3 do
+        local row = {}
+        for index = offset, math.min(offset + 2, #controls) do row[#row + 1] = controls[index] end
+        rows[#rows + 1] = deps.horizontal_group:new(row)
+        layout[#layout + 1] = row
+    end
     local Grid = deps.focus_manager
     if type(deps.focus_manager.extend) == "function" then Grid = deps.focus_manager:extend({}) end
     local widget = Grid:new({ layout = layout, deps.vertical_group:new(rows) })
@@ -100,8 +122,11 @@ function CoverGrid.new(options)
     for _, cell in ipairs(cells) do
         cell.item.on_update = function(item)
             if not widget.alive then return end
-            if item.cover then cell.visual[1] = deps.image:new({ file = item.cover, width = options.cover_width or 120, height = options.cover_height or 160, scale_factor = 0 }) end
+            local old_cover = cell.visual[1]
+            cell.visual[1] = cover_for(item)
+            if type(old_cover.free) == "function" then old_cover:free() end
             if type(cell.visual.resetLayout) == "function" then cell.visual:resetLayout() end
+            for _, row in ipairs(rows) do if type(row.resetLayout) == "function" then row:resetLayout() end end
             if widget[1] and type(widget[1].resetLayout) == "function" then widget[1]:resetLayout() end
             if deps.ui_manager and type(deps.ui_manager.setDirty) == "function" then deps.ui_manager:setDirty(widget, "ui") end
         end

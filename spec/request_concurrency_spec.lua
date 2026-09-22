@@ -165,4 +165,39 @@ do
     equal(0, callbacks, "cancelled request never calls back before successor runs")
 end
 
+do
+    local engine, scheduler, _, transport = engine_with({ concurrency = 1, polls_before_done = 1 })
+    engine:execute({ url = 'https://books.test/active' }, function() end)
+    engine:execute({ url = 'https://books.test/background', priority = 'background' }, function() end)
+    engine:execute({ url = 'https://books.test/next', priority = 'next' }, function() end)
+    engine:execute({ url = 'https://books.test/foreground', priority = 'foreground' }, function() end)
+    scheduler:runAll(100)
+    equal('https://books.test/foreground', transport.requests[2].url, 'explicit reading overtakes queued prefetch')
+    equal('https://books.test/next', transport.requests[3].url, 'next chapter overtakes background work')
+    equal('https://books.test/background', transport.requests[4].url, 'background work eventually completes')
+end
+
+do
+    local engine, scheduler, subprocess, transport = engine_with({ concurrency = 1, polls_before_done = 1 })
+    engine:execute({ url = 'https://books.test/active' }, function() end)
+    local promoted = engine:execute({ url = 'https://books.test/promoted', priority = 'background' }, function() end)
+    engine:execute({ url = 'https://books.test/next', priority = 'next' }, function() end)
+    equal(true, promoted:promote('foreground'), 'queued chapter can be raised to reading priority')
+    equal(false, promoted:promote('background'), 'promotion cannot lower priority')
+    equal(1, #subprocess.children, 'promotion does not create another worker')
+    scheduler:runAll(100)
+    equal('https://books.test/promoted', transport.requests[2].url, 'promotion changes actual dispatch order')
+    equal(false, promoted:promote('foreground'), 'completed handle cannot be promoted')
+end
+
+do
+    local engine, scheduler, _, transport = engine_with({ concurrency = 1, polls_before_done = 1 })
+    engine:execute({ url = 'https://books.test/active' }, function() end)
+    engine:execute({ url = 'https://books.test/background', priority = 'background' }, function() end)
+    for index = 1, 10 do engine:execute({ url = 'https://books.test/reading/' .. index, priority = 'foreground' }, function() end) end
+    scheduler:runAll(200)
+    equal('https://books.test/background', transport.requests[6].url, 'oldest background request runs after at most four overtakes')
+    equal(12, #transport.requests, 'fair scheduling drains every request')
+end
+
 return count

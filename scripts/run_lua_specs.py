@@ -63,7 +63,7 @@ def main() -> int:
             for item in arguments.spec
         ]
         if arguments.spec
-        else sorted(SPEC_ROOT.glob("*_spec.lua"))
+        else sorted(SPEC_ROOT.rglob("*_spec.lua"))
     )
     if not specs:
         print("No Lua specs found.", file=sys.stderr)

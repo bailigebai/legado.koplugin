@@ -1,6 +1,8 @@
+require("library_screen_stub")
 local assertx = require("assertions")
 local Presenter = require("legado.ui.presenter")
 local CoverGrid = require("legado.ui.cover_grid")
+package.preload["ui/font"] = function() return {getFace=function() return {} end} end
 
 -- These fakes retain the close contract of KOReader's Menu and FocusManager:
 -- Menu:onClose invokes close_callback, while a focus widget closes through its
@@ -113,9 +115,12 @@ do
         alternatives = {},
     }
     local widget = presenter:show(detail)
-    assertx.equal("详情加载失败（书源诊断）", widget.item_table[1].text, "detail failure remains visible")
-    assertx.truthy(type(widget.item_table[1].callback) == "function", "detail failure exposes a clickable diagnostic route")
-    widget.item_table[1].callback()
+    assertx.truthy(widget.subtitle:find("详情加载失败",1,true), "detail failure remains visible inline")
+    local diagnostic_action
+    widget.actions[2].callback()
+    for _,action in ipairs(shown[#shown].items) do if action.text=="详情诊断" then diagnostic_action=action end end
+    assertx.truthy(diagnostic_action, "detail failure exposes a clickable diagnostic route")
+    diagnostic_action.callback()
     local diagnostic = shown[#shown]
     assertx.truthy(diagnostic.text:find("NETWORK_ERROR", 1, true) ~= nil, "detail diagnostic includes structured error code")
     assertx.truthy(diagnostic.text:find("partial", 1, true) ~= nil, "detail diagnostic includes compatibility report")
@@ -141,7 +146,9 @@ do
     package.preload["legado.lib.storage"] = function() return { new = function() return { listShelf = function() return {} end, listSources = function() return {} end, getSource = function() end } end } end
     package.preload["legado.lib.request_engine"] = function() return { new = function(options) return { scheduler = options.scheduler, execute = function() return { cancel = function() return true end } end } end } end
     local Bootstrap = require("legado.ui.bootstrap")
-    local app = Bootstrap.build({ ui = { handleEvent = function(_, received) event = received; return false end } })
+    local app = Bootstrap.build({ ui = { handleEvent = function(_, received) event = received; return false end } }, {
+        settings_adapter = { read = function() return { default_sources_initialized = true } end, write = function() return true end },
+    })
     assertx.equal(false, app:openSettings().actions[1].callback(), "unhandled reader appearance event reports failure")
     assertx.equal("ShowConfigMenu", event.name, "appearance action sends the KOReader ShowConfigMenu event")
     assertx.truthy(messages[#messages].text:find("阅读界面", 1, true) ~= nil, "unhandled reader appearance event explains the required reader context")

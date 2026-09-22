@@ -1,3 +1,4 @@
+require("library_screen_stub")
 local assertx = require("assertions")
 local App = require("legado.ui.app")
 local Downloads = require("legado.ui.downloads")
@@ -84,13 +85,16 @@ do
         id = "book-presenter", source_id = "source-ui", name = "详情下载",
     })
     local detail_menu = presenter:show(detail)
+    for _,item in ipairs(detail_menu.actions) do
+        if item.text=="更多" then item.callback(); break end
+    end
     local download_action
-    for _, item in ipairs(detail_menu.item_table) do
+    for _, item in ipairs(shown[#shown].item_table) do
         if item.text == "下载整本" then download_action = item; break end
     end
-    truthy(download_action, "detail presenter exposes the whole-book download action")
+    truthy(download_action, "detail More menu exposes the whole-book download action")
     download_action.callback()
-    equal("string", type(shown[#shown].text), "queued task result is rendered as a user-facing message, not a table")
+    equal("string", type(shown[#shown].subtitle), "queued task result is rendered as a user-facing message, not a table")
 end
 
 do
@@ -134,7 +138,16 @@ do
     scheduled[1].callback()
     truthy(menu.item_table[1].text:find("1/2", 1, true), "scheduled refresh updates the existing menu in place")
     equal(1, #shown, "scheduled refresh never opens a background popup")
+    menu.item_table[1].callback()
     menu.close_callback()
+    local actions = shown[#shown]
+    actions.close_callback()
+    equal(true, view.alive, "leaving download actions restores the list model")
+    truthy(view.refresh_action, "returning to downloads retains its refresh timer")
+    shown[#shown].close_callback()
+    local scheduled_count = #scheduled
+    scheduled[scheduled_count].callback()
+    equal(scheduled_count, #scheduled, "dismissed download menu cannot renew its refresh timer")
 end
 
 return count

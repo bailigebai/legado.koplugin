@@ -68,4 +68,16 @@ if ($actualHash -ne $archiveSha256) {
 }
 
 & $python (Join-Path $PSScriptRoot "check_koreader_compat.py") --plugin-root (Join-Path $repositoryRoot "legado.koplugin") --source-root $sourceRoot --kindlehf-archive $archivePath --tag $tag
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+$previousSource = $env:LEGADO_KOREADER_SOURCE
+try {
+    $env:LEGADO_KOREADER_SOURCE = $sourceRoot
+    & $python (Join-Path $PSScriptRoot "run_lua_specs.py") --spec spec/native_entry_spec.lua --spec spec/native_menu_startup_spec.lua --spec spec/native_home_widget_spec.lua --spec spec/native_reader_toolbar_spec.lua --spec spec/native_reading_screen_spec.lua --spec spec/native_reading_flow_spec.lua --spec spec/native_progress_bar_spec.lua --spec spec/native_receipt_screen_spec.lua --spec spec/receipt_repaint_spec.lua --spec spec/native_session_workflow_spec.lua --spec spec/session_shell_spec.lua --spec spec/book_reader_settings_spec.lua
+    $contractExit = $LASTEXITCODE
+} finally {
+    $env:LEGADO_KOREADER_SOURCE = $previousSource
+}
+if ($contractExit -ne 0) { exit $contractExit }
+& $python (Join-Path $repositoryRoot "spec\official_sqlite_test.py")
 exit $LASTEXITCODE

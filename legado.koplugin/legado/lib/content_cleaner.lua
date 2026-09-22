@@ -116,7 +116,21 @@ function Cleaner.normalize(input, options)
         end
     end
     if cursor <= #input then out[#out + 1] = escape_text(input:sub(cursor)) end
-    local value = table.concat(out):gsub("&nbsp;", " "):gsub("<p>%s*</p>", "")
+    local value = table.concat(out):gsub("&nbsp;", " ")
+    value = value:gsub('<p>(.-)</p>', function(content)
+        if content:find('<img',1,true) then return '<p>'..content..'</p>' end
+        local text = content:gsub('<[^>]*>',''):gsub('&#160;',''):gsub('&#[xX]0*[aA]0;','')
+            :gsub('　',''):gsub('\194\160',''):gsub('\226\128\139','')
+        if not text:match('%S') then return '' end
+        return '<p>'..content..'</p>'
+    end)
+    local reversed, tail = value:reverse(), 1
+    while true do
+        local _,last = reversed:find('^%s*>rb<',tail)
+        if not last then break end
+        tail=last+1
+    end
+    value=value:sub(1,#value-tail+1)
     local headings = {}
     for level = 1, 6 do
         local tag = "h" .. level

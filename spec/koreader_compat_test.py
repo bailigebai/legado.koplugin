@@ -14,6 +14,7 @@ plugin = ROOT / "legado.koplugin"
 modules = check.referenced_modules(plugin)
 assert "ffi/archiver" in modules, "pcall(require, ...) must be parsed"
 assert "apps/reader/readerui" in modules, "reader UI dependency must be parsed"
+assert "fontlist" in modules, "independent font selector must use the real frontend/fontlist module"
 assert check.EXPECTED_COMMIT == "9192014d8bd82a91dc1012473be0f238dedfdb54"
 
 archive = ROOT / ".tools" / "koreader-kindlehf-v2026.07.1.zip"
@@ -29,6 +30,7 @@ with tempfile.TemporaryDirectory(prefix="legado-koreader-spec-") as temporary:
         message = str(error)
         assert "source:ffi/archiver" in message
         assert "source:apps/reader/readerui" in message
+        assert "source:fontlist" in message
     else:
         raise AssertionError("checker accepted source fixture without archiver and reader UI")
 

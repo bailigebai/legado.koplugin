@@ -30,6 +30,11 @@ local function sorted_keys(value)
     return keys
 end
 
+local function core_value_present(field, value)
+    if type(value) == "string" then return not value:match("^%s*$") end
+    return field ~= "searchUrl" and type(value) == "table" and next(value) ~= nil
+end
+
 function Scanner.scan(source)
     source = type(source) == "table" and source or {}
     local issues, capabilities = {}, {}
@@ -37,7 +42,7 @@ function Scanner.scan(source)
 
     for _, definition in ipairs(core_fields) do
         local value = source[definition.field]
-        if type(value) ~= "string" or value:match("^%s*$") then
+        if not core_value_present(definition.field, value) then
             capabilities[definition.capability] = false
             add_issue(issues, definition.field, definition.missing, "required " .. definition.field .. " is missing")
         end

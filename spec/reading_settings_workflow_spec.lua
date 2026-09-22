@@ -1,3 +1,4 @@
+require("library_screen_stub")
 local assertx = require("assertions")
 local Catalog = require("legado.ui.catalog")
 local BookDetail = require("legado.ui.book_detail")
@@ -52,7 +53,7 @@ local before = #shown
 local returned = menu.item_table[2].callback()
 if menu.close_callback then menu.close_callback() end
 equal("table", type(returned), "touch or key selection starts reading instead of returning a chapter table")
-equal(before, #shown, "successful reader handle is not rendered as InfoMessage text")
+equal(before + 1, #shown, "successful reader handle keeps a loading surface until ready")
 async_callback(nil, { code = "NETWORK_ERROR", message = "failed" })
 equal("info", shown[#shown].kind, "asynchronous chapter failure is visible")
 
@@ -65,7 +66,7 @@ local failing_catalog = Catalog.new({ { uid = "bad", title = "Bad" } }, nil,
 local failing_menu = presenter:show(failing_catalog)
 before = #shown
 failing_menu.item_table[1].callback()
-equal(before + 1, #shown, "synchronous chapter failure is rendered exactly once")
+equal(before + 1, #shown, "synchronous chapter failure replaces the loading surface once")
 
 -- Detail's start-reading action follows the same result policy.
 local success_detail = {
@@ -79,7 +80,7 @@ local reading_action
 for _, item in ipairs(detail_menu.item_table) do if item.text == "开始阅读" then reading_action = item end end
 before = #shown
 reading_action.callback()
-equal(before, #shown, "detail reader handle is not coerced into an info message")
+equal(before + 1, #shown, "detail reader handle keeps a loading surface")
 
 -- Settings validate, persist and remain reachable through focused menu actions.
 local persisted = {}
@@ -107,7 +108,7 @@ local settings_menu = presenter:show(view)
 equal(true, type(settings_menu.item_table[1].callback) == "function", "timeout row is focusable and actionable")
 equal(true, type(settings_menu.item_table[2].callback) == "function", "concurrency row is focusable and actionable")
 equal(true, type(settings_menu.item_table[3].callback) == "function", "prefetch row is focusable and actionable")
-equal(true, type(settings_menu.item_table[4].callback) == "function", "shelf-page row is focusable and actionable")
+equal("书架布局：每页 4 × 3 本", settings_menu.item_table[4].text, "fixed shelf layout is described without an ineffective page-size setting")
 settings_menu.item_table[3].callback()
 if settings_menu.close_callback then settings_menu.close_callback() end
 local prefetch_dialog = shown[#shown]

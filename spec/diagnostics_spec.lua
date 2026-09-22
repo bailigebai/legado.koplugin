@@ -30,6 +30,10 @@ local function fake_service()
         self.catalog_source, self.catalog_book = value_source, value_book
         return queue(self, "catalog", callback)
     end
+    function service:getBookInfo(value_source, value_book, callback)
+        self.info_source, self.info_book = value_source, value_book
+        return queue(self, "book_info", callback)
+    end
     function service:getContent(value_source, value_book, value_chapter, callback)
         self.content_source, self.content_book, self.content_chapter = value_source, value_book, value_chapter
         return queue(self, "content", callback)
@@ -55,17 +59,21 @@ do
     equal("search", service.calls[1], "search starts first")
     service:respond(1, { groups = { { book = book, alternatives = { book } } }, errors = {} }, nil,
         { http_status = 200, charset = "utf-8" })
-    equal("catalog", service.calls[2], "catalog waits for a selected search result")
-    equal(book, service.catalog_book, "first search result is selected deterministically")
-    service:respond(2, { chapter }, nil, { http_status = 206, charset = "gb18030" })
-    equal("content", service.calls[3], "content waits for catalog completion")
+    equal("book_info", service.calls[2], "detail waits for a selected search result")
+    equal(book, service.info_book, "first search result is selected deterministically")
+    local details = { id = book.id, source_id = book.source_id, name = book.name, url = book.url, toc_url = "https://books.test/toc/1" }
+    service:respond(2, details, nil, { http_status = 200, charset = "utf-8" })
+    equal("catalog", service.calls[3], "catalog waits for details")
+    equal(details, service.catalog_book, "catalog uses the enriched book model")
+    service:respond(3, { chapter }, nil, { http_status = 206, charset = "gb18030" })
+    equal("content", service.calls[4], "content waits for catalog completion")
     equal(chapter, service.content_chapter, "first chapter is diagnosed")
-    service:respond(3, { content = "TOP SECRET CHAPTER BODY", pages = 1 }, nil,
+    service:respond(4, { content = "TOP SECRET CHAPTER BODY", pages = 1 }, nil,
         { http_status = 200, charset = "utf-8" })
     equal("completed", final.status, "all four diagnostic steps complete")
     equal(4, #final.steps, "report contains four ordered steps")
     equal("search", final.steps[1].name, "search is the first step")
-    equal("result", final.steps[2].name, "result selection is the second step")
+    equal("book_info", final.steps[2].name, "book details are the second step")
     equal("catalog", final.steps[3].name, "catalog is the third step")
     equal("content", final.steps[4].name, "content is the fourth step")
     equal("success", final.steps[4].status, "content step succeeds")
@@ -114,6 +122,10 @@ do
     end
     function complete_service:getChapters(_, _, callback)
         callback({ chapter }, nil, { http_status = 200 })
+        return { cancel = function() return false end }
+    end
+    function complete_service:getBookInfo(_, value, callback)
+        callback(value, nil, { http_status = 200 })
         return { cancel = function() return false end }
     end
     function complete_service:getContent(_, _, _, callback)
@@ -201,7 +213,8 @@ do
     local diagnostics = Diagnostics.new({ book_service = service, now = function() return 1 end })
     diagnostics:run(source, "book", function(report) final = report end)
     service:respond(1, { groups = { { book = book } }, errors = {} }, nil, { http_status = 200 })
-    service:respond(2, {}, nil, { http_status = 200 })
+    service:respond(2, book, nil, { http_status = 200 })
+    service:respond(3, {}, nil, { http_status = 200 })
     equal("failed", final.status, "empty catalog fails without throwing")
     equal("NO_CHAPTER", final.steps[3].error.code, "empty catalog has a stable error code")
     equal("skipped", final.steps[4].status, "empty catalog does not fetch content")
@@ -218,6 +231,10 @@ do
         self.catalog_callback = callback
         return { cancel = function() catalog_cancelled = catalog_cancelled + 1; return true end }
     end
+    function synchronous:getBookInfo(_, value, callback)
+        callback(value, nil, { http_status = 200 })
+        return { cancel = function() error("completed detail must not replace the active request") end }
+    end
     local final
     local handle = Diagnostics.new({ book_service = synchronous, now = function() return 1 end })
         :run(source, "book", function(report) final = report end)
@@ -225,6 +242,37 @@ do
     equal(0, search_cancelled, "completed synchronous search handle does not replace the active catalog handle")
     equal(1, catalog_cancelled, "cancellation reaches the actual active catalog handle")
     equal("cancelled", final.steps[3].status, "the actual active catalog step is cancelled")
+end
+
+do
+    local service = fake_service()
+    local final
+    Diagnostics.new({ book_service = service }):run(source, "book", function(report) final = report end)
+    service:respond(1, { groups = {}, errors = { { code = "UNSUPPORTED_RULE" } } },
+        { code = "NETWORK_ERROR", message = "all selected sources failed" })
+    equal("UNSUPPORTED_RULE", final.steps[1].error.code, "single-source diagnostics preserves the underlying parser failure")
+end
+
+do
+    local service = fake_service()
+    local final
+    Diagnostics.new({ book_service = service }):run(source, "book", function(report) final = report end)
+    service:respond(1, { groups = { { book = book } } })
+    service:respond(2, nil, { code = "PARSE_ERROR", message = "private detail response" }, { http_status = 200 })
+    equal("failed", final.status, "detail rule failures stop the diagnostic")
+    equal("PARSE_ERROR", final.steps[2].error.code, "detail failure identifies the actual stage")
+    equal("skipped", final.steps[3].status, "failed details do not request a catalog")
+    equal(2, #service.calls, "no downstream network requests after detail failure")
+    equal(nil, flatten(final):find("private detail response", 1, true), "detail response is not leaked into the report")
+
+    service = fake_service()
+    local handle = Diagnostics.new({ book_service = service }):run(source, "book", function(report) final = report end)
+    service:respond(1, { groups = { { book = book } } })
+    equal(true, handle:cancel(), "detail request can be cancelled")
+    equal(true, service.pending[2].cancelled, "cancellation reaches the active detail request")
+    equal("cancelled", final.steps[2].status, "detail step records cancellation")
+    service:respond(2, book)
+    equal(2, #service.calls, "late detail completion cannot request a catalog")
 end
 
 return count

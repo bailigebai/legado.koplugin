@@ -6,29 +6,19 @@ end
 
 local Plugin = require("main")
 local calls = {}
-Plugin._app = {
-    menuItems = function()
-        local labels = { "书架", "搜索", "书源管理", "下载管理", "设置", "关于" }
-        local methods = { "shelf", "search", "sources", "downloads", "settings", "about" }
-        local items = {}
-        for index, label in ipairs(labels) do
-            items[index] = { text = label, callback = function() calls[#calls + 1] = methods[index]; return methods[index] end }
-        end
-        return items
-    end,
-    openBookshelf = function() calls[#calls + 1] = "direct-shelf"; return "direct-shelf" end,
-}
+Plugin._app = {}
+local methods = { "openHome", "openBookshelf", "openSearch", "openSources", "openDownloads", "openSettings", "openAbout", "openDiscovery" }
+for _, method in ipairs(methods) do
+    Plugin._app[method] = function() calls[#calls + 1] = method; return method end
+end
 
 local menu = {}
 Plugin:addToMainMenu(menu)
 for _, item in ipairs(menu.legado.sub_item_table) do item.callback() end
-assertx.equal("shelf", calls[1], "shelf menu dispatches to app")
-assertx.equal("search", calls[2], "search menu dispatches to app")
-assertx.equal("sources", calls[3], "source menu dispatches to app")
-assertx.equal("downloads", calls[4], "download menu dispatches to app")
-assertx.equal("settings", calls[5], "settings menu dispatches to app")
-assertx.equal("about", calls[6], "about menu dispatches to app")
-assertx.equal("direct-shelf", Plugin:openBookshelf(), "public shelf entry delegates to app")
-assertx.equal("direct-shelf", Plugin:launch(), "stable launch entry opens shelf")
+for index, method in ipairs(methods) do
+    assertx.equal(method, calls[index], "menu dispatches to " .. method)
+end
+assertx.equal("openBookshelf", Plugin:openBookshelf(), "public shelf entry delegates to app")
+assertx.equal("openHome", Plugin:launch(), "stable launch entry opens home")
 
-return 8
+return 11

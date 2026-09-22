@@ -208,6 +208,7 @@ local function transactional_sqlite(state)
                 state.transaction = nil
                 return {}
             end
+            if sql:match("^PRAGMA") then return nil, 0 end
             if sql:find("CREATE TABLE", 1, true) or sql:find("INSERT INTO legado_v1_meta", 1, true) then return {} end
 
             local data = assert(state.transaction, "mutation outside transaction")
@@ -261,6 +262,7 @@ assertx.equal("Replacement", assert(sqlite_restarted:getSource("source-sql-repla
 
 local transaction_state = {}
 local transactional_storage = assert(Storage.new({ path = temporary_path("transactional"), sqlite_loader = function() return transactional_sqlite(transaction_state) end }))
+assertx.equal("sqlite", transactional_storage:backendName(), "transaction failure tests must not fall back to Lua storage")
 assert(transactional_storage:replaceSources({ { id = "source-tx-old", name = "Old source" } }))
 transaction_state.fail_next_commit = true
 local source_commit_ok, source_commit_error = transactional_storage:replaceSources({ { id = "source-tx-new", name = "New source" } })
@@ -375,4 +377,4 @@ local identity_key = Identity.source("https://user:synthetic-secret@example.test
 assertx.equal("source-nativehash", identity_key, "available KOReader hash is preferred")
 assertx.truthy(not sha_inputs[1]:find("synthetic%-secret", 1, false), "native hash input excludes credentials")
 
-return 56
+return 57

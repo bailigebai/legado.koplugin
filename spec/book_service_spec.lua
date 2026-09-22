@@ -61,7 +61,10 @@ local function controlled_engine()
         self.peak = math.max(self.peak, self.active)
         local entry = { request = request, callback = callback, done = false, cancelled = false }
         self.pending[#self.pending + 1] = entry
-        return { cancel = function()
+        return { promote = function(_, priority)
+            if entry.done or entry.cancelled then return false end
+            request.priority = priority; return true
+        end, cancel = function()
             if entry.done or entry.cancelled then return false end
             entry.cancelled = true; engine.cancelled = engine.cancelled + 1; engine.active = engine.active - 1
             return true
@@ -111,6 +114,19 @@ do
     equal("https://a.test/cover/1.jpg", result.groups[1].book.cover_url, "root-relative cover resolves from response final URL")
     equal(1, #result.groups[1].alternatives, "group retains its first source alternative")
     equal(false, handle:isCancelled(), "completed composite handle is not cancelled")
+end
+
+-- The source-switch screen opts into a short-lived burst without changing
+-- the normal two-request search contract.
+do
+    local request = controlled_engine()
+    local service = new_service(request, 2)
+    service.fast_search_concurrency = BookService.FAST_SEARCH_CONCURRENCY
+    local ids = {}
+    for _ = 1, 10 do ids[#ids + 1] = "a" end
+    local handle = service:search("burst", ids, 1, function() end)
+    equal(4, #request.requests, "fast source matching starts four bounded requests")
+    handle:cancel()
 end
 
 do
@@ -197,6 +213,45 @@ end
 do
     local request = controlled_engine()
     local service = new_service(request, 2)
+    local source = {
+        id = "duplicate-links", bookSourceUrl = "https://links.test/",
+        ruleBookInfo = { name = "h1@text", intro = "tag.p@text", bookUrl = "class.book@href",
+            coverUrl = "tag.img@src", tocUrl = "class.toc@href" },
+        ruleToc = { chapterList = "li", chapterName = "a@text", chapterUrl = "tag.a@href", nextTocUrl = "class.next@href" },
+        ruleContent = { content = "p@text", nextContentUrl = "class.next@href" },
+    }
+    local seed = Models.book(source, { name = "Seed", url = "/book" }, source.bookSourceUrl)
+    local detail, chapters, content
+    service:getBookInfo(source, seed, function(value, err) assert(not err); detail = value end)
+    request:respond(1, { status = 200, final_url = seed.url, body = [[
+        <h1>Book</h1><p>First paragraph</p><p>Second paragraph</p>
+        <a class="book" href="/book">Book</a><a class="book" href="/other">Other</a>
+        <img src="/cover.jpg"><img src="/other.jpg">
+        <a class="toc" href="/toc">Catalog</a><a class="toc" href="https://links.test/toc">Catalog</a>
+    ]] })
+    equal("https://links.test/book", detail.url, "book URL uses first match")
+    equal("https://links.test/cover.jpg", detail.cover_url, "cover URL uses first match")
+    equal("https://links.test/toc", detail.toc_url, "duplicate catalog links are not concatenated")
+    equal("First paragraph\nSecond paragraph", detail.intro, "text fields keep all paragraphs")
+    service:getChapters(source, detail, function(value, err) assert(not err); chapters = value end)
+    request:respond(2, { status = 200, final_url = detail.toc_url, body = [[
+        <ul><li><a href="/one">One</a><a href="/one">One</a></li></ul>
+        <a class="next" href="/toc2">Next</a><a class="next" href="/toc2">Next</a>
+    ]] })
+    equal("https://links.test/toc2", request.requests[3].url, "catalog pagination uses first match")
+    request:respond(3, { status = 200, final_url = "https://links.test/toc2", body = "<ul></ul>" })
+    equal("https://links.test/one", chapters[1].url, "chapter URL uses first match")
+    service:getContent(source, detail, chapters[1], function(value, err) assert(not err); content = value end)
+    request:respond(4, { status = 200, final_url = chapters[1].url,
+        body = '<p>Part one</p><a class="next" href="/one2">Next</a><a class="next" href="/one2">Next</a>' })
+    equal("https://links.test/one2", request.requests[5].url, "content pagination uses first match")
+    request:respond(5, { status = 200, final_url = "https://links.test/one2", body = "<p>Part two</p>" })
+    equal("Part one\nPart two", content.content, "text across content pages remains intact")
+end
+
+do
+    local request = controlled_engine()
+    local service = new_service(request, 2)
     service:search("header key", { "h" }, 3, function() end)
     equal("request-3", request.requests[1].headers["x-key"], "request option header overrides source header case-insensitively")
     equal(nil, request.requests[1].headers["X-Key"], "case-insensitive merge emits no duplicate header")
@@ -221,6 +276,114 @@ do
     scheduler:runAll()
     equal(3, #callbacks, "all four-flow ownership checks use the scheduler boundary")
     for _, err in ipairs(callbacks) do equal("INVALID_INPUT", err.code, "ownership error is structured") end
+end
+
+do
+    local request=controlled_engine()
+    local service=new_service(request,2)
+    local source={bookSourceUrl='http://23.224.242.55#forest',ruleToc={chapterList='class.section-list fix@li',
+        chapterName='@a@text',chapterUrl='@a@href',nextTocUrl='class.onclick@href'}}
+    local book=Models.book(source,{name='Book',url='/book/1/'},source.bookSourceUrl)
+    local html=[[<h2>最新章节</h2><ul class="section-list fix"><li><a href="/last">Last</a></li></ul>
+        <h2>正文</h2><ul class="section-list fix"><li><a href="/first">First</a></li><li><a href="/second">Second</a></li></ul>
+        <a class="onclick" href="/page2">Next</a>]]
+    local result,metadata
+    service:getChapters(source,book,function(v,e,m) assert(not e); result,metadata=v,m end,{max_pages=1})
+    request:respond(1,{status=200,body=html,final_url='http://23.224.242.55/book/1/'})
+    equal('First',result[1].title,'forest quick reading starts at first chapter, not latest chapter preview')
+    equal(2,#result,'latest chapter preview is excluded from the full-list block')
+    equal(false,metadata.catalog_complete,'limited catalog is explicitly incomplete')
+    service:getChapters(source,book,function(v,e,m) assert(not e); result,metadata=v,m end)
+    request:respond(2,{status=200,body=html,final_url='http://23.224.242.55/book/1/'})
+    request:respond(3,{status=200,body=[[<ul class="section-list fix"><li><a href="/last">Last</a></li></ul>
+        <ul class="section-list fix"><li><a href="/second">Second</a></li><li><a href="/last">Last</a></li></ul>]],final_url='http://23.224.242.55/page2'})
+    equal(3,#result,'overlapping pages deduplicate by chapter URL')
+    equal('Last',result[3].title,'full catalog preserves reading order')
+    equal(3,result[3].index,'deduplicated catalog keeps dense indices')
+    equal(true,metadata.catalog_complete,'full pagination is explicitly complete')
+end
+do
+    local request = controlled_engine()
+    local service = new_service(request, 2)
+    local book = Models.book(sources.a, { name = 'A', url = '/book' }, sources.a.bookSourceUrl)
+    local chapter = Models.chapter(book, sources.a, { index = 1, title = 'One', url = '/one' }, sources.a.bookSourceUrl)
+    local result, failure
+    local handle = service:getContent(sources.a, book, chapter, function(value, err) result, failure = value, err end, { priority = 'next' })
+    equal('next', request.requests[1].priority, 'next-chapter priority reaches the network queue')
+    equal(true, handle:promote('foreground'), 'inflight chapter priority can be raised without restart')
+    equal('foreground', request.requests[1].priority, 'promotion reaches the current network handle')
+    equal(1, #request.requests, 'priority promotion reuses the original request')
+    request:respond(1, { status = 200, final_url = chapter.url, body = Json.encode({ content = 'First', next = '/two' }) })
+    equal('foreground', request.requests[2].priority, 'remaining pages inherit promoted priority')
+    request:respond(2, { status = 200, final_url = 'https://a.test/two', body = Json.encode({ content = 'Second' }) })
+    equal('First\nSecond', result.content, 'promoted multi-page chapter completes intact')
+    equal(nil, failure, 'priority changes do not fail the chapter')
+end
+
+do
+    local request = controlled_engine()
+    local service = new_service(request, 2)
+    local book = Models.book(sources.a, { name = 'A', url = '/book' }, sources.a.bookSourceUrl)
+    local chapter = Models.chapter(book, sources.a, { index = 1, title = 'One', url = '/one' }, sources.a.bookSourceUrl)
+    local result, failure
+    service:getContent(sources.a, book, chapter, function(value, err) result, failure = value, err end)
+    request:respond(1, { status = 200, body = Json.encode({ content = string.rep('a', 2 * 1024 * 1024), next = '/two' }) })
+    request:respond(2, { status = 200, body = Json.encode({ content = string.rep('b', 2 * 1024 * 1024), next = '/three' }) })
+    equal(2, #request.requests, 'aggregate byte cap stops before requesting another page')
+    equal(nil, result, 'oversized multi-page content never succeeds partially')
+    equal('RESPONSE_TOO_LARGE', failure and failure.code, 'aggregate cap includes the join separator')
+end
+
+do
+    local request = controlled_engine()
+    local service = new_service(request, 2)
+    local book = Models.book(sources.a, { name = 'A', url = '/book' }, sources.a.bookSourceUrl)
+    local chapter = Models.chapter(book, sources.a, { index = 1, title = 'One', url = '/one' }, sources.a.bookSourceUrl)
+    local result, failure
+    service:getContent(sources.a, book, chapter, function(value, err) result, failure = value, err end)
+    request:respond(1, { status = 200, body = '{"content":"First","next":"/two"}' })
+    request:respond(2, { status = 200, body = '{"content":"   "}' })
+    equal(nil, result, 'missing final page does not silently accept a partial chapter')
+    equal('PARSE_ERROR', failure and failure.code, 'empty later page reports a parse failure')
+end
+
+do
+    local request = controlled_engine()
+    local service = new_service(request, 2)
+    local book = Models.book(sources.a, { name = 'A', url = '/book' }, sources.a.bookSourceUrl)
+    local chapter = Models.chapter(book, sources.a, { index = 1, title = 'One', url = '/one' }, sources.a.bookSourceUrl)
+    local result, failure
+    service:getContent(sources.a, book, chapter, function(value, err) result, failure = value, err end)
+    request:respond(1, { status = 200, final_url = chapter.url, body = '{"content":"First","next":"/alias"}' })
+    request:respond(2, { status = 200, final_url = chapter.url, body = '{"content":"First"}' })
+    equal(nil, result, 'redirecting another page to an already-read page never completes a duplicate chapter')
+    equal('PARSE_ERROR', failure and failure.code, 'redirect pagination cycle is rejected')
+end
+
+do
+    local request = controlled_engine()
+    local service = new_service(request, 2)
+    local book = Models.book(sources.a, { name = 'A', url = '/book' }, sources.a.bookSourceUrl)
+    local chapter = Models.chapter(book, sources.a, { index = 1, title = 'One', url = '/one' }, sources.a.bookSourceUrl)
+    local result, failure
+    service:getContent(sources.a, book, chapter, function(value, err) result, failure = value, err end)
+    request:respond(1, { status = 200, body = Json.encode({ content = string.rep('a', 2 * 1024 * 1024), next = '/two' }) })
+    request:respond(2, { status = 200, body = Json.encode({ content = string.rep('b', 2 * 1024 * 1024 - 1) }) })
+    equal(nil, failure, 'exact aggregate limit is accepted')
+    equal(4 * 1024 * 1024, result and #result.content, 'accepted limit includes the page join newline')
+end
+
+do
+    local request = controlled_engine()
+    local service = new_service(request, 2)
+    local book = Models.book(sources.a, { name = 'A', url = '/book' }, sources.a.bookSourceUrl)
+    local chapter = Models.chapter(book, sources.a, { index = 1, title = 'One', url = '/one' }, sources.a.bookSourceUrl)
+    local result, failure
+    service:getContent(sources.a, book, chapter, function(value, err) result, failure = value, err end)
+    for page = 1, 20 do request:respond(page, { status = 200, body = Json.encode({ content = 'Page ' .. page, next = '/page-' .. (page + 1) }) }) end
+    equal(20, #request.requests, 'safe pagination limit never requests page 21')
+    equal(nil, result, 'pagination limit cannot return the first twenty pages as complete')
+    equal('PARSE_ERROR', failure and failure.code, 'pagination limit remains a structured failure')
 end
 
 return count

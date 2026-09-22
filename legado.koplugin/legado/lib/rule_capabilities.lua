@@ -1,3 +1,4 @@
+local Expression = require('legado.lib.rule_expression')
 local Capabilities = {
     SEARCH = "search",
     BOOK_INFO = "book_info",
@@ -33,6 +34,7 @@ Capabilities.SAFE_FUNCTIONS = {
 local unsafe_constructs = {
     { literal = "*/", code = "MALFORMED_COMMENT", message = "malformed block comments are unsupported" },
     { pattern = "@%s*j%s*s%s*:", code = "EXECUTABLE_JS", message = "JavaScript rules are never executed" },
+    { pattern = "@%s*w%s*e%s*b%s*j%s*s%s*:", code = "WEBVIEW", message = "WebView rules are unsupported" },
     { pattern = "<%s*j%s*s%f[^%w_]", code = "EXECUTABLE_JS", message = "JavaScript rules are never executed" },
     { pattern = "<%s*/%s*j%s*s%s*>", code = "EXECUTABLE_JS", message = "JavaScript rules are never executed" },
     { pattern = "%f[%w_]e%s*v%s*a%s*l%s*%(", code = "DYNAMIC_EVAL", message = "dynamic evaluation is never executed" },
@@ -42,6 +44,7 @@ local unsafe_constructs = {
     { pattern = "%f[%w_]j%s*a%s*v%s*a%s*%.", code = "JAVA_API", message = "Java APIs are unsupported" },
     { pattern = "%f[%w_]p%s*a%s*c%s*k%s*a%s*g%s*e%s*s%f[^%w_]", code = "JAVA_API", message = "Java APIs are unsupported" },
     { pattern = "%f[%w_]w%s*e%s*b%s*v%s*i%s*e%s*w%f[^%w_]", code = "WEBVIEW", message = "WebView rules are unsupported" },
+    { pattern = "%f[%w_]u%s*s%s*e%s*w%s*e%s*b%f[^%w_]", code = "WEBVIEW", message = "WebView rules are unsupported" },
     { pattern = "%f[%w_]function%f[^%w_]", code = "FUNCTION_BODY", message = "function bodies are never executed" },
     { pattern = "=%s*>", code = "FUNCTION_BODY", message = "function bodies are never executed" },
 }
@@ -99,6 +102,11 @@ local function normalize_tokens(value)
 end
 
 function Capabilities.findUnsupported(value)
+    if type(value) == 'string' then
+        local prefix, expression = Expression.splitRule(value)
+        local ast = expression and Expression.compile(expression)
+        if ast and ast.transforms > 0 then value = prefix end
+    end
     local normalized = normalize_tokens(type(value) == "string" and value or "")
     local candidates = { normalized }
     for _, definition in ipairs(unsafe_constructs) do

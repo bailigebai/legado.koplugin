@@ -1,6 +1,7 @@
 local Errors = require("legado.lib.errors")
 local Json = require("legado.lib.json_codec")
 local SafeFunctions = require("legado.lib.safe_functions")
+local Expression = require("legado.lib.rule_expression")
 
 local UrlTemplate = {}
 UrlTemplate.__index = UrlTemplate
@@ -24,7 +25,19 @@ function UrlTemplate.new(options)
 end
 
 function UrlTemplate:_expand(value, context)
-    if type(value) ~= "string" or not value:find("{{", 1, true) then return value, nil end
+    if type(value) ~= "string" then return value, nil end
+    local prefix, expression = Expression.splitRule(value)
+    if expression then
+        local ast = Expression.compile(expression)
+        if not ast or ast.transforms == 0 then return nil, Errors.new(Errors.UNSUPPORTED_RULE, 'unsupported request expression') end
+        local expanded, err = self:_expand(prefix, context)
+        if err then return nil, err end
+        return self.rule_engine:parse(expanded, '@js:' .. expression, context or {}, false)
+    end
+    if not value:find("{{", 1, true) then return value, nil end
+    if type(self.rule_engine.expandTemplate) == "function" then
+        return self.rule_engine:expandTemplate(value, context or {})
+    end
     return self.rule_engine:parse("", value, context or {}, false)
 end
 

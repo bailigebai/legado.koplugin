@@ -91,7 +91,7 @@ do
         return document
     end }
     local diagnostics = {}
-    local session = ReaderSession.new({ cache = cache, storage = { putProgress = function() end }, ui = ui,
+    local session = ReaderSession.new({ cache = cache, storage = { putProgress = function() return true end }, ui = ui,
         diagnostics = function(kind, err) diagnostics[#diagnostics + 1] = { kind = kind, err = err } end })
     assert(session:open(source, book, chapters, 1))
     local old = session.active
@@ -157,7 +157,7 @@ do
     end
     local network_calls = 0
     local ui = { openDocument = function(_, _, callbacks) local doc = {}; callbacks.ready(doc); return doc end }
-    local session = ReaderSession.new({ cache = cache, storage = { putProgress = function() end }, ui = ui,
+    local session = ReaderSession.new({ cache = cache, storage = { putProgress = function() return true end }, ui = ui,
         service = { getContent = function() network_calls = network_calls + 1 end } })
     local document = assert(session:openOffline(source, book, 2))
     truthy(document, "offline search continues to an earlier readable body after a TOCTOU miss")
@@ -191,21 +191,19 @@ do
         opened[#opened + 1] = { path = path, callbacks = callbacks, document = document }
         return document
     end }
-    local session = ReaderSession.new({ cache = cache, storage = { putProgress = function() end }, ui = ui,
+    local session = ReaderSession.new({ cache = cache, storage = { putProgress = function() return true end }, ui = ui,
         service = service, settings = { get = function() return 1 end } })
     assert(session:open(source, book, chapters, 1))
     equal(1, #calls, "initial open starts one prefetch generation")
     opened[1].callbacks.end_of_book(opened[1].document)
-    equal(2, #calls, "foreground navigation starts a separate request")
-    truthy(cancelled >= 1, "foreground navigation cancels the old prefetch handle")
-    calls[1].callback({ content = "<p>stale-prefetch</p>" })
-    equal(nil, cache:readBody("source-id", "book", chapters[2]), "cancelled prefetch callback cannot write cache")
-    equal(2, #calls, "cancelled prefetch callback cannot continue its chain")
+    equal(1, #calls, "foreground navigation joins the next-chapter request")
+    equal(0, cancelled, "joined navigation preserves its prefetch handle")
     session:close()
     local cancelled_at_close = cancelled
-    calls[2].callback({ content = "<p>stale-foreground</p>" })
-    equal(nil, cache:readBody("source-id", "book", chapters[2]), "closed foreground callback cannot write or open")
-    truthy(cancelled_at_close >= 2, "session close cancels foreground and prefetch handles")
+    calls[1].callback({ content = "<p>stale-prefetch</p>" })
+    equal(nil, cache:readBody("source-id", "book", chapters[2]), "cancelled shared callback cannot write cache")
+    equal(1, #calls, "cancelled shared callback cannot continue its chain")
+    equal(1, cancelled_at_close, "session close cancels the shared foreground and prefetch handle once")
     equal(1, #opened, "late callbacks after close never open a document")
 end
 
@@ -225,7 +223,7 @@ do
         if fail_open then return nil, { code = "STORAGE_ERROR", message = "open failed" } end
         local document = {}; ready.ready(document); opened[#opened + 1] = { callbacks = ready, document = document }; return document
     end }
-    local session = ReaderSession.new({ cache = cache, storage = { putProgress = function() end }, ui = ui,
+    local session = ReaderSession.new({ cache = cache, storage = { putProgress = function() return true end }, ui = ui,
         service = service, settings = { get = function() return 0 end }, diagnostics = function(kind, err) diagnostics[#diagnostics + 1] = { kind = kind, err = err } end })
     assert(session:open(source, book, chapters, 1))
     opened[1].callbacks.end_of_book(opened[1].document)
@@ -249,7 +247,7 @@ do
         callback({ content = "<p>inline</p>" })
         return { cancel = function() error("completed handle must not be retained") end }
     end }
-    local session = ReaderSession.new({ cache = cache, storage = { putProgress = function() end }, ui = ui, service = service,
+    local session = ReaderSession.new({ cache = cache, storage = { putProgress = function() return true end }, ui = ui, service = service,
         settings = { get = function() return 0 end } })
     assert(session:open(source, book, chapters, 1))
     equal(1, session.active.index, "synchronous foreground callback opens the requested chapter")
@@ -288,7 +286,7 @@ do
     local pending, opened, diagnostics = {}, {}, {}
     local service = { getContent = function(_, _, _, _, callback) pending[#pending + 1] = callback; return { cancel = function() end } end }
     local ui = { openDocument = function(_, _, callbacks) local doc = {}; callbacks.ready(doc); opened[#opened + 1] = { callbacks = callbacks, document = doc }; return doc end }
-    local session = ReaderSession.new({ cache = cache, storage = { putProgress = function() end }, ui = ui, service = service,
+    local session = ReaderSession.new({ cache = cache, storage = { putProgress = function() return true end }, ui = ui, service = service,
         settings = { get = function() return 0 end }, diagnostics = function(kind, err) diagnostics[#diagnostics + 1] = { kind = kind, err = err } end })
     assert(session:open(source, book, chapters, 1))
     opened[1].callbacks.end_of_book(opened[1].document)
@@ -310,7 +308,7 @@ do
     local pending, diagnostics = {}, {}
     local service = { getContent = function(_, _, _, _, callback) pending[#pending + 1] = callback; return { cancel = function() end } end }
     local ui = { openDocument = function(_, _, callbacks) local document = {}; callbacks.ready(document); return document end }
-    local session = ReaderSession.new({ cache = cache, storage = { putProgress = function() end }, ui = ui, service = service,
+    local session = ReaderSession.new({ cache = cache, storage = { putProgress = function() return true end }, ui = ui, service = service,
         settings = { get = function() return 1 end }, diagnostics = function(kind, err) diagnostics[#diagnostics + 1] = { kind = kind, err = err } end })
     assert(session:open(source, book, chapters, 1))
     pending[1]({ content = "<p>two</p>" })

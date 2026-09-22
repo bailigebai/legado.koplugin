@@ -16,11 +16,9 @@ equal(0, #provider:getVoices(), "no voices are advertised")
 local presented
 local app = App.new({ speech_provider = provider, show = function(view) presented = view end })
 local menu = app:menuItems()
-local speech
-for _, item in ipairs(menu) do if item.text == "听书" then speech = item end end
-equal("function", type(speech and speech.callback), "main menu exposes the reserved speech entry")
-speech.callback()
-equal("听书功能尚未配置", presented.text, "speech placeholder text is exact")
-equal(7, #menu, "speech reservation adds exactly one menu entry")
+local speech, speech_count = nil, 0
+for _, item in ipairs(menu) do if item.text == "听书" then speech = item; speech_count = speech_count + 1 end end
+equal(0, speech_count, "listening entry removed from the plugin menu")
+equal(nil, app.openSpeech, "listening placeholder is no longer a public workflow")
 
 return count

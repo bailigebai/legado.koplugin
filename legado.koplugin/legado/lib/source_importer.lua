@@ -97,7 +97,7 @@ function SourceImporter:_normalize(value, origin, origin_warning)
     return source
 end
 
-function SourceImporter:importJson(text, origin)
+function SourceImporter:importJson(text, origin, options)
     local report = { imported = 0, updated = 0, rejected = 0, compatibility = {}, warnings = {} }
     if type(text) ~= "string" then return report_error(report, Errors.INVALID_INPUT, "source JSON must be a string") end
     if #text > self.max_bytes then return report_error(report, Errors.RESPONSE_TOO_LARGE, "source JSON exceeds import limit", { max_bytes = self.max_bytes }) end
@@ -124,18 +124,20 @@ function SourceImporter:importJson(text, origin)
         local normalized, normalize_error = self:_normalize(member, origin, origin_warning)
         if not normalized then return report_error(report, normalize_error.code, normalize_error.message, normalize_error.details) end
         local prior = by_id[normalized.id]
-        if prior then
-            normalized.enabled = prior.enabled
-            report.updated = report.updated + 1
-            for index, saved in ipairs(candidate) do if saved.id == normalized.id then candidate[index] = normalized break end end
-        else
-            report.imported = report.imported + 1
-            candidate[#candidate + 1] = normalized
+        if not (prior and options and options.skip_existing) then
+            if prior then
+                normalized.enabled = prior.enabled
+                report.updated = report.updated + 1
+                for index, saved in ipairs(candidate) do if saved.id == normalized.id then candidate[index] = normalized break end end
+            else
+                report.imported = report.imported + 1
+                candidate[#candidate + 1] = normalized
+            end
+            by_id[normalized.id] = normalized
+            local compatibility = Scanner.scan(normalized)
+            compatibility.source_id = normalized.id
+            prepared[#prepared + 1] = compatibility
         end
-        by_id[normalized.id] = normalized
-        local compatibility = Scanner.scan(normalized)
-        compatibility.source_id = normalized.id
-        prepared[#prepared + 1] = compatibility
     end
 
     local saved, save_error = self.storage:replaceSources(candidate)

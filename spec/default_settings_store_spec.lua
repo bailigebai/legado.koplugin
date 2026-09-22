@@ -53,8 +53,29 @@ equal(1, envelope.schema_version, "settings file is versioned")
 equal(3, envelope.settings.prefetch, "settings JSON contains normalized defaults")
 
 equal(9, settings:set("prefetch", 9), "atomic default store accepts updates")
+settings:set('progress_bar_mode','bar')
+settings:set('progress_bar_font_size',18)
+settings:set('progress_bar_height',32)
+settings:set('receipt_style','calendar')
+settings:set('receipt_width',80)
+settings:set('receipt_height',85)
+settings:set('receipt_background','/mnt/us/pictures/背景 image.jpg')
 local restarted = Settings.new(nil, { data_dir = "settings-root", fs = fs })
 equal(9, restarted:get("prefetch"), "atomic settings survive restart")
+equal('bar',restarted:get('progress_bar_mode'),'JSON validator accepts saved footer mode')
+equal(18,restarted:get('progress_bar_font_size'),'footer font survives JSON reload')
+equal(32,restarted:get('progress_bar_height'),'footer height survives JSON reload')
+equal('calendar',restarted:get('receipt_style'),'receipt style survives JSON reload')
+equal(80,restarted:get('receipt_width'),'receipt width survives JSON reload')
+equal(85,restarted:get('receipt_height'),'receipt height survives JSON reload')
+equal('/mnt/us/pictures/背景 image.jpg',restarted:get('receipt_background'),'background path with Unicode and spaces survives reload')
+for _,style in ipairs{'bookshop','boarding','library','cinema','postcard','newspaper',
+    'exhibition','passport','contact','archive','timeline','bookmark'} do
+    equal(style,restarted:set('receipt_style',style),'new receipt style is accepted for saving')
+    local loaded,err=Settings.new(nil,{data_dir='settings-root',fs=fs})
+    equal(nil,err,'new receipt style passes strict JSON validation')
+    equal(style,loaded:get('receipt_style'),'new receipt style survives restart')
+end
 
 local disk_before = state.files[json_path]
 state.mode = "fail"
@@ -244,4 +265,11 @@ local _, oversized_error = Settings.new(nil, { data_dir = "settings-root", fs = 
 equal("STORAGE_ERROR", oversized_error and oversized_error.code, "oversized legacy settings are rejected")
 equal(0, oversized.writes, "oversized legacy settings are not migrated")
 
+local mode_fs = memory_fs()
+local mode_settings = Settings.new(nil, { data_dir = 'settings-root', fs = mode_fs })
+equal(true, mode_settings:set('immersive_reader', true), 'enable mode saves successfully')
+equal(true, mode_settings:get('immersive_reader'), 'enabled mode is visible immediately')
+equal(true, Settings.new(nil, { data_dir = 'settings-root', fs = mode_fs }):get('immersive_reader'), 'enabled mode survives restart')
+equal(false, mode_settings:set('immersive_reader', false), 'disable mode is a successful false value')
+equal(false, Settings.new(nil, { data_dir = 'settings-root', fs = mode_fs }):get('immersive_reader'), 'disabled mode survives restart')
 return count

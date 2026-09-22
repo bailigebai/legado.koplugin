@@ -1,3 +1,4 @@
+require("library_screen_stub")
 local assertx = require("assertions")
 local Presenter = require("legado.ui.presenter")
 local SourceManager = require("legado.ui.source_manager")
@@ -25,7 +26,13 @@ local presenter = Presenter.new({ ui_manager = ui, menu = widget("menu"), info_m
 
 local function choose(menu, item)
     item.callback()
-    menu.close_callback()
+    if menu.kind ~= "library_screen" then menu.close_callback() end
+end
+local function choose_named(menu, name)
+    for _,item in ipairs(menu.item_table) do
+        if item.text==name then return choose(menu,item) end
+    end
+    error("missing action "..name)
 end
 
 local shelf_closes = 0
@@ -64,16 +71,23 @@ local source_view = {
     end,
 }
 local sources = presenter:show(source_view)
-choose(sources, sources.item_table[3])
+choose_named(sources,"更多")
+choose_named(shown[#shown],"从网址导入")
 equal(0, source_closes, "selecting URL import does not close the source model")
 local url_dialog = shown[#shown]
 equal(1, url_dialog.keyboard_calls, "URL import shows the input keyboard exactly once")
 url_dialog.buttons[1][2].callback("https://sources.test/list.json")
-equal("close:导入书源", events[#events - 1], "valid URL closes its dialog before import starts")
-equal("import:https://sources.test/list.json", events[#events], "URL import starts after dialog close")
+local close_position, import_position
+for i,event in ipairs(events) do
+    if event=="close:导入书源" then close_position=i end
+    if event=="import:https://sources.test/list.json" then import_position=i end
+end
+equal(true,close_position<import_position,"URL dialog closes before import starts")
 equal(1, url_calls, "URL import callback remains usable after menu selection")
-equal(1, #closed, "valid URL closes its input widget exactly once")
-sources.close_callback()
+local input_closes = 0
+for _, item in ipairs(closed) do if item == url_dialog then input_closes = input_closes + 1 end end
+equal(1, input_closes, "valid URL closes its input widget exactly once")
+presenter.library_widget:onClose()
 equal(1, source_closes, "physical source-menu close destroys the model once")
 sources.close_callback()
 equal(1, source_closes, "repeated physical close is idempotent")
@@ -103,12 +117,11 @@ local detail_view = {
     close = function() detail_closes = detail_closes + 1; catalog_cancelled = catalog_cancelled + 1; return true end,
 }
 local detail = presenter:show(detail_view)
-local catalog_item
-for _, item in ipairs(detail.item_table) do if item.text == "查看目录" then catalog_item = item end end
-choose(detail, catalog_item)
+choose_named(detail,"更多")
+choose_named(shown[#shown],"查看目录")
 equal(0, detail_closes, "selecting catalog does not close the detail model")
 equal(0, catalog_cancelled, "catalog request survives the selection close callback")
-detail.close_callback()
+shown[#shown].close_callback()
 equal(1, detail_closes, "physical detail close reaches the model")
 
 local download_closes, opened = 0, 0
@@ -150,10 +163,10 @@ equal(1, search_closes, "search cancel is idempotent")
 local valid_search = { kind = "search", alive = true, loading = false, submit = function(_, keyword) events[#events + 1] = "submit:" .. keyword; submits = submits + 1 end, close = function() end }
 local valid_dialog = presenter:show(valid_search)
 valid_dialog.buttons[1][2].callback("query")
-equal("close:搜索", events[#events - 1], "valid search closes its dialog before submit")
+equal("close:搜索全部启用书源", events[#events - 1], "valid search closes its dialog before submit")
 equal("submit:query", events[#events], "search begins after dialog close")
-local closed_before_invalid = #closed
 local invalid_search = presenter:show({ kind = "search", close = function() end, submit = function() error("must not submit") end })
+local closed_before_invalid = #closed
 invalid_search.buttons[1][2].callback("   ")
 equal(closed_before_invalid, #closed, "invalid search keeps its dialog open")
 

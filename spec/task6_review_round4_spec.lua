@@ -1,5 +1,6 @@
 local assertx = require("assertions")
 local CoverGrid = require("legado.ui.cover_grid")
+package.preload["ui/font"] = function() return {getFace=function() return {} end} end
 
 local function class(kind)
     return { new = function(_, options) options.kind = kind; return options end }

@@ -178,9 +178,9 @@ local function parse(text,limit) -- {{{
 			start, apos, k, zsp, eq, zsp, quote = tagst:find(
 				"%s+" ..         -- some uncaptured space
 				"([^%s=/>]+)" .. -- k = an unspaced string up to an optional "=" or the "/" or ">"
-				"([%s]-)"..      -- zero or more spaces
+				"([%s]*)"..      -- consume whitespace before the optional equals sign
 				"(=?)" ..        -- eq = the optional; "=", else ""
-				"([%s]-)"..      -- zero or more spaces
+				"([%s]*)"..      -- consume whitespace before a quoted value
 				[=[(['"]?)]=],      -- quote = an optional "'" or '"' following the "=", or ""
 			apos)
 			dbg("[TagLoop]:#LINE# start=%s || apos=%s || k=%s || zsp='%s' || eq='%s', quote=[%s]",str(start),str(apos),str(k),str(zsp),str(eq),str(quote))
@@ -188,11 +188,12 @@ local function parse(text,limit) -- {{{
 			if not k or k == "/>" or k == ">" then break end
 			-- Pattern {{{
 			if eq == "=" then
-				local pattern = "=([^%s>]*)"
+				local pattern, value_start = "([^%s>]+)", apos + 1
 				if quote ~= "" then
 					pattern = quote .. "([^" .. quote .. "]*)" .. quote
+					value_start = apos
 				end
-				start, apos, v = tagst:find(pattern, apos)
+				start, apos, v = tagst:find(pattern, value_start)
 				dbg("[TagLoop]:#LINE# start=%s || apos=%s || v=%s || pattern=%s",str(start),str(apos),str(v),str(pattern))
 			end
 			-- }}}

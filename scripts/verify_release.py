@@ -47,7 +47,7 @@ def validate_content(archive: zipfile.ZipFile, names: set[str]) -> None:
 
 def verify_lua(plugin_root: Path) -> None:
     runtime = LuaRuntime(unpack_returned_tuples=True)
-    package_path = f"{plugin_root.as_posix()}/?.lua;{plugin_root.as_posix()}/?/init.lua"
+    package_path = f"{plugin_root.as_posix()}/?.lua"
     runtime.execute(f"package.path = {lua_quote(package_path)} .. ';' .. package.path")
     runtime.execute("""
         package.preload['ui/widget/container/widgetcontainer'] = function()

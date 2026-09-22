@@ -1,6 +1,7 @@
 local Scanner = require("legado.lib.compatibility_scanner")
 local SourceImporter = require("legado.lib.source_importer")
 local Sanitizer = require("legado.lib.diagnostic_sanitizer")
+local Models = require("legado.lib.models")
 
 local SourceManager = {}
 SourceManager.__index = SourceManager
@@ -13,18 +14,50 @@ function SourceManager.new(options)
         storage = options.storage, importer = options.importer, requests = options.request_engine,
         diagnostics = options.diagnostics,
         fs = options.fs, scanner = options.scanner or Scanner, confirm = options.confirm or function() return false end,
+        on_search = options.on_search, on_import = options.on_import,
         alive = true, generation = 0, request = nil,
     }, SourceManager)
 end
 
 function SourceManager:list()
-    local sources = self.storage:listSources() or {}
+    local sources = {}
+    for _, source in ipairs(self.storage:listSources() or {}) do
+        sources[#sources + 1] = source
+    end
     table.sort(sources, function(left, right)
         local lg, rg = tostring(left.bookSourceGroup or ""), tostring(right.bookSourceGroup or "")
         if lg ~= rg then return lg < rg end
         return tostring(left.bookSourceName or "") < tostring(right.bookSourceName or "")
     end)
     return sources
+end
+
+function SourceManager:bookCount(source_id)
+    local count = 0
+    local book_source_id = Models.sourceId({ id = source_id })
+    for _, book in ipairs(self.storage:listShelf() or {}) do
+        if book.source_id == book_source_id or book.source_id == source_id then count = count + 1 end
+    end
+    return count
+end
+
+function SourceManager:viewModel()
+    local sources = self:list()
+    local counts = {}
+    for _, book in ipairs(self.storage:listShelf() or {}) do
+        if book.source_id then counts[book.source_id] = (counts[book.source_id] or 0) + 1 end
+    end
+    for _, source in ipairs(sources) do
+        local id = Models.sourceId(source)
+        source.shelf_count = (counts[id] or 0) + (id ~= source.id and (counts[source.id] or 0) or 0)
+    end
+    return {
+        kind = "source_manager", sources = sources, empty_text = #sources == 0 and "暂无自行导入的书源" or nil,
+        empty_actions = #sources == 0 and {
+            { text = "搜索添加", callback = self.on_search },
+            { text = "导入书源", callback = self.on_import },
+        } or nil,
+    }
 end
 
 function SourceManager:toggle(id)
@@ -35,7 +68,7 @@ function SourceManager:toggle(id)
     return updated.enabled, err
 end
 
-function SourceManager:importLocal(path)
+function SourceManager:importLocal(path, origin, options)
     if not self.importer or not self.fs then return nil end
     local text, read_error
     if type(self.fs.readBounded) == "function" then text, read_error = self.fs:readBounded(path, SourceImporter.DEFAULT_MAX_BYTES)
@@ -46,7 +79,7 @@ function SourceManager:importLocal(path)
         end
     end
     if not text then return { imported = 0, updated = 0, rejected = 1, warnings = {}, compatibility = {}, error = read_error or { code = "STORAGE_ERROR", message = "无法读取书源文件" } } end
-    return self.importer:importJson(text, path)
+    return self.importer:importJson(text, origin or path, options)
 end
 
 function SourceManager:importUrl(url, callback)

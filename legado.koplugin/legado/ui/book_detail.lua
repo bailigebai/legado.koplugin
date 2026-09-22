@@ -36,7 +36,7 @@ function BookDetail:_cancelReading()
     cancel_handle(request)
 end
 
-function BookDetail:_beginReading(chapters, index, callback, expected_book)
+function BookDetail:_beginReading(chapters, index, callback, expected_book, on_progress)
     if not self.alive or (expected_book and self.book.id ~= expected_book.id) then
         return nil, { code = "CANCELLED", message = "阅读请求已失效" }
     end
@@ -55,6 +55,7 @@ function BookDetail:_beginReading(chapters, index, callback, expected_book)
         return true
     end
     local intent = {
+        on_progress = on_progress,
         isCurrent = current,
         markRequestComplete = function()
             if request_complete then return false end
@@ -93,8 +94,8 @@ function BookDetail:switchSource(index)
     if selected then
         self:_cancelReading()
         self.generation = self.generation + 1
-        if self.info_request and type(self.info_request.cancel) == "function" then self.info_request:cancel() end
-        if self.catalog_request and type(self.catalog_request.cancel) == "function" then self.catalog_request:cancel() end
+        cancel_handle(self.info_request)
+        cancel_handle(self.catalog_request)
         self.info_request, self.catalog_request = nil, nil
         self.book, self.info, self.catalog = selected, nil, nil
         self.info_error, self.catalog_error = nil, nil
@@ -105,30 +106,41 @@ end
 function BookDetail:loadInfo(callback)
     callback = callback or function() end
     if not self.alive or not self.service or type(self.service.getBookInfo) ~= "function" then return nil end
-    if self.info_request and type(self.info_request.cancel) == "function" then self.info_request:cancel() end
+    cancel_handle(self.info_request)
     self.info_generation = self.info_generation + 1
     local generation, request_generation, book = self.generation, self.info_generation, self.book
     local source = self.source_lookup and self.source_lookup(book.source_id) or nil
     if not source then return nil end
     self.loading_info, self.info_error = true, nil
-    self.info_request = self.service:getBookInfo(source, book, function(info, err)
+    local completed = false
+    local function done(info, err)
+        completed = true
         if not self.alive or generation ~= self.generation or request_generation ~= self.info_generation or self.book.id ~= book.id then return end
         self.loading_info, self.info_error, self.info_request = false, err, nil
         if info then self.info, self.book = info, info end
         callback(info, err)
-    end)
+    end
+    local ok, request = pcall(self.service.getBookInfo, self.service, source, book, done)
+    if not ok then
+        self.loading_info, self.info_error, self.info_request = false, { code = "REQUEST_ERROR", message = "详情请求启动失败" }, nil
+        callback(nil, self.info_error)
+        return nil
+    end
+    if completed then self.info_request = nil else self.info_request = request end
     return self.info_request
 end
 function BookDetail:loadCatalog(callback)
     callback = callback or function() end
     if not self.alive or not self.service or type(self.service.getChapters) ~= "function" then return nil end
-    if self.catalog_request and type(self.catalog_request.cancel) == "function" then self.catalog_request:cancel() end
+    cancel_handle(self.catalog_request)
     self.catalog_generation = self.catalog_generation + 1
     local generation, request_generation, book = self.generation, self.catalog_generation, self.book
     local source = self.source_lookup and self.source_lookup(book.source_id) or nil
     if not source then return nil end
     self.loading_catalog, self.catalog_error = true, nil
-    self.catalog_request = self.service:getChapters(source, book, function(chapters, err)
+    local completed = false
+    local function done(chapters, err)
+        completed = true
         if not self.alive or generation ~= self.generation or request_generation ~= self.catalog_generation or self.book.id ~= book.id then return end
         self.loading_catalog, self.catalog_request = false, nil
         self.catalog_error = err
@@ -139,7 +151,14 @@ function BookDetail:loadCatalog(callback)
             end)
         end
         callback(self.catalog, err)
-    end)
+    end
+    local ok, request = pcall(self.service.getChapters, self.service, source, book, done)
+    if not ok then
+        self.loading_catalog, self.catalog_error, self.catalog_request = false, { code = "REQUEST_ERROR", message = "目录请求启动失败" }, nil
+        callback(nil, self.catalog_error)
+        return nil
+    end
+    if completed then self.catalog_request = nil else self.catalog_request = request end
     return self.catalog_request
 end
 function BookDetail:close()
@@ -147,22 +166,22 @@ function BookDetail:close()
     self.alive = false
     self.generation = self.generation + 1
     self:_cancelReading()
-    if self.info_request and type(self.info_request.cancel) == "function" then self.info_request:cancel() end
-    if self.catalog_request and type(self.catalog_request.cancel) == "function" then self.catalog_request:cancel() end
+    cancel_handle(self.info_request)
+    cancel_handle(self.catalog_request)
     return true
 end
 function BookDetail:compatibility()
     if type(self.compatibility_provider) == "function" then return self.compatibility_provider(self.book) end
     return nil
 end
-function BookDetail:startReading(callback)
+function BookDetail:startReading(callback, on_progress)
     local chapters = self.catalog and self.catalog.items or nil
     if chapters then
         local values = {}
         for index, item in ipairs(chapters) do values[index] = item.chapter end
         chapters = values
     end
-    return self:_beginReading(chapters, nil, callback, self.book)
+    return self:_beginReading(chapters, nil, callback, self.book, on_progress)
 end
 function BookDetail:startDownload() return self.download_hook and self.download_hook(self.book) or "下载功能将在下一阶段提供" end
 

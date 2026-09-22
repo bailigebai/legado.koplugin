@@ -305,6 +305,12 @@ function Storage:deleteBook(id)
         candidate.data.progress[id] = nil
     end)
 end
+function Storage:updateBooks(books)
+    if self.adapter then return self.adapter:updateBooks(books) end
+    return self:_mutate(function(candidate)
+        for _,book in ipairs(books) do candidate.data.books[book.id]=copy(book) end
+    end)
+end
 function Storage:listShelf() if self.adapter then return self.adapter:listBooks() end return list_values(self:_map("books"), "name") end
 
 function Storage:replaceChapters(book_id, chapters)
@@ -342,6 +348,20 @@ function Storage:putProgress(book_id, progress)
     return self:_persist_value("progress", book_id, value)
 end
 function Storage:getProgress(book_id) if self.adapter then return self.adapter:getProgress(book_id) end local value = self:_map("progress")[book_id]; return value and copy(value) or nil end
+function Storage:listProgress()
+    if not self.adapter then return list_values(self:_map("progress"), "book_id") end
+    if type(self.adapter.listProgress) == "function" then return self.adapter:listProgress() end
+    local books, error_value = self:listShelf()
+    if not books then return nil, error_value end
+    local values = {}
+    for _, book in ipairs(books) do
+        local progress, progress_error = self:getProgress(book.id)
+        if progress_error then return nil, progress_error end
+        if progress then values[#values + 1] = progress end
+    end
+    table.sort(values, function(left, right) return tostring(left.book_id or "") < tostring(right.book_id or "") end)
+    return values
+end
 
 function Storage:putDownloadTask(task)
     task = copy(task or {})
