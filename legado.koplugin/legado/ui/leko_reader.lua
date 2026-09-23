@@ -315,6 +315,9 @@ function View:_startPagination(prepared)
         if self.closed or self.pagination_generation~=generation then return end
         self.pagination_job=nil
         safe_event(self,function()
+        if self.animation:isRunning() then
+            self.pagination_job=batch;self.ui:scheduleIn(.02,batch);return
+        end
         for _=1,1 do
             local started=self:_now();local count=#prepared.page_starts
             local ok,page=Reader.prepareNextPage(prepared,function() return self:_now() end,
@@ -322,19 +325,29 @@ function View:_startPagination(prepared)
             self:_timing('pagination_batch',started,{over_budget=self:_now()-started>.008,pages=#prepared.page_starts-count})
             if not ok then self:_error(page);return end
             if not page then self.pagination_job=batch;self.ui:scheduleIn(.01,batch);return end
+            if page.at_end then
+                self.page_total=#self.page_starts
+                prepared.complete=true;prepared.pagination_position=Text.positionCopy(page.next_position)
+            end
             if self.previous_target and not Text.positionLess(page.next_position,self.previous_target) then
                 local position=Text.positionLess(page.start_position,self.previous_target) and page.start_position or self.page_starts[#self.page_starts-1]
                 self.previous_target=nil
                 if position then local previous=self:_makePage(position);if previous then self:_setPage(previous,'backward') end end
             end
             if page.at_end then
-                self.page_total=#self.page_starts
-                if prepared then prepared.complete=true;prepared.pagination_position=Text.positionCopy(page.next_position) end
                 if self.go_last then
                     self.go_last=nil
                     local last=self:_makePage(self.page_starts[self.page_total]);if last then self:_setPage(last) end
                 end
-                self:_notifyPage();self.ui:setDirty(self,'ui');return
+                self:_notifyPage()
+                -- Page count completion changes chrome only. Do not refresh
+                -- the unchanged body after a chapter's entry animation.
+                local g=self.page.geometry
+                if not self.animation:isRunning() then
+                    if self.page.style.show_header and g.body_top+g.header_height>0 then self.ui:setDirty(self,'ui',Geom:new{x=0,y=0,w=self.dimen.w,h=g.body_top+g.header_height}) end
+                    if self.page.style.show_footer and g.footer_height>0 then self.ui:setDirty(self,'ui',Geom:new{x=0,y=self.dimen.h-g.footer_height,w=self.dimen.w,h=g.footer_height}) end
+                end
+                return
             end
             if not Text.positionLess(self.pagination_position,page.next_position) then self:_error('章节分页未能前进。');return end
             self.pagination_position=page.next_position
@@ -527,6 +540,9 @@ function View:_paintTo(bb,x,y)
 end
 function View:paintTo(bb,x,y)
     return safe_event(self,function()
+        -- A host repaint (menu, rotation, external refresh) takes ownership of
+        -- the real screen. Retire our frames before they can overwrite it.
+        if bb==Device.screen.bb and self.animation:isRunning() then self:_finishAnimation(true) end
         local started=self.paint_started or self:_now()
         self:_paintTo(bb,x,y)
         self.paint_started=nil
@@ -780,8 +796,8 @@ function View:showLayoutMenu()
             update{page_transition=({off='original',original='swipe',swipe='ripple',ripple='side_ripple',side_ripple='ripple_in',ripple_in='wave',wave='off'})[self.style.page_transition]}
         end},{text='跨章净屏动画：'..(self.style.chapter_clean_wave_enabled and '开' or '关'),callback=function() update{chapter_clean_wave_enabled=not self.style.chapter_clean_wave_enabled} end}},
         {{text='刷新模式：'..(self.style.swipe_refresh_mode=='fast' and '快速' or '清晰'),callback=function() update{swipe_refresh_mode=self.style.swipe_refresh_mode=='fast' and 'ui' or 'fast'} end}},
-        {{text='竖屏帧延时：'..self.style.swipe_portrait_delay_ms..'ms',callback=function() cycle('swipe_portrait_delay_ms',{0,10,20,30,50,80}) end},
-         {text='横屏帧延时：'..self.style.swipe_landscape_delay_ms..'ms',callback=function() cycle('swipe_landscape_delay_ms',{0,10,20,30,50,80}) end}},
+        {{text='竖屏帧间隔：'..self.style.swipe_portrait_delay_ms..'ms',callback=function() cycle('swipe_portrait_delay_ms',{0,10,20,30,40,50,80}) end},
+         {text='横屏帧间隔：'..self.style.swipe_landscape_delay_ms..'ms',callback=function() cycle('swipe_landscape_delay_ms',{0,10,20,30,40,50,80}) end}},
     }
     if Device.hasFrontlight and Device:hasFrontlight() then buttons[#buttons+1]={{text='屏幕亮度',callback=function()
         if self.closed or not self.layout_dialog then return false end

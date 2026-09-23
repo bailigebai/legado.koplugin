@@ -7,7 +7,7 @@ local Blitbuffer=require('ffi/blitbuffer')
 local original_new=Blitbuffer.new
 local buffers={}
 local function raster(w,height)
-    local b={w=w,h=height,pixels={},freed=0}
+    local b={w=w,h=height,pixels={},writes={},freed=0}
     function b:getWidth() return self.w end
     function b:getHeight() return self.h end
     function b:getType() return 1 end
@@ -16,7 +16,11 @@ local function raster(w,height)
         assert(self.freed==0 and src.freed==0,'ripple uses a freed page')
         assert(x>=0 and y>=0 and x+width<=self.w and y+hh<=self.h,'ripple writes outside the screen')
         assert(sx>=0 and sy>=0 and sx+width<=src.w and sy+hh<=src.h,'ripple reads outside its target')
-        for yy=0,hh-1 do for xx=0,width-1 do self.pixels[(y+yy)*self.w+x+xx]=src.pixels[(sy+yy)*src.w+sx+xx] end end
+        for yy=0,hh-1 do for xx=0,width-1 do
+            local at=(y+yy)*self.w+x+xx
+            self.pixels[at]=src.pixels[(sy+yy)*src.w+sx+xx]
+            self.writes[at]=(self.writes[at] or 0)+1
+        end end
     end
     function b:free() self.freed=self.freed+1;assert(self.freed==1,'double free') end
     buffers[#buffers+1]=b;return b
@@ -77,9 +81,11 @@ for _,size in ipairs{{120,160},{160,120},{119,157},{157,119},{5,7},{1,1}} do
         local all_target=true
         for i=0,w*height-1 do if screen.bb.pixels[i]~=42 then all_target=false;break end end
         eq(true,all_target,'ripple reaches every pixel including odd-size corners')
+        local once=true;for _,count in pairs(screen.bb.writes) do if count~=1 then once=false end end
+        eq(true,once,effect..' '..w..'x'..height..' '..direction..': each pixel is revealed once, including the final frame')
         eq(1,completed,'completion fires once')
         eq(true,submitted,'successful ripple tells the reader its final page is already painted')
-        eq(true,#frames<=(w>height and 6 or 8),'only one driver submission per animation frame')
+        eq(true,#frames<=4*(w>height and 6 or 8),'geometry uses at most four bounded regions per frame')
         eq(false,animation:isRunning(),'ripple releases the running state')
         eq(0,#h.tasks,'completed ripple leaves no scheduled work')
 

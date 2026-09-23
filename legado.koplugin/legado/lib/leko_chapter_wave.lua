@@ -91,13 +91,18 @@ function ChapterWaveRefresh:_scheduleFrame(token, delay)
 
     local manager = self.ui_manager
     if not manager then return nil, "动画调度器不可用" end
+    local ok, err
     if type(manager.scheduleIn) == "function" then
-        manager:scheduleIn(delay or 0, callback)
+        ok, err = pcall(manager.scheduleIn, manager, delay or 0, callback)
     elseif type(manager.nextTick) == "function" then
-        manager:nextTick(callback)
+        ok, err = pcall(manager.nextTick, manager, callback)
     else
         self.pending_frame = nil
-        callback()
+        return nil, "动画调度器不可用"
+    end
+    if not ok then
+        self:_unschedulePendingFrame()
+        return nil, tostring(err)
     end
     return true
 end
@@ -191,6 +196,9 @@ function ChapterWaveRefresh:_submitFullTarget()
     if not bb or not target then return nil, "章节目标 framebuffer 不可用" end
     local width = bb:getWidth()
     local height = bb:getHeight()
+    if target:getWidth() ~= width or target:getHeight() ~= height then
+        return nil, "章节 framebuffer 尺寸已改变"
+    end
     self:_beginPaint()
     local ok, err = xpcall(function()
         bb:blitFrom(target, 0, 0, 0, 0, width, height)
@@ -202,7 +210,7 @@ function ChapterWaveRefresh:_submitFullTarget()
     return true
 end
 
-function ChapterWaveRefresh:_finish(token)
+function ChapterWaveRefresh:_finish(token, painted)
     if token ~= self.generation or not self.running then return end
     self:_unschedulePendingFrame()
 
@@ -220,7 +228,7 @@ function ChapterWaveRefresh:_finish(token)
     self.direction = nil
     self.step_index = 0
     self.step_count = 0
-    if type(callback) == "function" then pcall(callback, token, target) end
+    if type(callback) == "function" then pcall(callback, token, target, painted) end
 end
 
 function ChapterWaveRefresh:_runFrame(token)
@@ -228,7 +236,7 @@ function ChapterWaveRefresh:_runFrame(token)
     local screen = self.screen
     local bb = screen and screen.bb
     local target = self.target_framebuffer
-    if not bb or not target then
+    if not bb or not target or bb:getWidth()~=target:getWidth() or bb:getHeight()~=target:getHeight() then
         self:_finish(token)
         return
     end
@@ -285,9 +293,10 @@ function ChapterWaveRefresh:_runFrame(token)
     self.step_index = self.step_index + 1
     self:_waitBeforeMutation()
     if self.step_index > self.step_count then
-        self:_finish(token)
+        self:_finish(token, true)
     else
-        self:_scheduleFrame(token, FRAME_DELAY)
+        local scheduled = self:_scheduleFrame(token, FRAME_DELAY)
+        if not scheduled then self:_finish(token) end
     end
 end
 
@@ -351,7 +360,7 @@ function ChapterWaveRefresh:settle()
     local token = self.generation - 1
     self.running = false
     self.direction = nil
-    self:_submitFullTarget()
+    local painted=self:_submitFullTarget()
 
     local target = self.target_framebuffer
     local callback = self._on_complete
@@ -359,7 +368,7 @@ function ChapterWaveRefresh:settle()
     self._on_complete = nil
     self.step_index = 0
     self.step_count = 0
-    if type(callback) == "function" then pcall(callback, token, target) end
+    if type(callback) == "function" then pcall(callback, token, target, painted==true) end
     return true
 end
 

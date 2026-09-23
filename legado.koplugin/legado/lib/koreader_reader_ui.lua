@@ -253,16 +253,18 @@ function Adapter:openChapter(payload,callbacks)
     self.current_document=document
     if self.preparation_resume then local resume=self.preparation_resume;self.preparation_resume=nil;resume() end
     if previous and not previous.closed and previous.close then previous:close() end
-    local dirty,dirty_error=pcall(ui.setDirty,ui,document.widget,'ui')
-    if not dirty then document.widget:_error(dirty_error) end
-    if previous then
+    if previous and document.reuses_widget then
         local old=previous.reading_state
         local direction=old and old.index>payload.state.index and 'backward' or 'forward'
         local animated,result,animation_error=pcall(document.animateEntry,document,direction,not old or old.index~=payload.state.index)
         if not animated or result==false or animation_error then
             document.widget:_finishAnimation(true)
             document.widget:_error(not animated and result or animation_error or '章节切换动画未完成。')
+            ui:setDirty(document.widget,'ui')
         end
+    else
+        local dirty,dirty_error=pcall(ui.setDirty,ui,document.widget,'ui')
+        if not dirty then document.widget:_error(dirty_error) end
     end
     if callbacks and callbacks.committed then callbacks.committed(document) end
     return document

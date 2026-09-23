@@ -12,6 +12,7 @@
 
 local Blitbuffer = require("ffi/blitbuffer")
 local Device = require("device")
+local Time = require("ui/time")
 
 local ChapterWaveRefresh = require("legado.lib.leko_chapter_wave")
 local SwipeAnimation = require("legado.lib.leko_native_swipe")
@@ -29,10 +30,13 @@ SwipeRefresh.BACKWARD = "backward"
 -- tick) without retaining an old framebuffer or creating an animation queue.
 local PORTRAIT_STRIPS = 8
 local LANDSCAPE_STRIPS = 6
-local SOFTWARE_FRAME_DELAY = 0.018
 local SOFTWARE_ALIGNMENT = 8
 local SOFTWARE_OVERLAP = 8
 local RIPPLE_EFFECTS = { ripple=true, side_ripple=true, ripple_in=true, wave=true }
+local function now()
+    if Time.now and Time.to_s then return Time.to_s(Time.now()) end
+    return 0 -- Hosts without monotonic time retain the configured delay.
+end
 
 local function freeBuffer(buffer)
     if buffer and type(buffer.free) == "function" then
@@ -52,6 +56,7 @@ function SwipeRefresh:new(options)
         screen = screen,
         ui_manager = options.ui_manager,
         device = options.device or Device,
+        clock = options.clock or now,
         target_framebuffer = nil,
         direction = nil,
         running = false,
@@ -123,9 +128,11 @@ function SwipeRefresh:_scheduleNativeSubmissionCommit(token)
     local manager = self.ui_manager
     if not manager then return nil, "动画调度器不可用" end
     if type(manager.scheduleIn) == "function" then
-        manager:scheduleIn(0, callback)
+        local ok,err=pcall(manager.scheduleIn,manager,0,callback)
+        if not ok then self:_unschedulePendingFrame();return nil,tostring(err) end
     elseif type(manager.nextTick) == "function" then
-        manager:nextTick(callback)
+        local ok,err=pcall(manager.nextTick,manager,callback)
+        if not ok then self:_unschedulePendingFrame();return nil,tostring(err) end
     else
         self.pending_frame = nil
         callback()
@@ -177,6 +184,7 @@ function SwipeRefresh:_invalidate()
     self.direction = nil
     self.strip_index = 0
     self.strip_count = 0
+    self.reveal_edges = nil
     self._on_complete = nil
     self.target_framebuffer = nil
     freeBuffer(target)
@@ -232,6 +240,9 @@ function SwipeRefresh:_submitTarget(target)
     local width = bb:getWidth()
     local height = bb:getHeight()
     if width <= 0 or height <= 0 then return nil, "正文 framebuffer 尺寸无效" end
+    if target:getWidth() ~= width or target:getHeight() ~= height then
+        return nil, "正文 framebuffer 尺寸已改变"
+    end
 
     if type(screen.beforePaint) == "function" then pcall(screen.beforePaint, screen) end
     local ok, err = xpcall(function()
@@ -256,7 +267,7 @@ function SwipeRefresh:_completeNativeSubmission(token)
     self.direction = nil
     self.native_swipe:reset()
     freeBuffer(target)
-    if type(callback) == "function" then pcall(callback, token) end
+    if type(callback) == "function" then pcall(callback, token, true) end
 end
 
 function SwipeRefresh:_completeSoftware(token, painted)
@@ -271,6 +282,7 @@ function SwipeRefresh:_completeSoftware(token, painted)
     self.direction = nil
     self.strip_index = 0
     self.strip_count = 0
+    self.reveal_edges = nil
     freeBuffer(target)
     if type(callback) == "function" then pcall(callback, token, painted) end
 end
@@ -311,60 +323,72 @@ function SwipeRefresh:_submitRippleFrame(target, index, width, height)
     local screen, bb = self.screen, self.screen.bb
     if type(screen.beforePaint) == "function" then pcall(screen.beforePaint, screen) end
     local ok, err = xpcall(function()
-        local left, top, right, bottom = width, height, 0, 0
         local align = self.software_alignment
-        local function reveal(x, edge, y, hh)
-            x, edge = math.max(0, math.ceil(x)), math.min(width, math.floor(edge))
+        local effect, progress = self.software_effect, index / self.strip_count
+        local cx, cy = width / 2, height / 2
+        if effect == 'side_ripple' then cx, cy = width, height / 3 end
+        local inward = effect == 'ripple_in'
+        local radius_squared = (math.max(cx,width-cx)^2 + math.max(cy,height-cy)^2)
+            * (inward and 1-progress or progress)^2
+        local band = math.max(4,align)
+        local split = math.floor(height/2/band)*band
+        local damage = {}
+        local function reveal(x, edge, y, hh, side)
             if edge <= x then return end
-            bb:blitFrom(target, x, y, x, y, edge - x, hh)
-            left, right = math.min(left, x), math.max(right, edge)
-            top, bottom = math.min(top, y), math.max(bottom, y + hh)
+            bb:blitFrom(target,x,y,x,y,edge-x,hh)
+            local slot = (y < split and 0 or 2)+side
+            local box=damage[slot] or {width,height,0,0};damage[slot]=box
+            box[1],box[2]=math.min(box[1],x),math.min(box[2],y)
+            box[3],box[4]=math.max(box[3],edge),math.max(box[4],y+hh)
         end
-        if index == self.strip_count then
-            bb:blitFrom(target, 0, 0, 0, 0, width, height)
-            left, top, right, bottom = 0, 0, width, height
-        else
-            local effect, progress = self.software_effect, index / self.strip_count
-            local cx, cy = width / 2, height / 2
-            if effect == 'side_ripple' then cx, cy = width, height / 3 end
-            local inward = effect == 'ripple_in'
-            local radius_squared = (math.max(cx, width-cx)^2 + math.max(cy, height-cy)^2)
-                * (inward and 1-progress or progress)^2
-            -- A few-pixel horizontal band approximates the circle without a
-            -- second framebuffer or per-pixel Lua drawing. Submit once per frame.
-            local band = math.max(4, align)
-            for y = 0, height - 1, band do
-                local hh = math.min(band, height - y)
-                if effect == 'wave' then
-                    -- A smooth directional wave front, with no displaced text
-                    -- or random flicker. Its bounded amplitude keeps reveal monotonic.
-                    local edge = width * (1-progress) + math.min(width, height) * .06
-                        * math.sin(math.pi * progress) * math.sin(2 * math.pi * (y+hh/2) / height)
-                    if self.direction == SwipeRefresh.FORWARD then reveal(edge, width, y, hh)
-                    else reveal(0, width-edge, y, hh) end
-                else
-                    local dy
-                    if inward then
-                        dy = math.max(0, y-cy, cy-(y+hh))
-                    else
-                        dy = math.max(math.abs(y-cy), math.abs(y+hh-cy))
-                    end
-                    if inward then
-                        local half = math.sqrt(math.max(0, radius_squared-dy*dy))
-                        if half == 0 then reveal(0, width, y, hh)
-                        else reveal(0, cx-half, y, hh);reveal(cx+half, width, y, hh) end
-                    elseif dy*dy < radius_squared then
-                        local half = math.sqrt(radius_squared-dy*dy)
-                        reveal(cx-half, cx+half, y, hh)
-                    end
+        for y=0,height-1,band do
+            local hh=math.min(band,height-y)
+            local left,right=math.floor(cx),math.floor(cx)
+            if index==self.strip_count then
+                if not inward then left,right=0,width end
+            elseif effect=='wave' then
+                -- Low-amplitude wave: keep text still and change only the front.
+                local edge=width*(1-progress)+math.min(width,height)*.03
+                    * math.sin(math.pi*progress)*math.sin(2*math.pi*(y+hh/2)/height)
+                if self.direction==SwipeRefresh.FORWARD then left,right=math.ceil(edge),width
+                else left,right=0,math.floor(width-edge) end
+            else
+                local dy=inward and math.max(0,y-cy,cy-(y+hh))
+                    or math.max(math.abs(y-cy),math.abs(y+hh-cy))
+                if inward or dy*dy<radius_squared then
+                    local half=math.sqrt(math.max(0,radius_squared-dy*dy))
+                    if inward then left,right=math.floor(cx-half),math.ceil(cx+half)
+                    else left,right=math.ceil(cx-half),math.floor(cx+half) end
                 end
             end
+            left,right=math.max(0,left),math.min(width,right)
+            if right<left then left,right=math.floor(cx),math.floor(cx) end
+            local old=self.reveal_edges[y]
+            if not old then
+                local start=effect=='wave' and (self.direction==SwipeRefresh.FORWARD and width or 0) or math.floor(cx)
+                old=inward and {0,width} or {start,start}
+            end
+            if inward then
+                reveal(old[1],left,y,hh,1);reveal(right,old[2],y,hh,2)
+            else
+                reveal(left,old[1],y,hh,1);reveal(old[2],right,y,hh,2)
+            end
+            self.reveal_edges[y]={left,right}
         end
-        if right > left and bottom > top then
-            left, top = math.floor(left / align) * align, math.floor(top / align) * align
-            right = math.min(width, math.ceil(right / align) * align)
-            bottom = math.min(height, math.ceil(bottom / align) * align)
-            self:_refreshSoftwareRegion(left, top, right - left, bottom - top)
+        -- At most four driver updates, grouped by half-screen and moving edge.
+        -- Exclude completed inner text where possible, with no final full pass.
+        for _,pair in ipairs{{1,2},{3,4}} do
+            local a,b=damage[pair[1]],damage[pair[2]]
+            local function aligned(box)
+                if not box then return end
+                box[1],box[2]=math.floor(box[1]/align)*align,math.floor(box[2]/align)*align
+                box[3],box[4]=math.min(width,math.ceil(box[3]/align)*align),math.min(height,math.ceil(box[4]/align)*align)
+            end
+            aligned(a);aligned(b)
+            if a and b and a[3]>=b[1] then
+                a[1],a[2],a[3],a[4]=math.min(a[1],b[1]),math.min(a[2],b[2]),math.max(a[3],b[3]),math.max(a[4],b[4]);b=nil
+            end
+            for _,box in pairs{a,b} do self:_refreshSoftwareRegion(box[1],box[2],box[3]-box[1],box[4]-box[2]) end
         end
     end, traceback)
     if type(screen.afterPaint) == "function" then pcall(screen.afterPaint, screen) end
@@ -422,6 +446,7 @@ function SwipeRefresh:_runSoftwareFrame(token)
         self:_completeSoftware(token)
         return
     end
+    local frame_started = self.clock()
     local index = self.strip_index + 1
     local submitted = true
     if RIPPLE_EFFECTS[self.software_effect] then
@@ -438,14 +463,15 @@ function SwipeRefresh:_runSoftwareFrame(token)
     self.strip_index = index
 
     if self.strip_index >= self.strip_count then
-        self:_completeSoftware(token, RIPPLE_EFFECTS[self.software_effect] == true)
+        self:_completeSoftware(token, true)
     else
-        local scheduled = self:_scheduleSoftwareFrame(token, self.frame_delay or SOFTWARE_FRAME_DELAY)
+        local delay=math.max(self.frame_delay>0 and .001 or 0,self.frame_delay-(self.clock()-frame_started))
+        local scheduled = self:_scheduleSoftwareFrame(token, delay)
         if not scheduled then self:_completeSoftware(token) end
     end
 end
 
-function SwipeRefresh:_completeWave(request_generation, wave_token, target)
+function SwipeRefresh:_completeWave(request_generation, wave_token, target, painted)
     if request_generation ~= self.generation or self.mode ~= "wave" or not self.running then
         freeBuffer(target)
         return
@@ -457,7 +483,7 @@ function SwipeRefresh:_completeWave(request_generation, wave_token, target)
     self.mode = nil
     self.direction = nil
     freeBuffer(target)
-    if type(callback) == "function" then pcall(callback, wave_token) end
+    if type(callback) == "function" then pcall(callback, wave_token, painted) end
 end
 
 -- Render the latest page and replace any active transition. The options are
@@ -502,8 +528,8 @@ function SwipeRefresh:begin(widget, direction, on_complete, options)
     if use_wave then
         self.mode = "wave"
         local started, wave_token_or_err = self.chapter_wave:begin(target, direction,
-            function(wave_token, completed_target)
-                self:_completeWave(request_generation, wave_token, completed_target)
+            function(wave_token, completed_target, painted)
+                self:_completeWave(request_generation, wave_token, completed_target, painted)
             end)
         if not started then
             self:_invalidate()
@@ -530,18 +556,19 @@ function SwipeRefresh:begin(widget, direction, on_complete, options)
     self.mode = "software"
     local width = self.screen.bb:getWidth()
     local height = self.screen.bb:getHeight()
-    self.software_effect = options.effect
+    self.software_effect = options.effect == 'original' and 'swipe' or options.effect
     self.refresh_mode = options.refresh_mode == 'fast' and 'fast' or 'ui'
     local delay = tonumber(width > height and options.landscape_delay_ms or options.portrait_delay_ms)
     if not delay or delay ~= delay or delay < 0 or delay > 200 then delay = width > height and 10 or 20 end
-    self.frame_delay = (options.effect == 'swipe' or RIPPLE_EFFECTS[options.effect]) and delay / 1000 or SOFTWARE_FRAME_DELAY
+    self.frame_delay = delay / 1000
     self.strip_index = 0
     self.strip_count = self:_softwareSteps(width, height)
     local align = tonumber(self.screen.alignment_constraint)
     if self.device.isKobo and self.device:isKobo() and self.device.hasColorScreen and self.device:hasColorScreen() then align = nil end
     if not align or align ~= align or align < 2 or align > 128 or align % 1 ~= 0 then align = nil end
     self.software_alignment = align or SOFTWARE_ALIGNMENT
-    if options.effect == 'swipe' then
+    self.reveal_edges = RIPPLE_EFFECTS[options.effect] and {} or nil
+    if self.software_effect == 'swipe' then
         -- Strip edges adapted from Swipe_Animation v4.3, 59dce480 (GPLv3).
         -- Keep device alignment without taking over the global repaint loop.
         self.strip_edges = {0}
@@ -583,7 +610,8 @@ function SwipeRefresh:settle()
     self.direction = nil
     self.strip_index = 0
     self.strip_count = 0
-    self:_submitTarget(target)
+    self.reveal_edges = nil
+    local painted=mode == 'native' or self:_submitTarget(target)
     if mode == "native" then
         -- The MTK backend normally consumes this one-shot flag with the
         -- original refresh.  Clear it again at this UI boundary so a host
@@ -594,7 +622,7 @@ function SwipeRefresh:settle()
     -- surface and submitted it.  The driver owns the physical waveform from
     -- this point; this method never waits for that waveform to finish.
     freeBuffer(target)
-    if type(callback) == "function" then pcall(callback, token) end
+    if type(callback) == "function" then pcall(callback, token, painted==true) end
     return true
 end
 

@@ -67,8 +67,13 @@ reader-local refresh mode and frame-delay settings.
 
 The circular `ripple`, `side_ripple`, `ripple_in` and directional `wave` reveals
 are local extensions, not effects from Swipe_Animation.
-It shares the aligned refresh regions, UI/Fast selection and orientation-specific
+They share the aligned refresh regions, UI/Fast selection and orientation-specific
 frame timing above, using the existing cancellable reader-local scheduler.
+Local pacing changes account for driver submission time, yield background
+pagination while revealing a page, and avoid a duplicate final full-page update.
+Ripple damage tracks newly revealed bands and submits at most four bounded
+regions per frame; the wave front uses a reduced amplitude. These changes are
+local adaptations, not claims about upstream Kindle animation performance.
 
 The two original license files are reproduced without modification at
 `legado.koplugin/legado/vendor/licenses/leko-LICENSE` (AGPLv3) and

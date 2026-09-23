@@ -54,7 +54,7 @@ local function schedule_preparation(owner)
         if owner.current_document~=document or document.closed or view.paused then return end
         -- Keep the active chapter ahead of background work. Both schedulers
         -- yield after a single page instead of combining four pages per tick.
-        if not view.pagination_job then
+        if not view.pagination_job and not view.animation:isRunning() then
             local rebuilding=false
             for _,record in ipairs(owner.prepared_chapters or {}) do
                 if record.prepared.layout_key~=fingerprint and record.failed_layout_key~=fingerprint then
@@ -93,8 +93,17 @@ function Adapter.prepare(owner,state,chapter,body)
     for i,value in ipairs(state.chapters or {}) do if value.uid==chapter.uid then index=i;break end end
     if not index or index<=state.index or index>state.index+3 then return false end
     for _,record in ipairs(owner.prepared_chapters) do if record.chapter_uid==chapter.uid then previous=record;break end end
-    local ok,prepared,err=pcall(Reader.prepare,{source_id=source_id(state),book=state.book,chapter=chapter,body=body,
-        style=view.style,settings=owner.settings,chrome_heights=view.chrome_heights},previous and previous.prepared)
+    local ok,prepared,err
+    if view.animation:isRunning() and type(body)=='string' then
+        -- Network completion may arrive between animation frames. Keep the
+        -- bounded text now; the existing preparation job parses it when idle.
+        ok=true
+        prepared=previous and previous.prepared.body==body and previous.prepared
+            or {body=body,input_bytes=#body,page_starts={}}
+    else
+        ok,prepared,err=pcall(Reader.prepare,{source_id=source_id(state),book=state.book,chapter=chapter,body=body,
+            style=view.style,settings=owner.settings,chrome_heights=view.chrome_heights},previous and previous.prepared)
+    end
     if not ok or not prepared then return nil,failure(not ok and prepared or err) end
     if previous then previous.prepared=prepared;previous.failed,previous.failed_layout_key=nil,nil
     else owner.prepared_chapters[#owner.prepared_chapters+1]={source_id=source_id(state),book_id=state.book.id,chapter_uid=chapter.uid,index=index,prepared=prepared} end
