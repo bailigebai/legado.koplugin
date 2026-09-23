@@ -3,6 +3,17 @@ local Json = require("legado.lib.json_codec")
 local Store = {}
 Store.__index = Store
 
+local function missing_file(error_value)
+    if type(error_value) ~= "table" then return false end
+    local details = error_value.details
+    if type(details) ~= "table" then return false end
+    if details.reason == "missing" then return true end
+    local cause = type(details.cause) == "string" and details.cause:lower() or ""
+    return cause:find("no such file", 1, true) ~= nil
+        or cause:find("not found", 1, true) ~= nil
+        or cause:find("cannot find", 1, true) ~= nil
+end
+
 function Store.new(settings)
     return setmetatable({ settings = settings, direct_values = {} }, Store)
 end
@@ -30,8 +41,7 @@ function Store:_readLicenseFile()
     local ok, raw, read_error = pcall(fs.read, fs, path)
     if not ok then return nil, false end
     if raw == nil then
-        local details = type(read_error) == "table" and read_error.details or nil
-        if type(details) == "table" and details.reason == "missing" then return {}, true end
+        if missing_file(read_error) then return {}, true end
         return nil, false
     end
     if type(raw) ~= "string" or raw == "" then return nil, false end

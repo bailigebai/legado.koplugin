@@ -77,7 +77,8 @@ do
     local kindle_fs = {}
     function kindle_fs:read(path)
         local value = files[path]
-        if value == nil then return nil, {code='STORAGE_ERROR', details={reason='missing'}} end
+        -- Production Fs:read wraps the OS missing-file error in details.cause.
+        if value == nil then return nil, {code='STORAGE_ERROR', details={cause='No such file or directory'}} end
         return value
     end
     function kindle_fs:atomicWrite(path, bytes)
