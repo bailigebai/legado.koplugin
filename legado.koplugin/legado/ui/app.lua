@@ -148,6 +148,9 @@ function App:addReaderToShelf(document)
     if not saved then
         saved,err=self.storage:createBook(book)
     end
+    if not saved and type(err)=='table' and err.code=='LICENSE_REQUIRED' then
+        return self:_present({kind='license_required',continuation=function() return self:addReaderToShelf(document) end})
+    end
     if not saved then return nil,err end
     self:_present({title='书架',text=existing and '本书已在书架中。' or '已加入书架。'})
     return saved

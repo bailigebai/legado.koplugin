@@ -362,6 +362,8 @@ assert(fallback_storage:replaceChapters(fallback_book.id, { { uid = "new-chapter
 assertx.equal("new-chapter", assert(fallback_storage:listChapters(fallback_book.id))[1].uid, "chapter replacement succeeds after failed write")
 
 local rejected_adapter = {
+    getBook = function() end,
+    listBooks = function() return {} end,
     putSource = function() return nil, Errors.new(Errors.STORAGE_ERROR, "adapter source failure") end,
     putBook = function() return nil, Errors.new(Errors.STORAGE_ERROR, "adapter book failure") end,
 }

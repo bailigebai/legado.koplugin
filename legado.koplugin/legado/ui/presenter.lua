@@ -1028,8 +1028,8 @@ function Presenter:showLicenseDialog(continuation)
         return self:_info(messages[reason] or "激活未完成，请联网后用同一密钥重试。", "授权失败")
     end
     dialog = construct(self.input_dialog, {
-        title = "解锁阅读小票与阅读回顾",
-        description = "未输入密钥不能使用阅读小票和阅读回顾数据展示。\n咸鱼搜索：kindle推箱子\n找到傅俊康，购买获取。\n其他功能免费，书架数量不限。",
+        title = "密钥激活",
+        description = "免费书架最多添加 5 本，添加更多书籍需要密钥。\n阅读小票和阅读回顾数据展示也需要密钥。\n咸鱼搜索：kindle推箱子\n找到傅俊康，购买获取。\n沿用已有短密钥；激活后可离线使用。",
         input = "", input_hint = "XXXX-XXXX-XXXX", input_type = "text", text_type = "password",
         buttons = {{
             { text = "取消", callback = function() closed=true;cancel();return self:_closeWidget(dialog) end },
@@ -1725,11 +1725,7 @@ function Presenter:_detail(view)
                 return view:startReading(complete,progress)
             end,view)
         end},
-        {text="加入书架",callback=function()
-            local saved,err=view:addToShelf()
-            view._notice=saved and "已加入书架" or ("收藏失败 · "..safe_token(type(err)=="table" and err.code,"STORAGE_ERROR"))
-            return self:_detail(view)
-        end},
+        {text="加入书架",callback=function() return self:_addToShelf(view) end},
         {text="移出书架",callback=function()
             local removed,err=view:removeFromShelf()
             view._notice=removed and "已移出书架" or ("移出失败 · "..safe_token(type(err)=="table" and err.code,"STORAGE_ERROR"))
@@ -1859,7 +1855,19 @@ function Presenter:_downloads(view)
     return widget
 end
 
+function Presenter:_addToShelf(view)
+    local saved,err=view:addToShelf()
+    if not saved and type(err)=="table" and err.code=="LICENSE_REQUIRED" then
+        return self:showLicenseDialog(function() return self:_addToShelf(view) end)
+    end
+    view._notice=saved and "已加入书架" or ("收藏失败 · "..safe_token(type(err)=="table" and err.code,"STORAGE_ERROR"))
+    return self:_detail(view)
+end
+
 function Presenter:show(view)
+    if type(view)=="table" and view.kind=="license_required" then
+        return self:showLicenseDialog(view.continuation)
+    end
     self:_closeReceipt()
     self:_ensureBackdrop()
     self:_leaveLibrary(view)

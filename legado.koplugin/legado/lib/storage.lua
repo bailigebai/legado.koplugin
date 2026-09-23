@@ -158,14 +158,14 @@ end
 
 function Storage.new(options)
     options = options or {}
-    if options.backend then return setmetatable({ backend = "injected", adapter = options.backend }, Storage) end
+    if options.backend then return setmetatable({ backend = "injected", adapter = options.backend, license = options.license }, Storage) end
     local loader = options.sqlite_loader
     if not loader then loader = function() return require("lua-ljsqlite3/init") end end
     local loaded, sqlite, sqlite_error = pcall(loader)
     if not loaded then sqlite_error, sqlite = sqlite, nil end
     if sqlite and type(sqlite.open) == "function" then
         local backend, backend_error = SqliteBackend.open(sqlite, options.path or "legado.sqlite")
-        if backend then return setmetatable({ backend = "sqlite", adapter = backend }, Storage) end
+        if backend then return setmetatable({ backend = "sqlite", adapter = backend, license = options.license }, Storage) end
         if Errors.is(backend_error, Errors.MIGRATION_ERROR) then return nil, backend_error end
     end
 
@@ -188,7 +188,7 @@ function Storage.new(options)
     end
     local valid, validation_error = validate_state_collections(state, path)
     if not valid then return nil, validation_error end
-    local self = setmetatable({ fs = fs, path = path, state = state, backend = "lua", sqlite_error = sqlite_error }, Storage)
+    local self = setmetatable({ fs = fs, path = path, state = state, backend = "lua", sqlite_error = sqlite_error, license = options.license }, Storage)
     local saved, save_error = self:_save()
     if not saved then return nil, save_error end
     return self
@@ -279,6 +279,16 @@ end
 function Storage:createBook(book)
     book = copy(book or {})
     book.id = book.id or Identity.book(book.source_id, book.url or book.name)
+    local existing, read_error = self:getBook(book.id)
+    if read_error then return nil, read_error end
+    if not existing then
+        local books, count_error = self:listShelf()
+        if count_error then return nil, count_error end
+        if type(books) ~= "table" then return nil, Errors.new(Errors.STORAGE_ERROR, "cannot read bookshelf") end
+        if #books >= 5 and not (self.license and self.license:isAuthorized() == true) then
+            return nil, Errors.new("LICENSE_REQUIRED", "免费书架最多添加 5 本，继续添加需要输入密钥。")
+        end
+    end
     if self.adapter then
         local saved, error_value = self.adapter:putBook(book)
         if not saved then return nil, error_value end

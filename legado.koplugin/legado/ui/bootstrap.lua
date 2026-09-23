@@ -49,7 +49,7 @@ function Bootstrap.build(plugin, options)
         root = DataStorage:getDataDir() .. "/legado"
         fs:ensureDirectory(root)
         local Storage = require("legado.lib.storage")
-        storage = Storage.new({ path = root .. "/legado.sqlite", fs = fs })
+        storage = Storage.new({ path = root .. "/legado.sqlite", fs = fs, license = license })
     end
 
     if storage then

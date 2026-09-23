@@ -87,7 +87,9 @@ function BookDetail:_beginReading(chapters, index, callback, expected_book, on_p
     return unpack_values(values, 1, values.n)
 end
 
-function BookDetail:addToShelf() return self.shelf and self.shelf:add(self.book) end
+function BookDetail:addToShelf()
+    if self.shelf then return self.shelf:add(self.book) end
+end
 function BookDetail:removeFromShelf() return self.shelf and self.shelf:remove(self.book.id) end
 function BookDetail:switchSource(index)
     local selected = self.alternatives[index]
