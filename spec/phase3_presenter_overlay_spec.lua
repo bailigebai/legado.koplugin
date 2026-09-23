@@ -53,8 +53,15 @@ local view=require('legado.ui.settings').new{settings={all=function() return {im
 local widget=p:_settings(view)
 local toggle
 for _,item in ipairs(widget.item_table) do if item.text:find('无感阅读',1,true) then toggle=item end end
-eq('table',type(toggle),'shelf settings expose a mode-recovery control without a reader')
-toggle.callback();eq(false,mode,'shelf setting can turn off immersive mode after unsupported first chapter')
+eq('table',type(toggle),'shelf settings describe the default reading mode')
+eq(false,toggle.enabled,'shelf does not offer a persisted toggle overridden by new-entry default')
+eq(nil,toggle.callback,'only the active reader offers a session mode toggle')
+view.document={backend='immersive'};view.values.immersive_reader=false
+local switches=0;view.on_toggle_reader=function() switches=switches+1 end
+widget=p:_settings(view)
+for _,item in ipairs(widget.item_table) do if item.text:find('无感阅读',1,true) then toggle=item end end
+eq('无感阅读（本次）：开启',toggle.text,'settings show actual backend even if old persisted preference is false')
+toggle.callback();eq(1,switches,'current reading mode can still be switched')
 doc.closed=false;doc.pauseReading=function() return nil,{code='STORAGE_ERROR'} end
 local error_info=p:_info('保存失败。')
 eq(error_info,ui:getTopmostVisibleWidget(),'save failure information remains visible when pausing itself fails')

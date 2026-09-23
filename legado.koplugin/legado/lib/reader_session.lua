@@ -1044,11 +1044,13 @@ end
 
 function ReaderSession:resume(source, book, chapters, callback, options)
     options = options or {}
+    local backend = options.backend or preferred_backend(self)
     local progress = self.storage:getProgress(book.id)
     local index = 1
     if progress then index = self:recoverIndex(chapters, progress) end
     return self:open(source, book, chapters, index, {
-        restore_fraction = preferred_backend(self)~='immersive'
+        backend = backend,
+        restore_fraction = backend~='immersive'
             and progress and clamp(progress.fraction, 0, 1) or nil,
         on_complete = callback,
         is_current = options.is_current,
@@ -1059,6 +1061,7 @@ end
 
 function ReaderSession:openOffline(source, book, index, callback, options)
     options = options or {}
+    local backend = options.backend or preferred_backend(self)
     if type(options.is_current) == "function" then
         local ok, current = pcall(options.is_current)
         if not ok or current ~= true then return nil, Errors.new(Errors.CANCELLED, "reading intent is stale") end
@@ -1079,9 +1082,9 @@ function ReaderSession:openOffline(source, book, index, callback, options)
     for candidate = wanted, 1, -1 do
         local state = { source = source, book = book, chapters = chapters, index = candidate,
             catalog_complete = catalog.complete == true,
-            active = false, offline = true, on_complete = callback, notification = notification,
+            active = false, offline = true, backend = backend, on_complete = callback, notification = notification,
             is_current = options.is_current }
-        local fraction = preferred_backend(self)~='immersive'
+        local fraction = backend~='immersive'
             and progress and candidate == wanted and clamp(progress.fraction, 0, 1) or nil
         local document, open_error = self:_open_cached(state, candidate, fraction)
         if document then return document end

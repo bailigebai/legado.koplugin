@@ -176,15 +176,18 @@ for _,pos in ipairs{{x=1,y=1},{x=599,y=95},{x=300,y=400}} do
     visible:_closeDialog('menu_dialog');h.shown=visible;visible:resumeReading()
 end
 local Device=require('device');local original_frontlight=Device.hasFrontlight
-local original_broadcast=h.ui.broadcastEvent;local overlay={}
+local original_broadcast=h.ui.broadcastEvent;local original_light=Device.showLightDialog;local overlay={};local light_calls=0
 Device.hasFrontlight=function() return true end
-h.ui.broadcastEvent=function() h.shown=overlay end
+h.ui.broadcastEvent=function() return false end -- no ReaderUI/FileManager DeviceListener in this stack
+Device.showLightDialog=function() light_calls=light_calls+1;h.ui:show(overlay) end
 visible:showLayoutMenu();local brightness
 for _,row in ipairs(visible.layout_dialog.buttons) do for _,button in ipairs(row) do
     if button.text=='屏幕亮度' then brightness=button end
 end end
 assert(brightness);brightness.callback()
+eq(1,light_calls,'brightness calls the device API without needing a broadcast listener')
 eq(overlay,h.shown,'real brightness button opens the native overlay')
+brightness.callback();eq(1,light_calls,'a rapid second activation cannot open a duplicate light panel')
 eq(true,visible.paused,'native brightness overlay keeps reading paused')
 local resumes_before=resumed
 visible:onResume();visible:onReadingResumed()
@@ -201,5 +204,12 @@ visible:pauseReading();visible:onResume()
 eq(false,visible.paused,'device resume restores timing when the reading page is visible')
 visible:pauseReading();visible:onReadingResumed()
 eq(false,visible.paused,'reading resume restores timing when the page is visible')
-visible:close();Device.hasFrontlight=original_frontlight;h.ui.broadcastEvent=original_broadcast
+visible:showLayoutMenu();local menu=visible.layout_dialog
+Device.showLightDialog=function() error('frontlight unavailable') end
+for _,row in ipairs(menu.buttons) do for _,button in ipairs(row) do
+    if button.text=='屏幕亮度' then eq(true,pcall(button.callback),'device light error cannot crash reader') end
+end end
+eq(menu,visible.layout_dialog,'light failure preserves the settings menu')
+eq(true,visible.last_error.message:find('frontlight unavailable',1,true)~=nil,'light error is visible instead of silently ignored')
+visible:close();Device.hasFrontlight=original_frontlight;Device.showLightDialog=original_light;h.ui.broadcastEvent=original_broadcast
 return n

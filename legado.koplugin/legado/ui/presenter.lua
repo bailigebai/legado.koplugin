@@ -1257,16 +1257,15 @@ function Presenter:_settings(view)
             return view.on_layout()
         end}
     end
-    items[#items+1]={text='无感阅读：'..(values.immersive_reader==true and '开启' or '关闭'),
-        enabled=not (view.document and view.document.is_local),callback=function()
-            if view.on_toggle_reader then
+    if view.document then
+        items[#items+1]={text='无感阅读（本次）：'..(view.document.backend=='immersive' and '开启' or '关闭'),
+            enabled=not view.document.is_local and view.on_toggle_reader~=nil,callback=function()
                 self:_closeWidget(self.settings_widget)
-                return view.on_toggle_reader()
-            end
-            local saved,err=view:set('immersive_reader',values.immersive_reader~=true)
-            if saved==nil then return self:_info(diagnostic_text(err),'保存失败') end
-            return self:_settings(view)
-        end}
+                if view.on_toggle_reader then return view.on_toggle_reader() end
+            end}
+    else
+        items[#items+1]={text='进入阅读默认开启无感阅读（阅读中可关闭）',enabled=false}
+    end
     local function save(key,value)
         local result,err=view:set(key,value)
         if result==nil then return self:_info('设置保存失败（'..safe_token(err and err.code,'STORAGE_ERROR')..'）') end

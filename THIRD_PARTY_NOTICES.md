@@ -65,7 +65,8 @@ The upstream README credits original author `xhs:5699990012`, nuku, Echoes,
 global UIManager/Screen replacements and ReaderUI detection, and exposes
 reader-local refresh mode and frame-delay settings.
 
-The circular `ripple` reveal is a local extension, not an upstream effect.
+The circular `ripple`, `side_ripple`, `ripple_in` and directional `wave` reveals
+are local extensions, not effects from Swipe_Animation.
 It shares the aligned refresh regions, UI/Fast selection and orientation-specific
 frame timing above, using the existing cancellable reader-local scheduler.
 
@@ -87,3 +88,13 @@ JavaScript engines and service endpoints are not bundled in the release.
 | [finlater/weread.koplugin](https://github.com/finlater/weread.koplugin) | `2943080c2493a1ae262cc97c74908ed62928c935` | AGPL-3.0 | `main.lua` menu registration and bookshelf/download initialization; `weread/lib/reader_lifecycle.lua` chapter completion, cached reading and prefetch lifecycle. Local equivalents: `main.lua`, `legado/ui/presenter.lua`, `legado/lib/reader_session.lua`, `legado/lib/koreader_reader_ui.lua`, `legado/lib/download_manager.lua`. |
 | [wangyisll1/Legado_Max](https://github.com/wangyisll1/Legado_Max) | `cf9594db7eb342b4c8fd4431574e3858a13f3d7e` | GPL-3.0 | `app/src/main/java/io/legado/app/model/analyzeRule/AnalyzeByJSoup.kt` common default selectors; `app/src/main/java/io/legado/app/help/source/BookSourceExtensions.kt` static explore categories. Local equivalents: `legado/lib/rule_engine.lua` and `legado/lib/book_service.lua`. Only the documented Lua subset is implemented. |
 | [koreader/koreader](https://github.com/koreader/koreader) | v2026.07.1, `9192014d8bd82a91dc1012473be0f238dedfdb54` | AGPL-3.0 | `frontend/ui/widget/menu.lua`, `frontend/ui/event.lua` and ReaderUI APIs are checked against the host's native menu and event contracts. The compatibility test loads the pinned upstream event module from the local tool cache; KOReader itself is not included. |
+
+## Animation design references
+
+The appearance of circle-open/close, water motion and directional reveal was
+reviewed in [gl-transitions/gl-transitions](https://github.com/gl-transitions/gl-transitions),
+commit `902218a1b63773ac0d0d9f491951da3392365bfe`:
+`transitions/circleopen.glsl` (gre), `WaterDrop.glsl` (Paweł Płóciennik),
+`ripple.glsl` and `wind.glsl` (gre), each marked MIT by its author.
+These are visual references only: the local CPU scan-band implementation
+does not copy or distribute their GLSL shaders or require a WebGL runtime.

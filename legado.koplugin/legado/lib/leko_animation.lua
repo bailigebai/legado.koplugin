@@ -32,6 +32,7 @@ local LANDSCAPE_STRIPS = 6
 local SOFTWARE_FRAME_DELAY = 0.018
 local SOFTWARE_ALIGNMENT = 8
 local SOFTWARE_OVERLAP = 8
+local RIPPLE_EFFECTS = { ripple=true, side_ripple=true, ripple_in=true, wave=true }
 
 local function freeBuffer(buffer)
     if buffer and type(buffer.free) == "function" then
@@ -299,7 +300,7 @@ end
 function SwipeRefresh:_refreshSoftwareRegion(x, y, width, height)
     local screen = self.screen
     local refresh = screen.refreshUI
-    if (self.software_effect == 'swipe' or self.software_effect == 'ripple')
+    if (self.software_effect == 'swipe' or RIPPLE_EFFECTS[self.software_effect])
             and self.refresh_mode == 'fast' and type(screen.refreshFast) == 'function' then
         refresh = screen.refreshFast
     end
@@ -312,25 +313,49 @@ function SwipeRefresh:_submitRippleFrame(target, index, width, height)
     local ok, err = xpcall(function()
         local left, top, right, bottom = width, height, 0, 0
         local align = self.software_alignment
+        local function reveal(x, edge, y, hh)
+            x, edge = math.max(0, math.ceil(x)), math.min(width, math.floor(edge))
+            if edge <= x then return end
+            bb:blitFrom(target, x, y, x, y, edge - x, hh)
+            left, right = math.min(left, x), math.max(right, edge)
+            top, bottom = math.min(top, y), math.max(bottom, y + hh)
+        end
         if index == self.strip_count then
             bb:blitFrom(target, 0, 0, 0, 0, width, height)
             left, top, right, bottom = 0, 0, width, height
         else
+            local effect, progress = self.software_effect, index / self.strip_count
             local cx, cy = width / 2, height / 2
-            local radius_squared = (cx * cx + cy * cy) * (index / self.strip_count)^2
+            if effect == 'side_ripple' then cx, cy = width, height / 3 end
+            local inward = effect == 'ripple_in'
+            local radius_squared = (math.max(cx, width-cx)^2 + math.max(cy, height-cy)^2)
+                * (inward and 1-progress or progress)^2
             -- A few-pixel horizontal band approximates the circle without a
             -- second framebuffer or per-pixel Lua drawing. Submit once per frame.
             local band = math.max(4, align)
             for y = 0, height - 1, band do
                 local hh = math.min(band, height - y)
-                local dy = math.max(math.abs(y - cy), math.abs(y + hh - cy))
-                if dy * dy < radius_squared then
-                    local half = math.sqrt(radius_squared - dy * dy)
-                    local x, edge = math.max(0, math.ceil(cx - half)), math.min(width, math.floor(cx + half))
-                    if edge > x then
-                        bb:blitFrom(target, x, y, x, y, edge - x, hh)
-                        left, right = math.min(left, x), math.max(right, edge)
-                        top, bottom = math.min(top, y), math.max(bottom, y + hh)
+                if effect == 'wave' then
+                    -- A smooth directional wave front, with no displaced text
+                    -- or random flicker. Its bounded amplitude keeps reveal monotonic.
+                    local edge = width * (1-progress) + math.min(width, height) * .06
+                        * math.sin(math.pi * progress) * math.sin(2 * math.pi * (y+hh/2) / height)
+                    if self.direction == SwipeRefresh.FORWARD then reveal(edge, width, y, hh)
+                    else reveal(0, width-edge, y, hh) end
+                else
+                    local dy
+                    if inward then
+                        dy = math.max(0, y-cy, cy-(y+hh))
+                    else
+                        dy = math.max(math.abs(y-cy), math.abs(y+hh-cy))
+                    end
+                    if inward then
+                        local half = math.sqrt(math.max(0, radius_squared-dy*dy))
+                        if half == 0 then reveal(0, width, y, hh)
+                        else reveal(0, cx-half, y, hh);reveal(cx+half, width, y, hh) end
+                    elseif dy*dy < radius_squared then
+                        local half = math.sqrt(radius_squared-dy*dy)
+                        reveal(cx-half, cx+half, y, hh)
                     end
                 end
             end
@@ -399,7 +424,7 @@ function SwipeRefresh:_runSoftwareFrame(token)
     end
     local index = self.strip_index + 1
     local submitted = true
-    if self.software_effect == 'ripple' then
+    if RIPPLE_EFFECTS[self.software_effect] then
         submitted = self:_submitRippleFrame(target, index, width, height)
     else
         local x, strip_width = self:_softwareStripFor(index, width, self.strip_count)
@@ -413,7 +438,7 @@ function SwipeRefresh:_runSoftwareFrame(token)
     self.strip_index = index
 
     if self.strip_index >= self.strip_count then
-        self:_completeSoftware(token, self.software_effect == 'ripple')
+        self:_completeSoftware(token, RIPPLE_EFFECTS[self.software_effect] == true)
     else
         local scheduled = self:_scheduleSoftwareFrame(token, self.frame_delay or SOFTWARE_FRAME_DELAY)
         if not scheduled then self:_completeSoftware(token) end
@@ -454,7 +479,7 @@ function SwipeRefresh:begin(widget, direction, on_complete, options)
     local use_wave = chapter_changed
         and options.chapter_clean_wave_enabled == true
         and self:isChapterWaveAvailable()
-    local use_native = options.effect ~= 'swipe' and options.effect ~= 'ripple' and self:isNativeSwipeAvailable()
+    local use_native = options.effect ~= 'swipe' and not RIPPLE_EFFECTS[options.effect] and self:isNativeSwipeAvailable()
     local use_software = not use_native
         and self:isSoftwareSwipeAvailable()
     if not use_wave and not use_native and not use_software then
@@ -509,7 +534,7 @@ function SwipeRefresh:begin(widget, direction, on_complete, options)
     self.refresh_mode = options.refresh_mode == 'fast' and 'fast' or 'ui'
     local delay = tonumber(width > height and options.landscape_delay_ms or options.portrait_delay_ms)
     if not delay or delay ~= delay or delay < 0 or delay > 200 then delay = width > height and 10 or 20 end
-    self.frame_delay = (options.effect == 'swipe' or options.effect == 'ripple') and delay / 1000 or SOFTWARE_FRAME_DELAY
+    self.frame_delay = (options.effect == 'swipe' or RIPPLE_EFFECTS[options.effect]) and delay / 1000 or SOFTWARE_FRAME_DELAY
     self.strip_index = 0
     self.strip_count = self:_softwareSteps(width, height)
     local align = tonumber(self.screen.alignment_constraint)

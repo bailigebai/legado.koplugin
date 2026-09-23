@@ -393,22 +393,22 @@ function App:startReading(book, chapters, index, callback, intent)
     for _, candidate in ipairs(self.storage:listSources() or {}) do if Models.sourceId(candidate) == book.source_id then source = candidate; break end end
     if not source then return "书源不存在" end
     local function offline()
-        return self.reader_session:openOffline(source, book, index, callback, { is_current = current })
+        return self.reader_session:openOffline(source, book, index, callback, { is_current = current, backend='immersive' })
     end
     if not self.service then return offline() end
     if type(chapters) == "table" and #chapters > 0 then
         if self.reader_session.cache and self.reader_session.cache.writeCatalog then
             self.reader_session.cache:writeCatalog(book.source_id,book.id,{chapters=chapters,complete=true})
         end
-        if index then return self.reader_session:open(source, book, chapters, index, { on_complete = callback, is_current = current,on_progress=on_progress }) end
-        return self.reader_session:resume(source, book, chapters, callback, { is_current = current,on_progress=on_progress })
+        if index then return self.reader_session:open(source, book, chapters, index, { on_complete = callback, is_current = current,on_progress=on_progress,backend='immersive' }) end
+        return self.reader_session:resume(source, book, chapters, callback, { is_current = current,on_progress=on_progress,backend='immersive' })
     end
     local cache=self.reader_session.cache
     local catalog=cache and cache.readCatalog and cache:readCatalog(book.source_id,book.id)
     local progress=self.storage.getProgress and self.storage:getProgress(book.id)
     local saved_chapters=catalog and (catalog.chapters or catalog)
     if saved_chapters and type(catalog.complete)=='boolean' and #saved_chapters>0 and (not progress or (progress.chapter_index or 1)<=#saved_chapters) then
-        return self.reader_session:resume(source,book,saved_chapters,callback,{is_current=current,catalog_complete=catalog.complete==true,on_progress=on_progress})
+        return self.reader_session:resume(source,book,saved_chapters,callback,{is_current=current,catalog_complete=catalog.complete==true,on_progress=on_progress,backend='immersive'})
     end
     return self.service:getChapters(source, book, function(values, err,metadata)
         if not current() then return end
@@ -426,7 +426,7 @@ function App:startReading(book, chapters, index, callback, intent)
             values = first
         end
         self.reader_session.cache:writeCatalog(book.source_id, book.id, { chapters = values, complete=complete })
-        local downstream, downstream_error = self.reader_session:resume(source, book, values, callback, { is_current = current, catalog_complete=complete,on_progress=on_progress })
+        local downstream, downstream_error = self.reader_session:resume(source, book, values, callback, { is_current = current, catalog_complete=complete,on_progress=on_progress,backend='immersive' })
         replace_downstream(downstream)
         return downstream, downstream_error
     end, { max_pages = (not progress or (progress.chapter_index or 1)<=1) and 1 or nil,

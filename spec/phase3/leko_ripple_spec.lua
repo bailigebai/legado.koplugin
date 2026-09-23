@@ -23,6 +23,7 @@ local function raster(w,height)
 end
 Blitbuffer.new=raster
 local target={paintTo=function(_,bb) bb:fill(42) end}
+for _,effect in ipairs{'ripple','side_ripple','ripple_in','wave'} do
 for _,size in ipairs{{120,160},{160,120},{119,157},{157,119},{5,7},{1,1}} do
     for _,direction in ipairs{'forward','backward'} do
         local w,height=size[1],size[2]
@@ -42,14 +43,34 @@ for _,size in ipairs{{120,160},{160,120},{119,157},{157,119},{5,7},{1,1}} do
         screen.setSwipeDirection=function() end
         local animation=Animation:new{screen=screen,ui_manager=h.ui,device={canDoSwipeAnimation=function() return true end}}
         assert(animation:begin(target,direction,function(_,painted) completed=completed+1;submitted=painted end,
-            {effect='ripple',refresh_mode='fast',portrait_delay_ms=30,landscape_delay_ms=10}))
+            {effect=effect,refresh_mode='fast',portrait_delay_ms=30,landscape_delay_ms=10}))
         eq(false,native,'ripple always uses software even on hardware-swipe devices')
         h:step()
         if w>10 and height>10 then
+          if effect=='ripple' then
             eq(42,screen.bb.pixels[math.floor(height/2)*w+math.floor(w/2)],'first ripple reveals the center')
             eq(7,screen.bb.pixels[0],'first ripple preserves the old corner')
             eq(7,screen.bb.pixels[math.floor(height/2)*w],'first ripple preserves the old side')
             eq(true,frames[1].x>0 and frames[1].y>0,'circular reveal refreshes a center region, not a full-height wipe')
+          elseif effect=='side_ripple' then
+            eq(42,screen.bb.pixels[math.floor(height/3)*w+w-1],'side ripple starts at the right edge one third down in either direction')
+            eq(7,screen.bb.pixels[math.floor(height/2)*w+math.floor(w/2)],'side ripple has not reached the screen center')
+            eq(7,screen.bb.pixels[(height-1)*w],'side ripple initially preserves the distant corner')
+          elseif effect=='ripple_in' then
+            eq(7,screen.bb.pixels[math.floor(height/2)*w+math.floor(w/2)],'converging ripple keeps the center until later')
+            eq(42,screen.bb.pixels[0],'converging ripple reveals the outside first')
+            eq(42,screen.bb.pixels[w*height-1],'converging ripple begins at both far corners')
+          else
+            local leading=direction=='forward' and w-1 or 0
+            eq(42,screen.bb.pixels[math.floor(height/2)*w+leading],'wave advances from the turn direction')
+            eq(7,screen.bb.pixels[math.floor(height/2)*w+w-1-leading],'wave preserves the trailing edge initially')
+            -- A curved front must not degenerate into the existing straight wipe.
+            local function revealed(y)
+                local count=0;for x=0,w-1 do if screen.bb.pixels[y*w+x]==42 then count=count+1 end end
+                return count
+            end
+            eq(true,revealed(math.floor(height/4))~=revealed(math.floor(height*3/4)),'wave has a non-straight front')
+          end
             eq(w>height and .01 or .03,h.tasks[1].delay,'ripple honors per-orientation frame timing')
         end
         h:drain()
@@ -62,16 +83,17 @@ for _,size in ipairs{{120,160},{160,120},{119,157},{157,119},{5,7},{1,1}} do
         eq(false,animation:isRunning(),'ripple releases the running state')
         eq(0,#h.tasks,'completed ripple leaves no scheduled work')
 
-        assert(animation:begin(target,direction,function() completed=completed+1 end,{effect='ripple'}))
+        assert(animation:begin(target,direction,function() completed=completed+1 end,{effect=effect}))
         local stale=h.tasks[1].fn
         animation:cancel();local before=#frames;stale();h:drain()
         eq(before,#frames,'late cancelled ripple cannot repaint menus')
         eq(1,completed,'cancel does not call completion')
-        assert(animation:begin(target,direction,function() completed=completed+1 end,{effect='ripple'}))
+        assert(animation:begin(target,direction,function() completed=completed+1 end,{effect=effect}))
         h:step();assert(animation:settle());h:drain()
         eq(2,completed,'settling submits the whole target exactly once')
         screen.bb:free()
     end
+end
 end
 for _,buffer in ipairs(buffers) do eq(1,buffer.freed,'every retained target is released once') end
 Blitbuffer.new=original_new
@@ -113,6 +135,10 @@ local options={book={id='ripple',name='水波纹'},chapter={uid='c1',title='第�
     body='<p>'..string.rep('甲乙丙丁戊己庚辛壬癸',150)..'</p>',
     callbacks={style_changed=function(_,style) saved=style;return true end}}
 local view=assert(Reader.new(options));h.ui:show(view);h:drain()
+eq(12,view.style.margin_left,'new book starts with 12 left margin')
+eq(12,view.style.margin_right,'new book starts with 12 right margin')
+eq('side_ripple',view.style.page_transition,'side ripple is the default')
+assert(view:applyStyle{page_transition='swipe'})
 view:showLayoutMenu()
 for _,row in ipairs(view.layout_dialog.buttons) do for _,button in ipairs(row) do
     if button.text=='动画效果：擦除渐显' then button.callback() end
@@ -136,4 +162,17 @@ options.style=saved;options.callbacks={}
 local restored=assert(Reader.new(options))
 eq('ripple',restored:getReaderSettings().page_transition,'restoring the next chapter retains ripple')
 restored:close()
+for _,effect in ipairs{'side_ripple','ripple_in','wave'} do
+    options.style={page_transition=effect,margin_left=36,margin_right=36}
+    local custom=assert(Reader.new(options))
+    eq(effect,custom:getReaderSettings().page_transition,'new effects survive per-book restore')
+    eq(36,custom.style.margin_left,'explicit per-book margins override new defaults')
+    custom:showLayoutMenu()
+    local selected=false
+    for _,row in ipairs(custom.layout_dialog.buttons) do for _,button in ipairs(row) do
+        if button.text:find('动画效果：',1,true)==1 then button.callback();selected=true end
+    end end
+    eq(true,selected,'every new effect can be changed through the visible control')
+    custom:close();h:drain()
+end
 return n

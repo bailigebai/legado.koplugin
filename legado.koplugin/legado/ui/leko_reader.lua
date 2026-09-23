@@ -23,8 +23,8 @@ function TransparentTitle:paintTo(bb,x,y)
     bb:colorblitFrom(self._bb,x,y,0,0,self.width,self._bb:getHeight(),BB.COLOR_BLACK)
 end
 local defaults={body_font='cfont',title_font='cfont',body_font_size=27,title_font_size=34,
-    line_spacing=.28,paragraph_spacing=10,margin_left=28,margin_right=28,indent=true,
-    show_header=true,show_footer=true,title_bold=true,layout_version=2,page_transition='swipe',
+    line_spacing=.28,paragraph_spacing=10,margin_left=12,margin_right=12,indent=true,
+    show_header=true,show_footer=true,title_bold=true,layout_version=2,page_transition='side_ripple',
     chapter_clean_wave_enabled=false,swipe_refresh_mode='ui',swipe_portrait_delay_ms=20,swipe_landscape_delay_ms=10}
 local function copy(value)
     local result={};for key,item in pairs(value or {}) do result[key]=item end;return result
@@ -49,7 +49,7 @@ local function normalized_style(values)
         local n=tonumber(style[key]);if not finite(n) or n<range[1] or n>range[2] then return nil,error_value('排版参数无效：'..key) end
         style[key]=n
     end
-    if not ({off=true,original=true,swipe=true,ripple=true})[style.page_transition] then return nil,error_value('翻页效果无效。') end
+    if not ({off=true,original=true,swipe=true,ripple=true,side_ripple=true,ripple_in=true,wave=true})[style.page_transition] then return nil,error_value('翻页效果无效。') end
     if not ({ui=true,fast=true})[style.swipe_refresh_mode] then return nil,error_value('动画刷新模式无效。') end
     for _,key in ipairs{'body_font','title_font'} do
         if type(style[key])~='string' or #style[key]>4096 or style[key]:find('%c') then return nil,error_value('字体路径无效。') end
@@ -776,15 +776,19 @@ function View:showLayoutMenu()
         end},{text='首行缩进：'..(self.style.indent and '开' or '关'),callback=function() update{indent=not self.style.indent} end}},
         {{text='页眉：'..(self.style.show_header and '显示' or '隐藏'),callback=function() update{show_header=not self.style.show_header} end},
          {text='页脚：'..(self.style.show_footer and '显示' or '隐藏'),callback=function() update{show_footer=not self.style.show_footer} end}},
-        {{text='动画效果：'..({off='关闭',original='原版翻页',swipe='擦除渐显',ripple='水波纹'})[self.style.page_transition],callback=function()
-            update{page_transition=({off='original',original='swipe',swipe='ripple',ripple='off'})[self.style.page_transition]}
+        {{text='动画效果：'..({off='关闭',original='原版翻页',swipe='擦除渐显',ripple='水波纹',side_ripple='侧边水波纹',ripple_in='聚拢水波纹',wave='波浪推进'})[self.style.page_transition],callback=function()
+            update{page_transition=({off='original',original='swipe',swipe='ripple',ripple='side_ripple',side_ripple='ripple_in',ripple_in='wave',wave='off'})[self.style.page_transition]}
         end},{text='跨章净屏动画：'..(self.style.chapter_clean_wave_enabled and '开' or '关'),callback=function() update{chapter_clean_wave_enabled=not self.style.chapter_clean_wave_enabled} end}},
         {{text='刷新模式：'..(self.style.swipe_refresh_mode=='fast' and '快速' or '清晰'),callback=function() update{swipe_refresh_mode=self.style.swipe_refresh_mode=='fast' and 'ui' or 'fast'} end}},
         {{text='竖屏帧延时：'..self.style.swipe_portrait_delay_ms..'ms',callback=function() cycle('swipe_portrait_delay_ms',{0,10,20,30,50,80}) end},
          {text='横屏帧延时：'..self.style.swipe_landscape_delay_ms..'ms',callback=function() cycle('swipe_landscape_delay_ms',{0,10,20,30,50,80}) end}},
     }
     if Device.hasFrontlight and Device:hasFrontlight() then buttons[#buttons+1]={{text='屏幕亮度',callback=function()
-        self:_closeDialog('layout_dialog');self.ui:broadcastEvent(require('ui/event'):new('ShowFlDialog'))
+        if self.closed or not self.layout_dialog then return false end
+        -- The independent reader has no native DeviceListener to receive ShowFlDialog.
+        local ok,err=pcall(Device.showLightDialog,Device)
+        if not ok then return self:_error('无法打开屏幕亮度：'..tostring(err)) end
+        self:_closeDialog('layout_dialog')
     end}} end
     buttons[#buttons+1]={{text='继续阅读',callback=function() self:_closeDialog('layout_dialog');self:resumeReading() end}}
     self.layout_dialog=require('ui/widget/buttondialog'):new{title='阅读设置',buttons=buttons,rows_per_page=8,

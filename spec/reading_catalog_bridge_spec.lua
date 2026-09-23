@@ -22,6 +22,7 @@ local reader={openDocument=function(_,_,callbacks)
     callbacks.ready(document)
     return document
 end,endOfBook=function() finished=finished+1 end}
+reader.openChapter=function(self,_,callbacks) return self:openDocument(nil,callbacks) end
 local complete_catalog
 local service={getChapters=function(_,_,_,cb,options)
     loads=loads+1;complete_catalog=cb
