@@ -1,6 +1,8 @@
 # KOReader 书源阅读插件
 
 
+升级无需重新激活：同一 Kindle 已成功激活后，覆盖更新插件代码即可，原短密钥和离线授权继续有效。请保留 KOReader 的用户数据和 settings 目录，不要删除 legado.json 或 legado-license.json；它们不在插件安装包中。GitHub 下载目录和 Releases 仅保留最新安装包。
+
 [下载最新安装包](https://github.com/bailigebai/legado.koplugin/releases/latest) · [下载 v0.10.24 ZIP](https://github.com/bailigebai/legado.koplugin/releases/download/v0.10.24/legado.koplugin-v0.10.24-20260923.zip)
 
 应用商店：刷新仓库列表，打开 `bailigebai/legado.koplugin`，选择“下载插件”并安装最新正式版，完成后重启 KOReader。
