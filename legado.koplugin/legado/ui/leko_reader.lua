@@ -49,7 +49,7 @@ local function normalized_style(values)
         local n=tonumber(style[key]);if not finite(n) or n<range[1] or n>range[2] then return nil,error_value('排版参数无效：'..key) end
         style[key]=n
     end
-    if not ({off=true,original=true,swipe=true})[style.page_transition] then return nil,error_value('翻页效果无效。') end
+    if not ({off=true,original=true,swipe=true,ripple=true})[style.page_transition] then return nil,error_value('翻页效果无效。') end
     if not ({ui=true,fast=true})[style.swipe_refresh_mode] then return nil,error_value('动画刷新模式无效。') end
     for _,key in ipairs{'body_font','title_font'} do
         if type(style[key])~='string' or #style[key]>4096 or style[key]:find('%c') then return nil,error_value('字体路径无效。') end
@@ -274,9 +274,9 @@ function View:_setPage(page,direction,prepared_widgets)
     self:_notifyPage()
     if direction and self.style.page_transition~='off' then
         local timing=self.callbacks.timing
-        local ok,animated=pcall(self.animation.begin,self.animation,self,direction,function()
+        local ok,animated=pcall(self.animation.begin,self.animation,self,direction,function(_,painted)
             if timing then pcall(timing,'animation_submit',started) end
-            if not self.closed then self.ui:setDirty(self,'ui') end
+            if not self.closed and not painted then self.ui:setDirty(self,'ui') end
         end,
             {effect=self.style.page_transition,chapter_changed=self.chapter_changed==true,
                 chapter_clean_wave_enabled=self.style.chapter_clean_wave_enabled,refresh_mode=self.style.swipe_refresh_mode,
@@ -776,8 +776,8 @@ function View:showLayoutMenu()
         end},{text='首行缩进：'..(self.style.indent and '开' or '关'),callback=function() update{indent=not self.style.indent} end}},
         {{text='页眉：'..(self.style.show_header and '显示' or '隐藏'),callback=function() update{show_header=not self.style.show_header} end},
          {text='页脚：'..(self.style.show_footer and '显示' or '隐藏'),callback=function() update{show_footer=not self.style.show_footer} end}},
-        {{text='动画效果：'..({off='关闭',original='原版翻页',swipe='擦除渐显'})[self.style.page_transition],callback=function()
-            update{page_transition=({off='original',original='swipe',swipe='off'})[self.style.page_transition]}
+        {{text='动画效果：'..({off='关闭',original='原版翻页',swipe='擦除渐显',ripple='水波纹'})[self.style.page_transition],callback=function()
+            update{page_transition=({off='original',original='swipe',swipe='ripple',ripple='off'})[self.style.page_transition]}
         end},{text='跨章净屏动画：'..(self.style.chapter_clean_wave_enabled and '开' or '关'),callback=function() update{chapter_clean_wave_enabled=not self.style.chapter_clean_wave_enabled} end}},
         {{text='刷新模式：'..(self.style.swipe_refresh_mode=='fast' and '快速' or '清晰'),callback=function() update{swipe_refresh_mode=self.style.swipe_refresh_mode=='fast' and 'ui' or 'fast'} end}},
         {{text='竖屏帧延时：'..self.style.swipe_portrait_delay_ms..'ms',callback=function() cycle('swipe_portrait_delay_ms',{0,10,20,30,50,80}) end},

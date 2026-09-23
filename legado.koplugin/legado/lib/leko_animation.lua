@@ -2,6 +2,7 @@
 -- Upstream: AGPL-3.0-or-later. See phase3-core-interface.md for source mapping.
 -- Swipe strip edge/reveal logic also adapted from Swipe_Animation v4.3,
 -- 59dce480c38538976325f7ebc0831e36bc4c6ed4, GPLv3; upstream notices must accompany distribution.
+-- Circular ripple reveal is a local extension using the same refresh settings.
 -- Reader-local transition coordinator.
 --
 -- Same-chapter pages use the device's native swipe when the device advertises
@@ -145,13 +146,18 @@ function SwipeRefresh:_scheduleSoftwareFrame(token, delay)
 
     local manager = self.ui_manager
     if not manager then return nil, "动画调度器不可用" end
+    local ok, err
     if type(manager.scheduleIn) == "function" then
-        manager:scheduleIn(delay or 0, callback)
+        ok, err = pcall(manager.scheduleIn, manager, delay or 0, callback)
     elseif type(manager.nextTick) == "function" then
-        manager:nextTick(callback)
+        ok, err = pcall(manager.nextTick, manager, callback)
     else
         self.pending_frame = nil
-        callback()
+        return nil, "动画调度器不可用"
+    end
+    if not ok then
+        self:_unschedulePendingFrame()
+        return nil, tostring(err)
     end
     return true
 end
@@ -252,7 +258,7 @@ function SwipeRefresh:_completeNativeSubmission(token)
     if type(callback) == "function" then pcall(callback, token) end
 end
 
-function SwipeRefresh:_completeSoftware(token)
+function SwipeRefresh:_completeSoftware(token, painted)
     if token ~= self.generation or self.mode ~= "software" or not self.running then return end
     self:_unschedulePendingFrame()
     local target = self.target_framebuffer
@@ -265,7 +271,7 @@ function SwipeRefresh:_completeSoftware(token)
     self.strip_index = 0
     self.strip_count = 0
     freeBuffer(target)
-    if type(callback) == "function" then pcall(callback, token) end
+    if type(callback) == "function" then pcall(callback, token, painted) end
 end
 
 function SwipeRefresh:_softwareSteps(width, height)
@@ -288,6 +294,57 @@ function SwipeRefresh:_softwareStripFor(index, width, steps)
     end
     -- Previous-page content enters from the left and moves right.
     return previous, strip_width
+end
+
+function SwipeRefresh:_refreshSoftwareRegion(x, y, width, height)
+    local screen = self.screen
+    local refresh = screen.refreshUI
+    if (self.software_effect == 'swipe' or self.software_effect == 'ripple')
+            and self.refresh_mode == 'fast' and type(screen.refreshFast) == 'function' then
+        refresh = screen.refreshFast
+    end
+    if refresh(screen, x, y, width, height) == false then error("动画效果刷新失败") end
+end
+
+function SwipeRefresh:_submitRippleFrame(target, index, width, height)
+    local screen, bb = self.screen, self.screen.bb
+    if type(screen.beforePaint) == "function" then pcall(screen.beforePaint, screen) end
+    local ok, err = xpcall(function()
+        local left, top, right, bottom = width, height, 0, 0
+        local align = self.software_alignment
+        if index == self.strip_count then
+            bb:blitFrom(target, 0, 0, 0, 0, width, height)
+            left, top, right, bottom = 0, 0, width, height
+        else
+            local cx, cy = width / 2, height / 2
+            local radius_squared = (cx * cx + cy * cy) * (index / self.strip_count)^2
+            -- A few-pixel horizontal band approximates the circle without a
+            -- second framebuffer or per-pixel Lua drawing. Submit once per frame.
+            local band = math.max(4, align)
+            for y = 0, height - 1, band do
+                local hh = math.min(band, height - y)
+                local dy = math.max(math.abs(y - cy), math.abs(y + hh - cy))
+                if dy * dy < radius_squared then
+                    local half = math.sqrt(radius_squared - dy * dy)
+                    local x, edge = math.max(0, math.ceil(cx - half)), math.min(width, math.floor(cx + half))
+                    if edge > x then
+                        bb:blitFrom(target, x, y, x, y, edge - x, hh)
+                        left, right = math.min(left, x), math.max(right, edge)
+                        top, bottom = math.min(top, y), math.max(bottom, y + hh)
+                    end
+                end
+            end
+        end
+        if right > left and bottom > top then
+            left, top = math.floor(left / align) * align, math.floor(top / align) * align
+            right = math.min(width, math.ceil(right / align) * align)
+            bottom = math.min(height, math.ceil(bottom / align) * align)
+            self:_refreshSoftwareRegion(left, top, right - left, bottom - top)
+        end
+    end, traceback)
+    if type(screen.afterPaint) == "function" then pcall(screen.afterPaint, screen) end
+    if not ok then return nil, err end
+    return true
 end
 
 function SwipeRefresh:_submitSoftwareStrip(target, x, width, height)
@@ -316,13 +373,7 @@ function SwipeRefresh:_submitSoftwareStrip(target, x, width, height)
         -- KOReader builds differ: some expose refreshFast as a non-callable
         -- placeholder (or omit it entirely). Keep the Swipe animation alive
         -- by selecting Fast only when it is an actual function.
-        local refresh = screen.refreshUI
-        if self.software_effect == 'swipe' and self.refresh_mode == 'fast'
-                and type(screen.refreshFast) == 'function' then
-            refresh = screen.refreshFast
-        end
-        local result = refresh(screen, left, 0, refreshed_width, height)
-        if result == false then error("动画效果刷新失败") end
+        self:_refreshSoftwareRegion(left, 0, refreshed_width, height)
     end, traceback)
     if type(screen.afterPaint) == "function" then pcall(screen.afterPaint, screen) end
     if not ok then return nil, err end
@@ -342,23 +393,30 @@ function SwipeRefresh:_runSoftwareFrame(token)
 
     local width = bb:getWidth()
     local height = bb:getHeight()
+    if target:getWidth() ~= width or target:getHeight() ~= height then
+        self:_completeSoftware(token)
+        return
+    end
     local index = self.strip_index + 1
-    local x, strip_width = self:_softwareStripFor(index, width, self.strip_count)
-    if strip_width > 0 then
-        local submitted = self:_submitSoftwareStrip(target, x, strip_width, height)
-        if not submitted then
-            -- Do not leave a live callback or a retained page buffer after a
-            -- driver error.  ReaderView will rebuild its current logical page.
-            self:_completeSoftware(token)
-            return
-        end
+    local submitted = true
+    if self.software_effect == 'ripple' then
+        submitted = self:_submitRippleFrame(target, index, width, height)
+    else
+        local x, strip_width = self:_softwareStripFor(index, width, self.strip_count)
+        if strip_width > 0 then submitted = self:_submitSoftwareStrip(target, x, strip_width, height) end
+    end
+    if not submitted then
+        -- ReaderView rebuilds its current logical page on a driver error.
+        self:_completeSoftware(token)
+        return
     end
     self.strip_index = index
 
     if self.strip_index >= self.strip_count then
-        self:_completeSoftware(token)
+        self:_completeSoftware(token, self.software_effect == 'ripple')
     else
-        self:_scheduleSoftwareFrame(token, self.frame_delay or SOFTWARE_FRAME_DELAY)
+        local scheduled = self:_scheduleSoftwareFrame(token, self.frame_delay or SOFTWARE_FRAME_DELAY)
+        if not scheduled then self:_completeSoftware(token) end
     end
 end
 
@@ -396,7 +454,7 @@ function SwipeRefresh:begin(widget, direction, on_complete, options)
     local use_wave = chapter_changed
         and options.chapter_clean_wave_enabled == true
         and self:isChapterWaveAvailable()
-    local use_native = options.effect ~= 'swipe' and self:isNativeSwipeAvailable()
+    local use_native = options.effect ~= 'swipe' and options.effect ~= 'ripple' and self:isNativeSwipeAvailable()
     local use_software = not use_native
         and self:isSoftwareSwipeAvailable()
     if not use_wave and not use_native and not use_software then
@@ -451,14 +509,16 @@ function SwipeRefresh:begin(widget, direction, on_complete, options)
     self.refresh_mode = options.refresh_mode == 'fast' and 'fast' or 'ui'
     local delay = tonumber(width > height and options.landscape_delay_ms or options.portrait_delay_ms)
     if not delay or delay ~= delay or delay < 0 or delay > 200 then delay = width > height and 10 or 20 end
-    self.frame_delay = options.effect == 'swipe' and delay / 1000 or SOFTWARE_FRAME_DELAY
+    self.frame_delay = (options.effect == 'swipe' or options.effect == 'ripple') and delay / 1000 or SOFTWARE_FRAME_DELAY
     self.strip_index = 0
     self.strip_count = self:_softwareSteps(width, height)
+    local align = tonumber(self.screen.alignment_constraint)
+    if self.device.isKobo and self.device:isKobo() and self.device.hasColorScreen and self.device:hasColorScreen() then align = nil end
+    if not align or align ~= align or align < 2 or align > 128 or align % 1 ~= 0 then align = nil end
+    self.software_alignment = align or SOFTWARE_ALIGNMENT
     if options.effect == 'swipe' then
         -- Strip edges adapted from Swipe_Animation v4.3, 59dce480 (GPLv3).
         -- Keep device alignment without taking over the global repaint loop.
-        local align = tonumber(self.screen.alignment_constraint)
-        if self.device.isKobo and self.device:isKobo() and self.device.hasColorScreen and self.device:hasColorScreen() then align = nil end
         self.strip_edges = {0}
         for i = 1, self.strip_count - 1 do
             local raw = width * i / self.strip_count

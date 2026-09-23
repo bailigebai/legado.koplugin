@@ -65,6 +65,10 @@ The upstream README credits original author `xhs:5699990012`, nuku, Echoes,
 global UIManager/Screen replacements and ReaderUI detection, and exposes
 reader-local refresh mode and frame-delay settings.
 
+The circular `ripple` reveal is a local extension, not an upstream effect.
+It shares the aligned refresh regions, UI/Fast selection and orientation-specific
+frame timing above, using the existing cancellable reader-local scheduler.
+
 The two original license files are reproduced without modification at
 `legado.koplugin/legado/vendor/licenses/leko-LICENSE` (AGPLv3) and
 `legado.koplugin/legado/vendor/licenses/swipe-LICENSE` (GPLv3).
