@@ -535,6 +535,7 @@ function SwipeRefresh:begin(widget, direction, on_complete, options)
 
     self:_invalidate()
     local use_wave = chapter_changed
+        and options.effect ~= 'swipe_classic'
         and options.chapter_clean_wave_enabled == true
         and self:isChapterWaveAvailable()
     local use_native = options.effect ~= 'swipe' and options.effect ~= 'swipe_classic'
@@ -591,8 +592,9 @@ function SwipeRefresh:begin(widget, direction, on_complete, options)
     local height = self.screen.bb:getHeight()
     self.upstream_swipe = options.effect == 'swipe_classic'
     self.software_effect = (options.effect == 'original' or self.upstream_swipe) and 'swipe' or options.effect
-    self.refresh_mode = options.refresh_mode == 'fast' and 'fast' or 'ui'
-    local delay = tonumber(width > height and options.landscape_delay_ms or options.portrait_delay_ms)
+    self.refresh_mode = not self.upstream_swipe and options.refresh_mode == 'fast' and 'fast' or 'ui'
+    local delay = self.upstream_swipe and (width > height and 10 or 20)
+        or tonumber(width > height and options.landscape_delay_ms or options.portrait_delay_ms)
     if not delay or delay ~= delay or delay < 0 or delay > 200 then delay = width > height and 10 or 20 end
     self.frame_delay = delay / 1000
     self.strip_index = 0

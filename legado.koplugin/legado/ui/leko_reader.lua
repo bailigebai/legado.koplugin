@@ -771,7 +771,7 @@ end
 function View:showLayoutMenu()
     if self.closed then return false end
     self:pauseReading();self:_closeDialog('layout_dialog')
-    local delay_label=self.style.page_transition=='swipe_classic' and '帧延迟' or '帧间隔'
+    local swipe_preset=self.style.page_transition=='swipe_classic'
     local function update(changes)
         local ok,err=self:applyStyle(changes);if not ok then self:_error(err) end
         self:showLayoutMenu()
@@ -802,11 +802,14 @@ function View:showLayoutMenu()
          {text='页脚：'..(self.style.show_footer and '显示' or '隐藏'),callback=function() update{show_footer=not self.style.show_footer} end}},
         {{text='动画效果：'..({off='关闭',original='原版翻页',swipe_classic='Swipe动画',swipe='擦除渐显',ripple='水波纹',side_ripple='侧边水波纹',ripple_in='聚拢水波纹',wave='波浪推进'})[self.style.page_transition],callback=function()
             update{page_transition=({off='original',original='swipe_classic',swipe_classic='swipe',swipe='ripple',ripple='side_ripple',side_ripple='ripple_in',ripple_in='wave',wave='off'})[self.style.page_transition]}
-        end},{text='跨章净屏动画：'..(self.style.chapter_clean_wave_enabled and '开' or '关'),callback=function() update{chapter_clean_wave_enabled=not self.style.chapter_clean_wave_enabled} end}},
-        {{text='刷新模式：'..(self.style.swipe_refresh_mode=='fast' and '快速' or '清晰'),callback=function() update{swipe_refresh_mode=self.style.swipe_refresh_mode=='fast' and 'ui' or 'fast'} end}},
-        {{text='竖屏'..delay_label..'：'..self.style.swipe_portrait_delay_ms..'ms',callback=function() cycle('swipe_portrait_delay_ms',{0,10,20,30,40,50,80}) end},
-         {text='横屏'..delay_label..'：'..self.style.swipe_landscape_delay_ms..'ms',callback=function() cycle('swipe_landscape_delay_ms',{0,10,20,30,40,50,80}) end}},
+        end}},
     }
+    if not swipe_preset then
+        buttons[#buttons][2]={text='跨章净屏动画：'..(self.style.chapter_clean_wave_enabled and '开' or '关'),callback=function() update{chapter_clean_wave_enabled=not self.style.chapter_clean_wave_enabled} end}
+        buttons[#buttons+1]={{text='刷新模式：'..(self.style.swipe_refresh_mode=='fast' and '快速' or '清晰'),callback=function() update{swipe_refresh_mode=self.style.swipe_refresh_mode=='fast' and 'ui' or 'fast'} end}}
+        buttons[#buttons+1]={{text='竖屏帧间隔：'..self.style.swipe_portrait_delay_ms..'ms',callback=function() cycle('swipe_portrait_delay_ms',{0,10,20,30,40,50,80}) end},
+            {text='横屏帧间隔：'..self.style.swipe_landscape_delay_ms..'ms',callback=function() cycle('swipe_landscape_delay_ms',{0,10,20,30,40,50,80}) end}}
+    end
     if Device.hasFrontlight and Device:hasFrontlight() then buttons[#buttons+1]={{text='屏幕亮度',callback=function()
         if self.closed or not self.layout_dialog then return false end
         -- The independent reader has no native DeviceListener to receive ShowFlDialog.

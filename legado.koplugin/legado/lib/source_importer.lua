@@ -45,6 +45,14 @@ local function report_error(report, code, message, details)
     return report
 end
 
+local function storage_error(err, operation)
+    err = type(err) == "table" and err or {}
+    local details = {}
+    for key, value in pairs(err.details or {}) do details[key] = value end
+    details.operation = operation
+    return Errors.new(err.code or Errors.STORAGE_ERROR, err.message or "source storage failed", details)
+end
+
 local function warning_for_origin(origin)
     if type(origin) ~= "string" then return nil end
     if origin:lower():match("^http://") then
@@ -110,8 +118,11 @@ function SourceImporter:importJson(text, origin, options)
     local origin_warning = warning_for_origin(origin)
     if origin_warning then report.warnings[#report.warnings + 1] = copy(origin_warning) end
 
-    local existing = self.storage:listSources()
-    if type(existing) ~= "table" then return report_error(report, Errors.STORAGE_ERROR, "storage cannot list sources") end
+    local existing, read_error = self.storage:listSources()
+    if type(existing) ~= "table" then
+        local err = storage_error(read_error, "read")
+        return report_error(report, err.code, err.message, err.details)
+    end
     local candidate, by_id = {}, {}
     for _, source in ipairs(existing) do
         local retained = copy(source)
@@ -143,7 +154,7 @@ function SourceImporter:importJson(text, origin, options)
     local saved, save_error = self.storage:replaceSources(candidate)
     if not saved then
         report.imported, report.updated = 0, 0
-        report.error = save_error or Errors.new(Errors.STORAGE_ERROR, "source import was not committed")
+        report.error = storage_error(save_error, "write")
         return report
     end
     report.compatibility = prepared

@@ -2,6 +2,7 @@ local Scanner = require("legado.lib.compatibility_scanner")
 local SourceImporter = require("legado.lib.source_importer")
 local Sanitizer = require("legado.lib.diagnostic_sanitizer")
 local Models = require("legado.lib.models")
+local Errors = require("legado.lib.errors")
 
 local SourceManager = {}
 SourceManager.__index = SourceManager
@@ -70,6 +71,23 @@ end
 
 function SourceManager:importLocal(path, origin, options)
     if not self.importer or not self.fs then return nil end
+    local function failed(err)
+        local details = {}
+        for key, value in pairs(err.details or {}) do details[key] = value end
+        details.stage = "source_file_read"
+        return { imported = 0, updated = 0, rejected = 1, warnings = {}, compatibility = {},
+            error = Errors.new(err.code, err.message, details) }
+    end
+    path = type(path) == "string" and path:match("^%s*(.-)%s*$") or ""
+    if (path:sub(1, 1) == '"' and path:sub(-1) == '"') or (path:sub(1, 1) == "'" and path:sub(-1) == "'") then
+        path = path:sub(2, -2)
+    end
+    if path == "" or path:find("\0", 1, true) then
+        return failed(Errors.new(Errors.INVALID_INPUT, "invalid source path", { reason = "source_path_invalid" }))
+    end
+    if path:lower():match("^https?://") then
+        return failed(Errors.new(Errors.INVALID_INPUT, "URL is not a local path", { reason = "source_path_is_url" }))
+    end
     local text, read_error
     if type(self.fs.readBounded) == "function" then text, read_error = self.fs:readBounded(path, SourceImporter.DEFAULT_MAX_BYTES)
     elseif type(self.fs.read) == "function" then
@@ -78,7 +96,7 @@ function SourceManager:importLocal(path, origin, options)
             text, read_error = nil, { code = "RESPONSE_TOO_LARGE", message = "书源文件超过 5 MiB" }
         end
     end
-    if not text then return { imported = 0, updated = 0, rejected = 1, warnings = {}, compatibility = {}, error = read_error or { code = "STORAGE_ERROR", message = "无法读取书源文件" } } end
+    if not text then return failed(read_error or Errors.new(Errors.STORAGE_ERROR, "无法读取书源文件")) end
     return self.importer:importJson(text, origin or path, options)
 end
 

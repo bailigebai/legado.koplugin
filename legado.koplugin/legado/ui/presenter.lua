@@ -42,10 +42,18 @@ local function diagnostic_text(error, compatibility, reading)
     }
     if code == "STORAGE_ERROR" then
         explanation = storage_reasons[details.sqlite_code] or "本地数据读写失败，请检查存储空间和数据目录权限。"
+        if details.stage == "source_file_read" then
+            explanation = "无法读取所选 JSON 文件。请重新选择设备上的文件；电脑路径不能直接用于 Kindle。"
+        end
     elseif code == "RESPONSE_TOO_LARGE" then explanation = "书源文件过大，导入上限为 5 MiB。"
     elseif code == "UNSUPPORTED_RULE" then explanation = "此规则需要尚未支持的脚本或网页能力，可返回选择其它分类或书源。"
     elseif code == "PARSE_ERROR" then explanation = reading and "网页正文或目录无法按当前书源规则解析，可重试或切换书源。"
         or "内容不是有效的书源 JSON，请检查网址是否返回了网页或错误提示。" end
+    if code == "INVALID_INPUT" and details.reason == "source_path_is_url" then
+        explanation = "这里需要设备上的 JSON 文件。导入网址请返回选择“从网址导入”。"
+    elseif code == "INVALID_INPUT" and details.reason == "source_path_invalid" then
+        explanation = "请选择设备上的 JSON 文件，或填写完整文件路径。"
+    end
     if reading and details.stage == "reader_open" then
         explanation = "KOReader 未能打开生成的阅读文档，请重试并确认使用当前插件版本。"
     elseif reading and details.stage == "html_write" then
@@ -53,6 +61,7 @@ local function diagnostic_text(error, compatibility, reading)
     end
     if reading and reading_reasons[details.reason] then explanation=reading_reasons[details.reason] end
     local lines = { "错误代码：" .. code, "说明：" .. explanation }
+    if details.stage == "source_file_read" then lines[#lines + 1] = "阶段：读取书源文件" end
     if reading and reading_stages[details.stage] then lines[#lines+1] = "阶段："..reading_stages[details.stage] end
     if reading and type(details.location)=='string' and details.location:match('^[%w_%-]+%.lua:%d+$') then
         lines[#lines+1] = "位置："..details.location
@@ -712,11 +721,22 @@ function Presenter:_sources(view)
         return self:_showInput(dialog)
     end
     imports[#imports + 1] = { text = "从本地 JSON 导入", callback = function()
-        return input_dialog("导入书源", "JSON 文件路径", function(path)
+        local function import_file(path)
+            if view.alive == false then return end
             local report = view:importLocal(path)
             self:_sources(view)
             return self:_info(import_summary(report), "导入书源")
-        end)
+        end
+        local PathChooser = optional("ui/widget/pathchooser")
+        if PathChooser then
+            return self:_show(PathChooser:new{
+                title = "长按 JSON 书源文件以选择", select_file = true, select_directory = false, show_files = true,
+                path = (G_reader_settings and G_reader_settings:readSetting("home_dir")) or "/mnt/us/documents",
+                file_filter = function(file) return tostring(file):lower():match("%.json$") ~= nil end,
+                onConfirm = import_file,
+            })
+        end
+        return input_dialog("导入书源", "设备上的 JSON 文件完整路径", import_file)
     end }
     imports[#imports + 1] = { text = "从网址导入", callback = function()
         return input_dialog("导入书源", "HTTPS 或 HTTP 地址", function(url)

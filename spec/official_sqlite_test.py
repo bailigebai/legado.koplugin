@@ -105,7 +105,12 @@ assert(#storage:listSources() == 0)
 
 if collection then
     local decoded = Json.decode(collection)
-    report = import(storage, collection)
+    local Manager = require("legado.ui.source_manager")
+    local function manager()
+        return Manager.new({storage=storage,importer=Importer:new({storage=storage}),fs=require("legado.lib.fs").new()})
+    end
+    report = manager():importLocal(' \n"'..collection_path..'"\r\n ')
+    check(not report.error, report.error)
     assert(report.imported == #decoded)
     active_db:close()
     storage = open()
@@ -123,11 +128,17 @@ if collection then
         normalized.imported_at = loaded.imported_at
         same(normalized, loaded)
     end
-    report = import(storage, collection)
+    local first_id = importer:_normalize(decoded[1]).id
+    check(storage:updateSource(first_id,{enabled=false}))
+    report = manager():importLocal(collection_path)
+    check(not report.error, report.error)
     assert(report.imported == 0 and report.updated == #decoded)
     assert(#storage:listSources() == #decoded)
-    local manager = require("legado.ui.source_manager").new({storage=storage})
-    assert(#manager:viewModel().sources == #decoded, "imported sources reach the production source-list model")
+    assert(storage:getSource(first_id).enabled==false,"reimport preserves disabled source")
+    report = manager():importLocal(collection_path..'.missing')
+    assert(report.error.details.stage=='source_file_read' and #storage:listSources()==#decoded,
+        "missing file never removes previous batch")
+    assert(#manager():viewModel().sources == #decoded, "imported sources reach the production source-list model")
     checked_sources = #decoded
 end
 assert(storage:getBook(book.id).name == book.name, "source import preserves bookshelf")
@@ -174,6 +185,10 @@ def main():
         print(f"Collection: {len(raw)} bytes, SHA256 {hashlib.sha256(raw).hexdigest()}", flush=True)
     with tempfile.TemporaryDirectory(prefix="legado-native-sqlite-") as directory:
         runtime.globals().db_path = Path(directory).as_posix() + "/legado.sqlite"
+        if args.url or args.collection:
+            collection_path = Path(directory) / "source collection.json"
+            collection_path.write_bytes(raw)
+            runtime.globals().collection_path = collection_path.as_posix()
         try:
             runtime.execute(CHECK)
         finally:

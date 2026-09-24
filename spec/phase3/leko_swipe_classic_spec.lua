@@ -89,6 +89,7 @@ for _,direction in ipairs{'forward','backward'} do
     screen.refreshUI=function(_,x,y,width,hh)
         visible:blitFrom(screen.bb,x,y,x,y,width,hh);calls[#calls+1]={x=x,w=width}
     end
+    screen.refreshFast=function() error('Swipe preset must use upstream default UI refresh') end
     screen.setSwipeAnimations=function(_,enabled) assert(not enabled,'Swipe is always software') end
     screen.setSwipeDirection=function() end
     ffiutil.usleep=function(microseconds) delays[#delays+1]=microseconds end
@@ -115,9 +116,12 @@ for _,direction in ipairs{'forward','backward'} do
     h:drain()
     delays={}
     assert(animation:begin({paintTo=function(_,bb) bb:fill(99) end},direction,nil,
-        {effect='swipe_classic',portrait_delay_ms=40,landscape_delay_ms=40}))
+        {effect='swipe_classic',portrait_delay_ms=40,landscape_delay_ms=40,
+            refresh_mode='fast',chapter_changed=true,chapter_clean_wave_enabled=true}))
     h:step()
-    for _,delay in ipairs(delays) do eq(40000,delay,'selected 40ms is a real post-submission wait') end
+    eq(false,animation:isRunning(),'Swipe preset is not replaced by the separate chapter cleanup wave')
+    eq((landscape and 6 or 8)-1,#delays,'old settings do not remove the upstream waits')
+    for _,delay in ipairs(delays) do eq(landscape and 10000 or 20000,delay,'Swipe ignores saved custom delays and retains upstream defaults') end
 end
 end
 for _,fault in ipairs{'refresh','sleep','cancel','resize'} do
@@ -150,14 +154,14 @@ for _,size in ipairs{{1,1},{5,7},{119,157},{157,119}} do
         local visible=raster(w,height);visible:fill(7)
         screen.refreshUI=function(_,x,y,width,hh) visible:blitFrom(screen.bb,x,y,x,y,width,hh) end
         screen.refreshFast={} -- Old hosts may have a non-callable Fast placeholder.
-        ffiutil.usleep=function() error('zero delay must not sleep') end
+        ffiutil.usleep=function(delay) eq(w>height and 10000 or 20000,delay,'saved zero delay cannot alter Swipe preset') end
         local animation=Animation:new{screen=screen,ui_manager=h.ui,device={canDoSwipeAnimation=function()return false end}}
         assert(animation:begin({paintTo=function(_,bb) bb:fill(42) end},direction,nil,
             {effect='swipe_classic',refresh_mode='fast',portrait_delay_ms=0,landscape_delay_ms=0}))
         h:step()
         local full=true;for i=0,w*height-1 do if visible.pixels[i]~=42 then full=false end end
         eq(true,full,'odd/small panels keep complete Swipe coverage with Fast fallback')
-        eq(false,animation:isRunning(),'zero-delay Swipe completes without another frame')
+        eq(false,animation:isRunning(),'fixed-preset Swipe completes without another frame')
     end
 end
 BB.new=original_new;ffiutil.usleep=original_sleep
@@ -168,15 +172,22 @@ local view=assert(Reader.new{book={id='controls'},chapter={uid='c'},body=body,
     style={page_transition='swipe_classic',swipe_portrait_delay_ms=30},
     callbacks={style_changed=function(_,style) saved=style;return true end}})
 view:showLayoutMenu()
-local named,delay=false
+local named,mode_button=false
 for _,row in ipairs(view.layout_dialog.buttons) do for _,button in ipairs(row) do
-    if button.text=='动画效果：Swipe动画' then named=true end
-    if button.text=='竖屏帧延迟：30ms' then delay=button end
+    if button.text=='动画效果：Swipe动画' then named=true;mode_button=button end
+    eq(false,button.text:find('帧延迟',1,true)~=nil or button.text:find('帧间隔',1,true)~=nil,'Swipe preset exposes no delay controls')
+    eq(false,button.text:find('刷新模式',1,true)~=nil or button.text:find('跨章净屏动画',1,true)~=nil,'Swipe preset exposes no competing effect controls')
 end end
 eq(true,named,'visible mode is named Swipe动画 and survives normalization')
-assert(delay);eq(true,delay.enabled~=false,'Swipe delay remains adjustable')
+mode_button.callback() -- Return to the existing independently adjustable wipe.
+eq('swipe',saved.page_transition,'changing away from Swipe preset restores another effect')
+local delay
+for _,row in ipairs(view.layout_dialog.buttons) do for _,button in ipairs(row) do
+    if button.text=='竖屏帧间隔：30ms' then delay=button end
+end end
+assert(delay);eq(true,delay.enabled~=false,'other effects retain their saved adjustable delay')
 delay.callback()
 eq(40,saved.swipe_portrait_delay_ms,'editing delay saves the chosen per-book value')
-eq('swipe_classic',saved.page_transition,'editing delay preserves Swipe mode')
+eq('swipe',saved.page_transition,'editing another effect does not switch back to Swipe preset')
 view:close();h:drain()
 return n

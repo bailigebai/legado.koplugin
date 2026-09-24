@@ -63,9 +63,10 @@ commit `59dce480c38538976325f7ebc0831e36bc4c6ed4` (v4.3), under GPL version 3.
 The upstream README credits original author `xhs:5699990012`, nuku, Echoes,
 小红薯6809667F and 斯普特尼克的漫游. Local adaptation removes the upstream
 global UIManager/Screen replacements and ReaderUI detection, and exposes
-reader-local refresh mode and frame-delay settings. The opt-in `swipe_classic`
+reader-local refresh mode and frame-delay settings for other effects. The opt-in `swipe_classic`
 mode follows the upstream single-transaction wipe loop and its inter-strip
-20/10ms default waits through KOReader’s `ffi/util.usleep`; it uses the locally
+fixed 20/10ms default waits and UI refresh through KOReader’s `ffi/util.usleep`,
+without delay/refresh/cleanup-wave controls; it uses the locally
 rendered target instead of snapshotting and replacing the host repaint loop.
 Other effects retain their cancellable asynchronous frame scheduler.
 
