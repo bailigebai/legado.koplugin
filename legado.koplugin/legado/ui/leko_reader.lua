@@ -49,7 +49,7 @@ local function normalized_style(values)
         local n=tonumber(style[key]);if not finite(n) or n<range[1] or n>range[2] then return nil,error_value('排版参数无效：'..key) end
         style[key]=n
     end
-    if not ({off=true,original=true,swipe=true,ripple=true,side_ripple=true,ripple_in=true,wave=true})[style.page_transition] then return nil,error_value('翻页效果无效。') end
+    if not ({off=true,original=true,swipe=true,swipe_classic=true,ripple=true,side_ripple=true,ripple_in=true,wave=true})[style.page_transition] then return nil,error_value('翻页效果无效。') end
     if not ({ui=true,fast=true})[style.swipe_refresh_mode] then return nil,error_value('动画刷新模式无效。') end
     for _,key in ipairs{'body_font','title_font'} do
         if type(style[key])~='string' or #style[key]>4096 or style[key]:find('%c') then return nil,error_value('字体路径无效。') end
@@ -542,9 +542,16 @@ function View:paintTo(bb,x,y)
     return safe_event(self,function()
         -- A host repaint (menu, rotation, external refresh) takes ownership of
         -- the real screen. Retire our frames before they can overwrite it.
-        if bb==Device.screen.bb and self.animation:isRunning() then self:_finishAnimation(true) end
+        local interrupted=bb==Device.screen.bb and self.animation:isRunning()
+        if interrupted then self:_finishAnimation(true) end
         local started=self.paint_started or self:_now()
         self:_paintTo(bb,x,y)
+        if interrupted then
+            -- The host may have requested only a footer/menu region. Once the
+            -- reveal is cancelled, refresh all newly painted text as well.
+            -- Queue refresh only: upper widgets must finish painting first.
+            self.ui:setDirty(nil,'ui',self.dimen)
+        end
         self.paint_started=nil
         self:_timing('paint_drawn',started)
         return true
@@ -764,6 +771,7 @@ end
 function View:showLayoutMenu()
     if self.closed then return false end
     self:pauseReading();self:_closeDialog('layout_dialog')
+    local delay_label=self.style.page_transition=='swipe_classic' and '帧延迟' or '帧间隔'
     local function update(changes)
         local ok,err=self:applyStyle(changes);if not ok then self:_error(err) end
         self:showLayoutMenu()
@@ -792,12 +800,12 @@ function View:showLayoutMenu()
         end},{text='首行缩进：'..(self.style.indent and '开' or '关'),callback=function() update{indent=not self.style.indent} end}},
         {{text='页眉：'..(self.style.show_header and '显示' or '隐藏'),callback=function() update{show_header=not self.style.show_header} end},
          {text='页脚：'..(self.style.show_footer and '显示' or '隐藏'),callback=function() update{show_footer=not self.style.show_footer} end}},
-        {{text='动画效果：'..({off='关闭',original='原版翻页',swipe='擦除渐显',ripple='水波纹',side_ripple='侧边水波纹',ripple_in='聚拢水波纹',wave='波浪推进'})[self.style.page_transition],callback=function()
-            update{page_transition=({off='original',original='swipe',swipe='ripple',ripple='side_ripple',side_ripple='ripple_in',ripple_in='wave',wave='off'})[self.style.page_transition]}
+        {{text='动画效果：'..({off='关闭',original='原版翻页',swipe_classic='Swipe动画',swipe='擦除渐显',ripple='水波纹',side_ripple='侧边水波纹',ripple_in='聚拢水波纹',wave='波浪推进'})[self.style.page_transition],callback=function()
+            update{page_transition=({off='original',original='swipe_classic',swipe_classic='swipe',swipe='ripple',ripple='side_ripple',side_ripple='ripple_in',ripple_in='wave',wave='off'})[self.style.page_transition]}
         end},{text='跨章净屏动画：'..(self.style.chapter_clean_wave_enabled and '开' or '关'),callback=function() update{chapter_clean_wave_enabled=not self.style.chapter_clean_wave_enabled} end}},
         {{text='刷新模式：'..(self.style.swipe_refresh_mode=='fast' and '快速' or '清晰'),callback=function() update{swipe_refresh_mode=self.style.swipe_refresh_mode=='fast' and 'ui' or 'fast'} end}},
-        {{text='竖屏帧间隔：'..self.style.swipe_portrait_delay_ms..'ms',callback=function() cycle('swipe_portrait_delay_ms',{0,10,20,30,40,50,80}) end},
-         {text='横屏帧间隔：'..self.style.swipe_landscape_delay_ms..'ms',callback=function() cycle('swipe_landscape_delay_ms',{0,10,20,30,40,50,80}) end}},
+        {{text='竖屏'..delay_label..'：'..self.style.swipe_portrait_delay_ms..'ms',callback=function() cycle('swipe_portrait_delay_ms',{0,10,20,30,40,50,80}) end},
+         {text='横屏'..delay_label..'：'..self.style.swipe_landscape_delay_ms..'ms',callback=function() cycle('swipe_landscape_delay_ms',{0,10,20,30,40,50,80}) end}},
     }
     if Device.hasFrontlight and Device:hasFrontlight() then buttons[#buttons+1]={{text='屏幕亮度',callback=function()
         if self.closed or not self.layout_dialog then return false end

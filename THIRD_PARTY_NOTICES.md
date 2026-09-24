@@ -49,7 +49,7 @@ licensed AGPL-3.0-or-later. Upstream paths below are relative to its
 | `ui/leko_font_selection.lua` | `FontSelectionView.lua` | Namespace imports, localize style labels, preserve font paths/TTC face indices and adapt the return callback to KOReader's real `fontlist` module. |
 | `lib/leko_native_swipe.lua` | `SwipeAnimation.lua` | Namespace the capability adapter and retain local, one-shot native swipe ownership. |
 | `lib/leko_chapter_wave.lua` | `ChapterWaveRefresh.lua` | Namespace the chapter cleanup wave and retain its local cancellation and buffer ownership. |
-| `lib/leko_animation.lua` | `SwipeRefresh.lua` | Coordinate reader-local original/wipe transitions and cancellation; adapt the strip algorithm identified below without global hooks or blocking sleeps. |
+| `lib/leko_animation.lua` | `SwipeRefresh.lua` | Coordinate reader-local original/wipe transitions and cancellation; adapt the strip algorithm identified below without global hooks; the opt-in Swipe mode keeps upstream inter-strip sleeps. |
 
 `lib/leko_reader_ui.lua` is this plugin's session adapter for the modified
 reader. It connects construction, progress, style persistence and lifecycle
@@ -63,7 +63,11 @@ commit `59dce480c38538976325f7ebc0831e36bc4c6ed4` (v4.3), under GPL version 3.
 The upstream README credits original author `xhs:5699990012`, nuku, Echoes,
 小红薯6809667F and 斯普特尼克的漫游. Local adaptation removes the upstream
 global UIManager/Screen replacements and ReaderUI detection, and exposes
-reader-local refresh mode and frame-delay settings.
+reader-local refresh mode and frame-delay settings. The opt-in `swipe_classic`
+mode follows the upstream single-transaction wipe loop and its inter-strip
+20/10ms default waits through KOReader’s `ffi/util.usleep`; it uses the locally
+rendered target instead of snapshotting and replacing the host repaint loop.
+Other effects retain their cancellable asynchronous frame scheduler.
 
 The circular `ripple`, `side_ripple`, `ripple_in` and directional `wave` reveals
 are local extensions, not effects from Swipe_Animation.

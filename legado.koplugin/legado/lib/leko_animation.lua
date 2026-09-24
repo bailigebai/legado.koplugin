@@ -446,6 +446,11 @@ function SwipeRefresh:_runSoftwareFrame(token)
         self:_completeSoftware(token)
         return
     end
+    if self.upstream_swipe then
+        local painted = self:_runUpstreamSwipe(token, target, width, height)
+        self:_completeSoftware(token, painted)
+        return
+    end
     local frame_started = self.clock()
     local index = self.strip_index + 1
     local submitted = true
@@ -469,6 +474,33 @@ function SwipeRefresh:_runSoftwareFrame(token)
         local scheduled = self:_scheduleSoftwareFrame(token, delay)
         if not scheduled then self:_completeSoftware(token) end
     end
+end
+
+-- Swipe_Animation's wipe runs as one paint transaction: copy/submit each
+-- aligned strip, then wait between strips (8 portrait / 6 landscape).
+-- Unlike the other local effects, do not return to background UI work between
+-- strips. Keep this opt-in path local; never replace the host repaint loop.
+function SwipeRefresh:_runUpstreamSwipe(token, target, width, height)
+    local screen, bb = self.screen, self.screen.bb
+    local steps = self.strip_count
+    if type(screen.beforePaint) == 'function' then pcall(screen.beforePaint, screen) end
+    local ok, painted = xpcall(function()
+        for i = 1, steps do
+            if token ~= self.generation or not self.running or screen.bb ~= bb
+                    or bb:getWidth() ~= width or bb:getHeight() ~= height then return false end
+            local left, strip_width = self:_softwareStripFor(i, width, steps)
+            bb:blitFrom(target, left, 0, left, 0, strip_width, height)
+            self:_refreshSoftwareRegion(left, 0, strip_width, height)
+            if token ~= self.generation or not self.running then return false end
+            self.strip_index = i
+            if i < steps and self.frame_delay > 0 then
+                require('ffi/util').usleep(self.frame_delay * 1000000)
+            end
+        end
+        return true
+    end, traceback)
+    if type(screen.afterPaint) == 'function' then pcall(screen.afterPaint, screen) end
+    return ok and painted == true
 end
 
 function SwipeRefresh:_completeWave(request_generation, wave_token, target, painted)
@@ -505,7 +537,8 @@ function SwipeRefresh:begin(widget, direction, on_complete, options)
     local use_wave = chapter_changed
         and options.chapter_clean_wave_enabled == true
         and self:isChapterWaveAvailable()
-    local use_native = options.effect ~= 'swipe' and not RIPPLE_EFFECTS[options.effect] and self:isNativeSwipeAvailable()
+    local use_native = options.effect ~= 'swipe' and options.effect ~= 'swipe_classic'
+        and not RIPPLE_EFFECTS[options.effect] and self:isNativeSwipeAvailable()
     local use_software = not use_native
         and self:isSoftwareSwipeAvailable()
     if not use_wave and not use_native and not use_software then
@@ -556,7 +589,8 @@ function SwipeRefresh:begin(widget, direction, on_complete, options)
     self.mode = "software"
     local width = self.screen.bb:getWidth()
     local height = self.screen.bb:getHeight()
-    self.software_effect = options.effect == 'original' and 'swipe' or options.effect
+    self.upstream_swipe = options.effect == 'swipe_classic'
+    self.software_effect = (options.effect == 'original' or self.upstream_swipe) and 'swipe' or options.effect
     self.refresh_mode = options.refresh_mode == 'fast' and 'fast' or 'ui'
     local delay = tonumber(width > height and options.landscape_delay_ms or options.portrait_delay_ms)
     if not delay or delay ~= delay or delay < 0 or delay > 200 then delay = width > height and 10 or 20 end
