@@ -93,7 +93,9 @@ function SourceManager:importLocal(path, origin, options)
     elseif type(self.fs.read) == "function" then
         text, read_error = self.fs:read(path)
         if type(text) == "string" and #text > SourceImporter.DEFAULT_MAX_BYTES then
-            text, read_error = nil, { code = "RESPONSE_TOO_LARGE", message = "书源文件超过 5 MiB" }
+            text, read_error = nil, Errors.new(Errors.RESPONSE_TOO_LARGE, "书源文件超过导入上限", {
+                max_bytes = SourceImporter.DEFAULT_MAX_BYTES,
+            })
         end
     end
     if not text then return failed(read_error or Errors.new(Errors.STORAGE_ERROR, "无法读取书源文件")) end

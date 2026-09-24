@@ -35,7 +35,7 @@ local storage = {listSources=function() return {} end, listShelf=function() retu
 local manager = SourceManager.new({storage=storage, importer=Importer:new({storage=storage}),
     fs={readBounded=function(_, path, limit)
         reads=reads+1; selected=path
-        assert(limit==5*1024*1024);count=count+1
+        assert(limit==16*1024*1024);count=count+1
         if path=='/mnt/us/书源 test.json' then return source_json end
         return nil, Errors.new('STORAGE_ERROR','private missing file',{path=path,cause='private'})
     end}})
@@ -81,6 +81,10 @@ check(text:find('读取书源文件',1,true) and not text:find('存储空间',1,
 check(not text:find('private',1,true),'file diagnostics never display raw path/cause')
 menu=presenter:show(manager);picker=open_local();picker.onConfirm('https://sources.test/private.json')
 check(shown[#shown].text:find('从网址导入',1,true),'URL entered as local file points to the right entry')
+manager.fs.readBounded=function() return nil,Errors.new('RESPONSE_TOO_LARGE','private',{
+    max_bytes=16*1024*1024}) end
+menu=presenter:show(manager);picker=open_local();picker.onConfirm('/too-large.json')
+check(shown[#shown].text:find('16 MiB',1,true),'oversize message displays the actual import limit')
 local previous=writes
 menu=presenter:show(manager);picker=open_local();manager:close();picker.onConfirm('/mnt/us/书源 test.json')
 check(writes==previous,'stale chooser callback after leaving source manager cannot import')

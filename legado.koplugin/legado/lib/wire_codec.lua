@@ -1,8 +1,8 @@
 local Wire = {}
 Wire.MAX_DEPTH = 64
 Wire.MAX_ENTRIES = 100000
--- Keep the pipe just above the 5 MiB source-import limit; framing overhead is small.
-Wire.MAX_BYTES = 5 * 1024 * 1024 + 128 * 1024
+-- Keep the pipe above the 16 MiB import limit, including response metadata/framing.
+Wire.MAX_BYTES = 16 * 1024 * 1024 + 128 * 1024
 
 local function append(state, value)
     state.bytes = state.bytes + #value

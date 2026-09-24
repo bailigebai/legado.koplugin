@@ -105,25 +105,31 @@ assert(#storage:listSources() == 0)
 
 if collection then
     local decoded = Json.decode(collection)
+    local importer = Importer:new({storage=storage})
+    local expected, unique_count = {}, 0
+    for _, raw in ipairs(decoded) do
+        local normalized = importer:_normalize(raw)
+        if expected[normalized.id] then normalized.enabled = expected[normalized.id].enabled
+        else unique_count = unique_count + 1 end
+        expected[normalized.id] = normalized
+    end
     local Manager = require("legado.ui.source_manager")
     local function manager()
         return Manager.new({storage=storage,importer=Importer:new({storage=storage}),fs=require("legado.lib.fs").new()})
     end
     report = manager():importLocal(' \n"'..collection_path..'"\r\n ')
     check(not report.error, report.error)
-    assert(report.imported == #decoded)
+    assert(report.imported == unique_count and report.updated == #decoded - unique_count)
     active_db:close()
     storage = open()
-    assert(#storage:listSources() == #decoded, "all sources survive reopen")
+    assert(#storage:listSources() == unique_count, "all distinct sources survive reopen")
     -- Compare every imported field, including nested rules, against the original.
     local function same(expected, actual)
         if type(expected) ~= "table" then assert(expected == actual); return end
         assert(type(actual) == "table")
         for key, value in pairs(expected) do same(value, actual[key]) end
     end
-    local importer = Importer:new({storage=storage})
-    for _, raw in ipairs(decoded) do
-        local normalized = importer:_normalize(raw)
+    for _, normalized in pairs(expected) do
         local loaded = check(storage:getSource(normalized.id))
         normalized.imported_at = loaded.imported_at
         same(normalized, loaded)
@@ -133,13 +139,13 @@ if collection then
     report = manager():importLocal(collection_path)
     check(not report.error, report.error)
     assert(report.imported == 0 and report.updated == #decoded)
-    assert(#storage:listSources() == #decoded)
+    assert(#storage:listSources() == unique_count)
     assert(storage:getSource(first_id).enabled==false,"reimport preserves disabled source")
     report = manager():importLocal(collection_path..'.missing')
-    assert(report.error.details.stage=='source_file_read' and #storage:listSources()==#decoded,
+    assert(report.error.details.stage=='source_file_read' and #storage:listSources()==unique_count,
         "missing file never removes previous batch")
-    assert(#manager():viewModel().sources == #decoded, "imported sources reach the production source-list model")
-    checked_sources = #decoded
+    assert(#manager():viewModel().sources == unique_count, "imported sources reach the production source-list model")
+    checked_sources = unique_count
 end
 assert(storage:getBook(book.id).name == book.name, "source import preserves bookshelf")
 active_db:close()
@@ -147,11 +153,8 @@ active_db = nil
 '''
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--collection", type=Path)
-    parser.add_argument("--url", help="Fetch a live source collection (desktop HTTPS transport)")
-    args = parser.parse_args()
+def native_runtime():
+    """Unmodified KOReader driver with only its platform library loader adapted."""
     assert hashlib.sha256(ARCHIVE.read_bytes()).hexdigest() == ARCHIVE_SHA
     # Python initializes the bundled Windows SQLite DLL before LuaJIT loads it.
     with sqlite3.connect(":memory:") as db:
@@ -171,13 +174,23 @@ def main():
         ffi.loadlib = function(name) assert(name == 'sqlite3'); return ffi.load(sqlite_library) end
         package.loaded['lua-ljsqlite3/init'] = assert(loadstring(driver_source, '@official-ljsqlite3'))()
     ''')
+    return runtime, version
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--collection", type=Path)
+    parser.add_argument("--url", help="Fetch a live source collection (desktop HTTPS transport)")
+    args = parser.parse_args()
+    runtime, version = native_runtime()
     if args.url or args.collection:
         if args.url:
             from urllib.request import urlopen
             with urlopen(args.url, timeout=20) as response:
                 assert response.status == 200
-                raw = response.read(5 * 1024 * 1024 + 1)
-                assert len(raw) <= 5 * 1024 * 1024
+                limit = runtime.eval("require('legado.lib.source_importer').DEFAULT_MAX_BYTES")
+                raw = response.read(limit + 1)
+                assert len(raw) <= limit
                 print(f"Live GET: HTTP {response.status}", flush=True)
         else:
             raw = args.collection.read_bytes()

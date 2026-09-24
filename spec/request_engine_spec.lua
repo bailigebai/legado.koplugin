@@ -89,7 +89,7 @@ do
     truthy(transport.requests[1].body:find('"q":"A b"', 1, true), "JSON body encoded")
     equal("yes", transport.requests[1].headers["X-Custom"], "custom header retained")
     equal(20, transport.requests[1].timeout, "timeout hard limit")
-    equal(5 * 1024 * 1024, transport.requests[1].max_bytes, "byte hard limit matches source import")
+    equal(16 * 1024 * 1024, transport.requests[1].max_bytes, "byte hard limit matches source import")
     equal(5, transport.requests[1].max_redirects, "redirect hard limit")
     equal(3, engine:getConcurrencyLimit(), "concurrency contract clamps at three")
 
@@ -622,12 +622,12 @@ do
 end
 
 do
-    local body = string.rep(" ", 4 * 1024 * 1024 + 256 * 1024) .. "[]"
+    local body = string.rep(" ", 8 * 1024 * 1024 + 256 * 1024) .. "[]"
     local _, scheduler, _, callbacks = run_fallback({
         { status = 200, headers = { ["Content-Type"] = "application/json; charset=utf-8" }, chunks = { body } },
-    }, { url = "https://sources.test/collection.json", max_bytes = 5 * 1024 * 1024 })
+    }, { url = "https://sources.test/collection.json", max_bytes = require('legado.lib.source_importer').DEFAULT_MAX_BYTES })
     scheduler:runAll()
-    equal(nil, callbacks[1].err, "a source collection larger than 4 MiB is accepted within the import limit")
+    equal(nil, callbacks[1].err, "an 8.25 MiB source collection is accepted within the import limit")
     equal(#body, #callbacks[1].response.body, "the complete collection reaches the importer")
 end
 

@@ -45,7 +45,9 @@ local function diagnostic_text(error, compatibility, reading)
         if details.stage == "source_file_read" then
             explanation = "无法读取所选 JSON 文件。请重新选择设备上的文件；电脑路径不能直接用于 Kindle。"
         end
-    elseif code == "RESPONSE_TOO_LARGE" then explanation = "书源文件过大，导入上限为 5 MiB。"
+    elseif code == "RESPONSE_TOO_LARGE" then
+        local limit = tonumber(details.max_bytes) or require("legado.lib.source_importer").DEFAULT_MAX_BYTES
+        explanation = string.format("文件超过本次请求上限（%g MiB），请拆分书源合集后导入。", limit / (1024 * 1024))
     elseif code == "UNSUPPORTED_RULE" then explanation = "此规则需要尚未支持的脚本或网页能力，可返回选择其它分类或书源。"
     elseif code == "PARSE_ERROR" then explanation = reading and "网页正文或目录无法按当前书源规则解析，可重试或切换书源。"
         or "内容不是有效的书源 JSON，请检查网址是否返回了网页或错误提示。" end

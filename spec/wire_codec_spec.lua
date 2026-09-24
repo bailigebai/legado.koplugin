@@ -13,9 +13,9 @@ local malformed, malformed_error = Wire.decode("S9999999999999999999999999999999
 assertx.equal(nil, malformed, "malformed huge length is rejected")
 assertx.truthy(type(malformed_error) == "string", "malformed huge length returns diagnostic")
 
-local collection = string.rep(" ", 4 * 1024 * 1024 + 256 * 1024) .. "[]"
+local collection = string.rep(" ", require('legado.lib.source_importer').DEFAULT_MAX_BYTES - 2) .. "[]"
 local collection_wire, collection_error = Wire.encode({ body = collection })
-assertx.truthy(collection_wire ~= nil, "a 4.46 MiB source collection fits the import pipe")
+assertx.truthy(collection_wire ~= nil, "a collection at the import size limit fits the process pipe")
 assertx.equal(nil, collection_error, "large source collection has no wire error")
 local collection_value = collection_wire and Wire.decode(collection_wire)
 assertx.equal(#collection, collection_value and #collection_value.body, "large source collection survives the wire round trip")

@@ -4,7 +4,7 @@ local Scanner = require("legado.lib.compatibility_scanner")
 
 local SourceImporter = {}
 SourceImporter.__index = SourceImporter
-SourceImporter.DEFAULT_MAX_BYTES = 5 * 1024 * 1024
+SourceImporter.DEFAULT_MAX_BYTES = 16 * 1024 * 1024
 
 local function copy(value, seen)
     if type(value) ~= "table" then return value end

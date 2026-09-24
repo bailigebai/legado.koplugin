@@ -198,7 +198,7 @@ do
         fs = { readBounded = function(_, _, limit) bounded_limit = limit; return nil, Errors.new(Errors.RESPONSE_TOO_LARGE, "too large") end },
     })
     local bounded_report = bounded_manager:importLocal("huge.json")
-    equal(5 * 1024 * 1024, bounded_limit, "local source import enforces the five MiB hard limit")
+    equal(16 * 1024 * 1024, bounded_limit, "local source import enforces the sixteen MiB hard limit")
     equal(1, bounded_report.rejected, "bounded read failure maps to an import report")
     equal("RESPONSE_TOO_LARGE", bounded_report.error.code, "local oversize error remains structured")
 end

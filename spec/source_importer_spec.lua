@@ -137,13 +137,13 @@ local over_limit = SourceImporter:new({ storage = new_storage(), max_bytes = #bo
 local over_report = assert(over_limit:importJson(bounded_text, "C:/sources/bounded.json"))
 assertx.equal(1, over_report.rejected, "byte limit rejects input before decode")
 assertx.equal("RESPONSE_TOO_LARGE", over_report.error.code, "oversize import has stable error code")
-assertx.equal(5 * 1024 * 1024, SourceImporter.DEFAULT_MAX_BYTES, "default limit is exactly five MiB")
+assertx.equal(16 * 1024 * 1024, SourceImporter.DEFAULT_MAX_BYTES, "default limit accommodates the user's 8.14 MiB collections with a finite bound")
 
-local five_mebibyte_text = usable_json .. string.rep(" ", SourceImporter.DEFAULT_MAX_BYTES - #usable_json)
+local boundary_text = usable_json .. string.rep(" ", SourceImporter.DEFAULT_MAX_BYTES - #usable_json)
 local default_limit = SourceImporter:new({ storage = new_storage() })
-assertx.equal(1, assert(default_limit:importJson(five_mebibyte_text, "C:/sources/exact.json")).imported, "default limit accepts exactly five MiB")
+assertx.equal(1, assert(default_limit:importJson(boundary_text, "C:/sources/exact.json")).imported, "default limit accepts exactly sixteen MiB")
 local above_default = SourceImporter:new({ storage = new_storage() })
-assertx.equal(1, assert(above_default:importJson(five_mebibyte_text .. " ", "C:/sources/over.json")).rejected, "default limit rejects more than five MiB")
+assertx.equal(1, assert(above_default:importJson(boundary_text .. " ", "C:/sources/over.json")).rejected, "default limit rejects more than sixteen MiB")
 
 local https_url = SourceImporter.validateRemoteUrl("https://imports.example.test/sources.json")
 assertx.equal(true, https_url.valid, "HTTPS remote URL is accepted without transport")
