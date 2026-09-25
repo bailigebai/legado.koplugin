@@ -42,14 +42,19 @@ for _,effect in ipairs{'swipe','ripple','side_ripple','ripple_in','wave'} do
     local state={source={id='s'},book={id='book'},chapters={{uid='c1'},{uid='c2'}},index=1}
     local first=assert(owner:openChapter({state=state,body=body,progress={immersive_style={page_transition=effect}}},{}))
     h:drain()
-    -- Glyph rendering is external to this test: each chapter paints a distinct page.
-    first.widget._paintTo=function(view,bb) bb:fill(view.chapter.uid=='c2' and 42 or 7) end
+    -- Glyph rendering is external to this interruption test.
+    first.widget._paintTo=function(view,bb)
+        local start=view.page.start_position
+        bb:fill(view.chapter.uid=='c2' and (start.char>1 or start.paragraph>1) and 42 or 7)
+    end
     h.screen.bb:fill(7);panel:fill(7)
     local state2={source=state.source,book=state.book,chapters=state.chapters,index=2}
     local second=assert(owner:openChapter({state=state2,body=body,progress={immersive_style={page_transition=effect}}},{}))
+    assert(second.widget:paintTo(h.screen.bb,0,0))
+    assert(second.widget:nextPage())
     while second.widget.animation.strip_index==0 do assert(h:step()) end
     local old=false;for i=0,320*480-1 do if panel.pixels[i]==7 then old=true;break end end
-    eq(true,old,'interruption occurs while some of the previous chapter is still visible')
+    eq(true,old,'interruption occurs while some of the previous page is still visible')
     queued={}
     local late=second.widget.animation.pending_frame
     h.ui:setDirty(second.widget,'ui',{x=0,y=470,w=320,h=10})
@@ -66,8 +71,8 @@ for _,effect in ipairs{'swipe','ripple','side_ripple','ripple_in','wave'} do
         local want=(y<10 and x<20) and 99 or 42
         if panel.pixels[y*320+x]~=want then complete=false end
     end end
-    eq(true,complete,effect..': a partial host repaint leaves the complete next chapter and its overlay visible')
-    eq(false,second.widget.animation:isRunning(),'interrupted chapter reveal has no remaining frame owner')
+    eq(true,complete,effect..': a partial host repaint leaves the complete next page and its overlay visible')
+    eq(false,second.widget.animation:isRunning(),'interrupted reveal has no remaining frame owner')
     second:close();h:drain()
 end
 BB.new,h.screen.bb,h.screen.refreshUI,h.ui.setDirty=original_new,original_bb,original_refresh,original_dirty
@@ -172,13 +177,16 @@ local view=assert(Reader.new{book={id='controls'},chapter={uid='c'},body=body,
     style={page_transition='swipe_classic',swipe_portrait_delay_ms=30},
     callbacks={style_changed=function(_,style) saved=style;return true end}})
 view:showLayoutMenu()
-local named,mode_button=false
+local named,mode_button,clear_button=false
 for _,row in ipairs(view.layout_dialog.buttons) do for _,button in ipairs(row) do
     if button.text=='动画效果：Swipe动画' then named=true;mode_button=button end
+    if button.text=='跨章整页净屏：关' then clear_button=button end
     eq(false,button.text:find('帧延迟',1,true)~=nil or button.text:find('帧间隔',1,true)~=nil,'Swipe preset exposes no delay controls')
     eq(false,button.text:find('刷新模式',1,true)~=nil or button.text:find('跨章净屏动画',1,true)~=nil,'Swipe preset exposes no competing effect controls')
 end end
 eq(true,named,'visible mode is named Swipe动画 and survives normalization')
+assert(clear_button);clear_button.callback()
+eq(true,saved.chapter_clean_wave_enabled,'chapter clearing is available independently of Swipe timing')
 mode_button.callback() -- Return to the existing independently adjustable wipe.
 eq('swipe',saved.page_transition,'changing away from Swipe preset restores another effect')
 local delay

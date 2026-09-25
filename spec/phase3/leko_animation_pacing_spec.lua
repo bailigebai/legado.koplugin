@@ -23,7 +23,7 @@ local cleaning=assert(Reader.new{book={id='clean'},chapter={uid='clean'},body=bo
 h.ui:show(cleaning);h:drain()
 local clean_dirty=h.dirty
 assert(cleaning:animateEntry('forward',true));h:drain()
-eq(clean_dirty,h.dirty,'explicit cleanup wave does not append a duplicate whole-page refresh')
+eq(clean_dirty+1,h.dirty,'chapter clearing requests exactly one whole-page refresh')
 cleaning:close();h:drain()
 
 Device.canDoSwipeAnimation=function() return false end
@@ -60,8 +60,11 @@ local before=h.dirty
 local next_state={source=state.source,book=state.book,chapters=state.chapters,index=2}
 local second=assert(owner:openChapter({state=next_state,body=body,progress={immersive_style={page_transition='swipe'}}},{}))
 eq(first.widget,second.widget,'chapter transition keeps its window')
-eq(before,h.dirty,'chapter adapter cannot queue a full repaint before its entry animation')
-eq(true,second.widget.animation:isRunning(),'reused chapter starts an actual transition')
+eq(before+1,h.dirty,'chapter adapter queues one complete entry repaint')
+eq(false,second.widget.animation:isRunning(),'reused chapter does not start a regional transition')
+assert(second.widget:paintTo(h.screen.bb,0,0))
+assert(second.widget:nextPage())
+eq(true,second.widget.animation:isRunning(),'chapter-internal page still uses the selected animation')
 local Text=require('legado.lib.leko_text');local parse=Text.parse;local parses=0
 Text.parse=function(...) parses=parses+1;return parse(...) end
 assert(owner:prepareChapter(next_state,state.chapters[3],body))

@@ -35,7 +35,7 @@ for _,name in ipairs{'refreshUI','refreshNoMergeUI','refreshFast'} do
     h.screen[name]=function(_,x,y,w,hh) panel:blitFrom(h.screen.bb,x,y,x,y,w,hh) end
 end
 local queued={}
-h.ui.setDirty=function(_,widget,mode,region) queued[#queued+1]={widget=widget,region=region} end
+h.ui.setDirty=function(_,widget,mode,region) queued[#queued+1]={widget=widget,mode=mode,region=region} end
 local function repaint(view)
     local requests=queued;queued={}
     if #requests==0 then return end
@@ -74,28 +74,30 @@ local function fixture(effect,cleanup,prepared)
     return second.widget,second
 end
 
--- The cleanup wave's first frame contains old text and a black edge. A rapid
--- second tap must finish chapter two's first page, not cancel it for page two.
-for _,effect in ipairs{'swipe','swipe_classic','ripple','side_ripple','ripple_in','wave','off'} do
+-- Every chapter boundary belongs to the host compositor, regardless of the
+-- chapter-internal effect or whether the next chapter was prepared in advance.
+for _,effect in ipairs{'original','swipe','swipe_classic','ripple','side_ripple','ripple_in','wave','off'} do
 for _,prepared in ipairs{false,true} do
+for _,cleanup in ipairs{false,true} do
     Device.canDoSwipeAnimation=function() return false end
-    local view,document=fixture(effect,effect=='swipe',prepared)
+    local view,document=fixture(effect,cleanup,prepared)
     local first=view.page.start_position
-    if effect=='swipe' then
-        while view.animation.chapter_wave.step_index==0 do assert(h:step()) end
-        eq(0,panel.pixels[W-1],'reproduces the black edge before chapter cleanup completes')
-        eq(7,panel.pixels[0],'old chapter remains on most of the panel at this point')
-    end
-    local late=view.animation.pending_frame or view.animation.chapter_wave.pending_frame
+    eq(false,view.animation:isRunning(),effect..': no regional transition across chapters')
+    eq(nil,view.animation.pending_frame,'no delayed strip may overwrite the entry screen')
+    local whole=0
+    for _,r in ipairs(queued) do if r.widget==view and not r.region then
+        whole=whole+1;eq(cleanup and 'full' or 'partial',r.mode,'cleanup controls whole-page refresh strength')
+    end end
+    eq(1,whole,'one full-page composition is requested at the boundary')
     assert(view:nextPage())
     eq(first,view.page.start_position,effect..': early tap presents the first page without advancing')
     repaint(view);h:drain();repaint(view)
-    if late then late() end
     visible(42,effect..': first page is fully visible, without old text or black edge')
     assert(view:nextPage());h:drain();repaint(view)
     eq(true,view.page.start_position~=first,effect..': subsequent tap advances normally')
     visible(43,effect..': second page follows the visible first page')
     document:close();h:drain();queued={}
+end
 end
 end
 
@@ -114,7 +116,8 @@ end
 for _,native in ipairs{false,true} do
     Device.canDoSwipeAnimation=function() return native end
     local view,document=fixture(native and 'original' or 'swipe_classic',false,true)
-    if not native then h:drain() end
+    eq(false,view.animation:isRunning(),'native capability cannot bypass chapter composition')
+    repaint(view);h:drain();repaint(view)
     visible(42,'completed entry already presents the first screen')
     local first=view.page.start_position
     assert(view:nextPage())
@@ -128,22 +131,98 @@ Device.canDoSwipeAnimation=function() return false end
 -- A host footer redraw can fail after animation capture succeeded (font or
 -- chrome rendering). Retain that captured page until the redraw is accepted.
 local view,document=fixture('swipe',true,true)
-while view.animation.chapter_wave.step_index==0 do assert(h:step()) end
-local late=view.animation.chapter_wave.pending_frame
+repaint(view);h:drain();repaint(view)
+assert(view:nextPage())
+while view.animation.strip_index==0 do assert(h:step()) end
+local late=view.animation.pending_frame
 view._paintTo=function() error('injected host redraw failure') end
 queued={}
 h.ui:setDirty(view,'ui',{x=0,y=H-10,w=W,h=10})
 repaint(view)
 late()
-visible(42,'failed footer redraw cannot strand the previous chapter and black band')
+visible(43,'failed footer redraw retains the captured ordinary page')
 eq(false,view.animation:isRunning(),'failed redraw retires the transition')
 eq(true,view.last_error~=nil,'redraw failure is still reported, not silently swallowed')
 document:close();h:drain()
 
 local view,document=fixture('swipe',true,true)
-local late=view.animation.chapter_wave.pending_frame
 document:close();local count=#queued
-late();h:drain()
+h:drain()
 eq(count,#queued,'closed chapter cannot request a late repaint')
 eq(0,#h.tasks,'closing the reader clears entry and background tasks')
+
+-- Exercise the real session, paginator and KOReader text widgets. Only glyph
+-- rasterization is replaced, so old chapter widgets cannot pass a flat-fill test.
+-- Also use the unmodified host composition/refresh queues in this section.
+local function noop() end
+Device._UIManagerReady=noop
+require('ui/time').now=function() return 0 end
+require('dbg').v=noop
+G_reader_settings.isFalse=function(_,name) return name=='flash_ui' end
+h.screen.beforePaint,h.screen.afterPaint=noop,noop
+h.screen.getDPI=function() return 300 end
+local submissions={}
+for _,name in ipairs{'refreshA2','refreshFast','refreshUI','refreshPartial','refreshNoMergeUI',
+    'refreshNoMergePartial','refreshFlashUI','refreshFlashPartial','refreshFull'} do
+    h.screen[name]=function(_,x,y,w,hh)
+        submissions[#submissions+1]={kind=name,x=x,y=y,w=w,h=hh}
+        panel:blitFrom(h.screen.bb,x,y,x,y,w,hh)
+    end
+end
+package.loaded['ui/uimanager']=nil
+local host=require('ui/uimanager')
+host.scheduleIn,host.nextTick,host.unschedule=h.ui.scheduleIn,h.ui.nextTick,h.ui.unschedule
+host.FULL_REFRESH_COUNT=100000
+local Render=require('ui/rendertext')
+local draws={}
+Render.renderUtf8Text=function(_,bb,x,y,face,text)
+    draws[#draws+1]=text
+    for ch in tostring(text):gmatch('[%z\1-\127\194-\244][\128-\191]*') do
+        if x>=0 and x+2<=bb:getWidth() and y>=1 and y<=bb:getHeight() then
+            bb:paintRect(x,y-1,2,1,ch:byte(#ch))
+        end
+        x=x+face.size
+    end
+end
+local Session=require('legado.lib.reader_session')
+local chapters={{uid='c1',title='ONE',index=1},{uid='c2',title='TWO',index=2},{uid='c3',title='THREE',index=3}}
+local bodies={c1='<p>'..string.rep('AAA',300)..'</p>',c2='<p>'..string.rep('BBB',300)..'</p>',c3='<p>'..string.rep('CCC',300)..'</p>'}
+for _,effect in ipairs{'original','swipe_classic','swipe','ripple','side_ripple','ripple_in','wave','off'} do
+for _,cleanup in ipairs{false,true} do
+    local progress={immersive_style={page_transition=effect,chapter_clean_wave_enabled=cleanup}}
+    local owner=Owner.new{ui_manager=host}
+    local session=Session.new{ui=owner,scheduler=host,
+        settings={get=function(_,k) if k=='prefetch' then return 3 end end},
+        storage={getProgress=function() return progress end,putProgress=function(_,p) progress=p;return true end},
+        cache={readBody=function(_,_,_,c) return bodies[c.uid] end},
+        service={getContent=function() error('bodies are cached') end}}
+    assert(session:open({id='s'},{id='b',source_id='s'},chapters,1,{backend='immersive'}))
+    h:drain();local view=owner.current_document.widget;host:_repaint()
+    assert(view:setProgressFraction(1));h:drain();host:_repaint()
+    assert(view:nextPage());eq(2,session.active.index,'session commits the next chapter')
+    eq(false,view.animation:isRunning(),'real session uses full-page chapter composition')
+    -- Let footer/index tasks run before the first composition: their smaller
+    -- refresh regions must merge into, never replace, the full chapter request.
+    draws={};submissions={};h:drain();host:_repaint()
+    eq(1,#submissions,'real host merges boundary and footer into one submission')
+    eq(cleanup and 'refreshFull' or 'refreshPartial',submissions[1].kind,'host retains chapter refresh strength')
+    eq(W,submissions[1].w,'host refresh spans the entire width')
+    eq(H,submissions[1].h,'host refresh spans the entire height')
+    local text=table.concat(draws)
+    eq(true,text:find('BBB',1,true)~=nil,'new chapter text reaches the host framebuffer')
+    eq(nil,text:find('AAA',1,true),'old chapter body is not drawn at the boundary')
+    local want=raster(W,H);view:_paintTo(want,0,0)
+    local complete=true
+    for i=0,W*H-1 do if panel.pixels[i]~=want.pixels[i] then complete=false;break end end
+    eq(true,complete,'visible panel matches the complete new chapter, including its right edge')
+    want:free()
+    assert(view:previousPage());h:drain();host:_repaint()
+    eq(1,session.active.index,'backward boundary returns to the previous chapter')
+    eq(true,view.page.at_end,'backward boundary presents the previous chapter last page')
+    assert(view:requestChapter(3,false));h:drain();host:_repaint()
+    eq(3,session.active.index,'directory jump commits the selected chapter')
+    eq(1,view.page.start_position.char,'directory jump keeps its first screen')
+    session:close();h:drain();host:_repaint()
+    eq(0,#host._window_stack,'closed chapter leaves no host reader window')
+end end
 return n

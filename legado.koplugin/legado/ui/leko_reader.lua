@@ -272,6 +272,15 @@ function View:_setPage(page,direction,prepared_widgets)
     end
     if previous~=widgets then free(previous) end
     self:_notifyPage()
+    local chapter_changed=self.chapter_changed
+    self.chapter_changed=false
+    if chapter_changed then
+        -- Chapter replacement changes text widgets and chrome together. Let
+        -- the host compose and submit one complete page, without regional
+        -- animation frames retaining any part of the previous chapter.
+        self.ui:setDirty(self,self.style.chapter_clean_wave_enabled and 'full' or 'partial')
+        return true
+    end
     if direction and self.style.page_transition~='off' then
         local timing=self.callbacks.timing
         local ok,animated=pcall(self.animation.begin,self.animation,self,direction,function(_,painted)
@@ -279,10 +288,8 @@ function View:_setPage(page,direction,prepared_widgets)
             if painted and self.page==page then self.chapter_entry_pending=nil end
             if not self.closed and not painted then self.ui:setDirty(self,'ui') end
         end,
-            {effect=self.style.page_transition,chapter_changed=self.chapter_changed==true,
-                chapter_clean_wave_enabled=self.style.chapter_clean_wave_enabled,refresh_mode=self.style.swipe_refresh_mode,
+            {effect=self.style.page_transition,refresh_mode=self.style.swipe_refresh_mode,
                 portrait_delay_ms=self.style.swipe_portrait_delay_ms,landscape_delay_ms=self.style.swipe_landscape_delay_ms})
-        self.chapter_changed=false
         if not ok then self:_finishAnimation(true);self:_error(animated)
         elseif animated then
             -- Native swipe submits the complete target before begin returns.
@@ -676,10 +683,9 @@ function View:requestChapter(index,last_page,refresh)
 end
 function View:_presentChapterEntry()
     if not self.chapter_entry_pending then return false end
-    -- The chapter cursor is committed before its asynchronous reveal. An early
-    -- page turn completes that first screen; it must not skip it for page two.
-    self:_finishAnimation()
-    if self.chapter_entry_pending then self.ui:setDirty(self,'ui') end
+    -- A new chapter is committed before the next host paint. Repeated input
+    -- must present that entry screen before advancing, preserving clear mode.
+    self.ui:setDirty(self,self.style.chapter_clean_wave_enabled and 'full' or 'partial')
     return true
 end
 function View:nextPage()
@@ -823,8 +829,8 @@ function View:showLayoutMenu()
             update{page_transition=({off='original',original='swipe_classic',swipe_classic='swipe',swipe='ripple',ripple='side_ripple',side_ripple='ripple_in',ripple_in='wave',wave='off'})[self.style.page_transition]}
         end}},
     }
+    buttons[#buttons][2]={text='跨章整页净屏：'..(self.style.chapter_clean_wave_enabled and '开' or '关'),callback=function() update{chapter_clean_wave_enabled=not self.style.chapter_clean_wave_enabled} end}
     if not swipe_preset then
-        buttons[#buttons][2]={text='跨章净屏动画：'..(self.style.chapter_clean_wave_enabled and '开' or '关'),callback=function() update{chapter_clean_wave_enabled=not self.style.chapter_clean_wave_enabled} end}
         buttons[#buttons+1]={{text='刷新模式：'..(self.style.swipe_refresh_mode=='fast' and '快速' or '清晰'),callback=function() update{swipe_refresh_mode=self.style.swipe_refresh_mode=='fast' and 'ui' or 'fast'} end}}
         buttons[#buttons+1]={{text='竖屏帧间隔：'..self.style.swipe_portrait_delay_ms..'ms',callback=function() cycle('swipe_portrait_delay_ms',{0,10,20,30,40,50,80}) end},
             {text='横屏帧间隔：'..self.style.swipe_landscape_delay_ms..'ms',callback=function() cycle('swipe_landscape_delay_ms',{0,10,20,30,40,50,80}) end}}
