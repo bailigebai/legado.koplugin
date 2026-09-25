@@ -156,6 +156,9 @@ eq(2,session.active.index,'real chapter-end event activates the next chapter')
 eq(true,doc.closed,'successful chapter replacement closes the old proxy')
 eq(next_doc,owner.current_document,'old close cannot clear the new owner')
 eq(32,next_doc:getReaderSettings().body_font_size,'independent layout follows the next chapter')
+-- Animation is off in this fixture: scheduled work alone does not paint the
+-- UIManager window. Present the first screen before navigating away from it.
+assert(next_doc.widget:paintTo(h.screen.bb,0,0))
 next_doc.widget:previousPage();h:drain()
 eq(1,session.active.index,'previous at chapter start opens the preceding chapter')
 eq(chapter_one_last.char,current():getPosition().char,'previous chapter opens its complete final page, not only its last character')

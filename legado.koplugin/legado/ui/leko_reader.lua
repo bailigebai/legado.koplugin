@@ -276,6 +276,7 @@ function View:_setPage(page,direction,prepared_widgets)
         local timing=self.callbacks.timing
         local ok,animated=pcall(self.animation.begin,self.animation,self,direction,function(_,painted)
             if timing then pcall(timing,'animation_submit',started) end
+            if painted and self.page==page then self.chapter_entry_pending=nil end
             if not self.closed and not painted then self.ui:setDirty(self,'ui') end
         end,
             {effect=self.style.page_transition,chapter_changed=self.chapter_changed==true,
@@ -283,7 +284,11 @@ function View:_setPage(page,direction,prepared_widgets)
                 portrait_delay_ms=self.style.swipe_portrait_delay_ms,landscape_delay_ms=self.style.swipe_landscape_delay_ms})
         self.chapter_changed=false
         if not ok then self:_finishAnimation(true);self:_error(animated)
-        elseif animated then self:_timing('animation_start',started);return true end
+        elseif animated then
+            -- Native swipe submits the complete target before begin returns.
+            if self.animation.mode=='native' then self.chapter_entry_pending=nil end
+            self:_timing('animation_start',started);return true
+        end
     end
     if not self.defer_tasks then self.ui:setDirty(self,'partial') end
     return true
@@ -540,18 +545,21 @@ function View:_paintTo(bb,x,y)
 end
 function View:paintTo(bb,x,y)
     return safe_event(self,function()
-        -- A host repaint (menu, rotation, external refresh) takes ownership of
-        -- the real screen. Retire our frames before they can overwrite it.
+        -- A host repaint takes screen ownership, but keep the captured target
+        -- until the new paint succeeds. A failed footer paint must not throw
+        -- away the only complete chapter page and strand a cleanup black band.
         local interrupted=bb==Device.screen.bb and self.animation:isRunning()
-        if interrupted then self:_finishAnimation(true) end
         local started=self.paint_started or self:_now()
-        self:_paintTo(bb,x,y)
+        local painted,cause=pcall(self._paintTo,self,bb,x,y)
         if interrupted then
+            self:_finishAnimation(painted)
             -- The host may have requested only a footer/menu region. Once the
             -- reveal is cancelled, refresh all newly painted text as well.
             -- Queue refresh only: upper widgets must finish painting first.
             self.ui:setDirty(nil,'ui',self.dimen)
         end
+        if not painted then error(cause,0) end
+        if bb==Device.screen.bb then self.chapter_entry_pending=nil end
         self.paint_started=nil
         self:_timing('paint_drawn',started)
         return true
@@ -666,8 +674,17 @@ function View:requestChapter(index,last_page,refresh)
     if not self.chapter_request then self.chapter_pending=nil end
     return handle or true
 end
+function View:_presentChapterEntry()
+    if not self.chapter_entry_pending then return false end
+    -- The chapter cursor is committed before its asynchronous reveal. An early
+    -- page turn completes that first screen; it must not skip it for page two.
+    self:_finishAnimation()
+    if self.chapter_entry_pending then self.ui:setDirty(self,'ui') end
+    return true
+end
 function View:nextPage()
     if self.closed then return false end
+    if self:_presentChapterEntry() then return true end
     if self.page.at_end then return self:requestChapter(self.index+1,false) end
     self.page_input_started=self:_now()
     local page,err=self:_makePage(self.page.next_position);if not page then return self:_error(err) end
@@ -682,6 +699,7 @@ function View:nextPage()
 end
 function View:previousPage()
     if self.closed then return false end
+    if self:_presentChapterEntry() then return true end
     self.page_input_started=self:_now()
     local position=self.history[#self.history]
     if position then
@@ -714,6 +732,7 @@ function View:applyStyle(changes)
 end
 function View:animateEntry(direction,chapter_changed)
     self.chapter_changed=chapter_changed==true
+    self.chapter_entry_pending=chapter_changed==true or nil
     return self:_setPage(self.page,direction,self.widgets)
 end
 function View:refreshAppearance()

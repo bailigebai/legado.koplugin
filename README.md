@@ -3,9 +3,11 @@
 
 升级无需重新激活：同一 Kindle 已成功激活后，覆盖更新插件代码即可，原短密钥和离线授权继续有效。请保留 KOReader 的用户数据和 settings 目录，不要删除 legado.json 或 legado-license.json；它们不在插件安装包中。GitHub 下载目录和 Releases 仅保留最新安装包。
 
-[下载最新安装包](https://github.com/bailigebai/legado.koplugin/releases/latest) · [下载 v0.10.30 ZIP](https://github.com/bailigebai/legado.koplugin/releases/download/v0.10.30/legado.koplugin-v0.10.30-20260924.zip)
+[下载最新安装包](https://github.com/bailigebai/legado.koplugin/releases/latest) · [下载 v0.10.31 ZIP](https://github.com/bailigebai/legado.koplugin/releases/download/v0.10.31/legado.koplugin-v0.10.31-20260926.zip)
 
 应用商店：刷新仓库列表，打开 `bailigebai/legado.koplugin`，选择“下载插件”并安装最新正式版，完成后重启 KOReader。
+
+2026-09-26 v0.10.31：修复跨章首屏尚未显示时，再次翻页直接跳到第二页的问题。动画未结束时的提前点击会立即补全首屏，正常显示后下一次点击继续翻页；章内翻页和正常完成的动画不增加额外点击。宿主局部重画失败时，保留并显示已经生成的完整首屏，避免丢弃目标画面后残留旧正文或黑带。固定 Swipe 的效果、时间参数、预取和按书设置不变，同一设备升级无需重新激活。测试与实机边界见 [跨章首屏修复记录](docs/chapter-presentation-0.10.31.md)。
 
 2026-09-24 v0.10.30：修复大书源合集被旧5MiB上限拒绝的问题。本地导入、显式下载和进程传输统一支持16MiB，普通阅读请求默认仍为4MiB。用户提供的15份原始JSON全部通过真实SQLite首次导入、重复导入、关闭重开和字段比对；与已有919源连续合并后为3331个不同站点地址，保留停用状态、书架和进度。原文件含重复站点，数量按地址去重。已保留固定Swipe动画和之前的功能，升级无需重新激活。逐份结果与实机边界见 [导入验证报告](docs/source-import-0.10.30.md)。
 
@@ -39,7 +41,7 @@ Swipe 操作：阅读菜单 → 阅读设置 → 动画效果 → Swipe动画，
 
 形态参考公开的 [GL Transitions 圆形开合](https://github.com/gl-transitions/gl-transitions/blob/902218a1b63773ac0d0d9f491951da3392365bfe/transitions/circleopen.glsl)、[WaterDrop](https://github.com/gl-transitions/gl-transitions/blob/902218a1b63773ac0d0d9f491951da3392365bfe/transitions/WaterDrop.glsl) 和 [Wind](https://github.com/gl-transitions/gl-transitions/blob/902218a1b63773ac0d0d9f491951da3392365bfe/transitions/wind.glsl)，改成适合墨水屏的几何揭页；未移植 WebGL、像素折射或渐隐混合，也不增加依赖。
 
-`legado.koplugin` 在 Kindle KOReader 上独立运行。v0.10.30 未激活时最多添加 5 本书，添加第 6 本需输入短密钥；同一授权同时解锁阅读小票和阅读回顾数据展示，其他功能免费。已有书籍不会因升级被删除，重复加入同一本不占新名额，删除收藏后可腾出名额。首次激活联网绑定设备，之后可离线验证；沿用已发放的 Legado 短密钥。新安装不内置书源，需要从本地 JSON 或网址自行导入。网络书默认使用基于 Leko 的独立文字阅读器和侧边水波纹，兼容缺少 Fast 刷新接口的 Kindle。本地 EPUB/PDF 等文档仍交给 KOReader；独立阅读菜单点击“关闭无感阅读”可回到 KOReader。双向切换保留章节和近似章内位置，两种排版分别按书保存。阅读页目录新增侧边懒加载面板，每页 15 章，可放在左侧或右侧，支持目录、书签、字体和配置页。本版继续优化缓存命中章节切换，当前章节提交后立即后台预取下一章，并继续填充后两章；页脚“阅读进度”可独立启用/停用并保留显示模式。详情见 [v0.10.22 修复记录](docs/reader-library-0.10.22.md)。
+`legado.koplugin` 在 Kindle KOReader 上独立运行。v0.10.31 未激活时最多添加 5 本书，添加第 6 本需输入短密钥；同一授权同时解锁阅读小票和阅读回顾数据展示，其他功能免费。已有书籍不会因升级被删除，重复加入同一本不占新名额，删除收藏后可腾出名额。首次激活联网绑定设备，之后可离线验证；沿用已发放的 Legado 短密钥。新安装不内置书源，需要从本地 JSON 或网址自行导入。网络书默认使用基于 Leko 的独立文字阅读器和侧边水波纹，兼容缺少 Fast 刷新接口的 Kindle。本地 EPUB/PDF 等文档仍交给 KOReader；独立阅读菜单点击“关闭无感阅读”可回到 KOReader。双向切换保留章节和近似章内位置，两种排版分别按书保存。阅读页目录新增侧边懒加载面板，每页 15 章，可放在左侧或右侧，支持目录、书签、字体和配置页。本版继续优化缓存命中章节切换，当前章节提交后立即后台预取下一章，并继续填充后两章；页脚“阅读进度”可独立启用/停用并保留显示模式。详情见 [v0.10.22 修复记录](docs/reader-library-0.10.22.md)。
 
 目标设备是 Kindle Paperwhite 第 6 代（KPW6）、Kindle 固件 5.19.5。自动兼容基线为 KOReader v2026.07.1，并尽量只使用长期存在的 Lua/LuaJIT、UI、网络和文件接口。2026-09-14 已通过 MTP 读取 KPW6 的实际代码和日志，并安装小票重画修复；物理触屏及安装包清单中的设备项目仍待验收。
 
