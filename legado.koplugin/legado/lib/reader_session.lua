@@ -732,64 +732,117 @@ function ReaderSession:_cancelCatalog()
     if handle and handle.cancel then handle:cancel() end
 end
 
+function ReaderSession:_updateCatalog(state,chapters,complete,persist)
+    if type(chapters)~='table' or #chapters==0 then return nil,Errors.new(Errors.PARSE_ERROR,'目录没有可用章节') end
+    if not complete and #chapters<#state.chapters then return true end
+    local snapshot={};for i,chapter in ipairs(chapters) do snapshot[i]=chapter end
+    local current=state.chapters[state.index] or {}
+    local index=self:recoverIndex(snapshot,{chapter_url=current.url,chapter_uid=current.uid,chapter_index=state.index})
+    if persist then
+        local path,err=self.cache:writeCatalog(state.book.source_id,state.book.id,{chapters=snapshot,complete=complete})
+        if not path then return nil,err or Errors.new(Errors.STORAGE_ERROR,'目录缓存保存失败') end
+        if self.storage.replaceChapters then
+            local saved; saved,err=self.storage:replaceChapters(state.book.id,snapshot)
+            if not saved then return nil,err or Errors.new(Errors.STORAGE_ERROR,'目录保存失败') end
+        end
+    end
+    state.chapters,state.index,state.catalog_complete=snapshot,index,complete
+    -- Publish completion once; intermediate parsing never repaints the drawer.
+    if complete and state.side_toc and not state.side_toc.closed then
+        pcall(state.side_toc.setItems,state.side_toc,snapshot,true)
+    end
+    return true
+end
+
 function ReaderSession:loadCatalog(state,callback,on_progress,options)
     options = options or {}
     if state.catalog_complete~=false then callback(state.chapters); return {cancel=function() end} end
     if not self.service or state.offline then callback(state.chapters); return {cancel=function() end} end
-    local waiter = { callback = callback, on_progress = on_progress, active = true }
-    local function subscription(generation, waiters)
+    local target=tonumber(options.max_chapters)
+    if target then target=math.max(1,math.floor(target)) end
+    if target and #state.chapters>=target then
+        local ok,saved,err=pcall(self._updateCatalog,self,state,state.chapters,false,true)
+        if not ok then err=self:_reader_error('catalog save failed',saved,'catalog') end
+        callback(ok and saved and state.chapters or nil,err,{catalog_complete=false})
+        return {cancel=function() end}
+    end
+    local waiter = { callback = callback, on_progress = on_progress, active = true, target=target }
+    local function subscription()
         return {cancel=function()
+            -- The session owns the full scan. Closing a drawer only detaches
+            -- its callback; pause/close/book changes cancel through _cancelCatalog.
             waiter.active = false
-            if generation ~= self.catalog_generation then return end
-            for _, other in ipairs(waiters) do if other.active then return end end
-            self:_cancelCatalog()
         end}
     end
     if self.catalog_state == state and self.catalog_waiters then
         self.catalog_waiters[#self.catalog_waiters + 1] = waiter
-        return subscription(self.catalog_generation, self.catalog_waiters)
+        return subscription()
     end
     self:_cancelCatalog()
     local generation,completed=self.catalog_generation,false
     local waiters = { waiter }
     self.catalog_state, self.catalog_waiters = state, waiters
+    local function deliver(other,chapters,err,metadata)
+        other.active=false
+        local ok,cause=pcall(other.callback,chapters,err,metadata)
+        if not ok then pcall(self.diagnostics,'catalog',self:_reader_error('catalog subscriber failed',cause,'catalog')) end
+    end
     local function finish(chapters, err, metadata)
         if completed or generation ~= self.catalog_generation then return end
         completed = true
+        local request=self.catalog_request
         self.catalog_request, self.catalog_state, self.catalog_waiters = nil, nil, nil
+        if err and request and request.cancel then pcall(request.cancel,request) end
         local active=self.active
         for _, other in ipairs(waiters) do
             -- A subscriber may immediately request a larger catalog. That
             -- starts a new generation, but all subscribers still own this
             -- completed result until the reading session itself changes.
             if self.active~=active then return end
-            if other.active then other.callback(chapters, err, metadata) end
+            if other.active then deliver(other,chapters,err,metadata) end
         end
+    end
+    local function update(chapters,complete,persist)
+        state=self.catalog_state or state
+        local ok,saved,err=pcall(self._updateCatalog,self,state,chapters,complete,persist)
+        if not ok then err=self:_reader_error('catalog update failed',saved,'catalog') end
+        if not ok or not saved then finish(nil,err);return false end
+        return true
     end
     local ok,handle,start_error=pcall(self.service.getChapters,self.service,state.source,state.book,function(chapters,err,metadata)
         if completed or generation~=self.catalog_generation then return end
         state = self.catalog_state or state
         if chapters and not err then
-            local chapter=state.chapters[state.index]
-            local index=self:recoverIndex(chapters,{chapter_url=chapter.url,chapter_uid=chapter.uid,chapter_index=state.index})
             local complete = not metadata or metadata.catalog_complete ~= false
-            local path,write_error=self.cache:writeCatalog(state.book.source_id,state.book.id,{chapters=chapters,complete=complete})
-            if not path then finish(nil,write_error); return end
-            if self.storage.replaceChapters then
-                local saved, storage_error = self.storage:replaceChapters(state.book.id,chapters)
-                if not saved then finish(nil,storage_error or Errors.new(Errors.STORAGE_ERROR,'catalog could not be saved')); return end
-            end
-            state.chapters,state.index,state.catalog_complete=chapters,index,complete
+            if not update(chapters,complete,true) then return end
         end
         finish(chapters,err,metadata)
-    end,{on_progress=function(...)
-        for _, other in ipairs(waiters) do if other.active and other.on_progress then other.on_progress(...) end end
-    end,max_pages=options.max_pages,max_chapters=options.max_chapters})
+    end,{on_progress=function(page,count,chapters)
+        if completed or generation~=self.catalog_generation then return end
+        if chapters and #chapters>0 then
+            local ready=false
+            for _,other in ipairs(waiters) do
+                if other.active and other.target and #chapters>=other.target then ready=true;break end
+            end
+            if not update(chapters,false,ready) then return end
+            local active=self.active
+            for _,other in ipairs(waiters) do
+                if self.active~=active then return end
+                if other.active and other.target and #chapters>=other.target then
+                    deliver(other,state.chapters,nil,{catalog_complete=false})
+                end
+            end
+        end
+        for _,other in ipairs(waiters) do
+            if other.active and other.on_progress then pcall(other.on_progress,page,count) end
+        end
+    end,max_pages=options.max_pages})
     if not ok or not handle then
         finish(nil, not ok and self:_reader_error('catalog request failed',handle,'catalog')
             or start_error or Errors.new(Errors.NETWORK_ERROR,'catalog request did not start'))
-    elseif not completed then self.catalog_request=handle end
-    return subscription(generation, waiters)
+    elseif not completed then self.catalog_request=handle
+    elseif handle.cancel then pcall(handle.cancel,handle) end
+    return subscription()
 end
 
 local function cancel_handles(handles)

@@ -548,14 +548,31 @@ function BookService:getChapters(source, book, callback, options)
     if reverse then max_chapters = nil end
     if max_chapters then max_chapters = math.max(1, math.floor(max_chapters)) end
     local chapters, seen, chapter_urls, page, trace = {}, {}, {}, 1, nil
+    local parse_job
+    local function cancel_parse()
+        local job=parse_job;parse_job=nil
+        if job and self.scheduler and self.scheduler.unschedule then pcall(self.scheduler.unschedule,self.scheduler,job) end
+    end
+    state.children[#state.children+1]={cancel=cancel_parse}
     local function finish(value, err)
         if state.cancelled or state.completed then return end
+        cancel_parse()
         state.completed = true
         if reverse and value then
             for i = 1, math.floor(#value / 2) do value[i], value[#value - i + 1] = value[#value - i + 1], value[i] end
             for i, chapter in ipairs(value) do chapter.index = i end
         end
         callback(value, err, trace)
+    end
+    local function guarded(action)
+        if state.cancelled or state.completed then return end
+        local ok=pcall(action)
+        if not ok then finish(nil,Errors.new(Errors.PARSE_ERROR,'catalog processing failed')) end
+    end
+    local function progress()
+        -- Append-only ordered prefix; reversed catalogs cannot expose a stable
+        -- first chapter until the final website page is known.
+        if options.on_progress then pcall(options.on_progress,page,#chapters,not reverse and chapters or nil) end
     end
     local fetch
     fetch = function(current_url)
@@ -564,73 +581,90 @@ function BookService:getChapters(source, book, callback, options)
         seen[current_url] = true
         trace = nil
         local child = self:_request(source, current_url, { baseUrl = current_url, page = page, result = "" }, function(response, request_error)
-            if state.cancelled or state.completed then return end
-            if request_error then finish(nil, request_error); return end
-            trace = response_metadata(response)
-            local final_url = response.final_url or current_url
-            local context = { baseUrl = final_url, page = page, result = response.body }
-            local list, list_error = self:_parse(response.body, chapter_list, context, true)
-            if list_error then finish(nil, list_error); return end
-            local truncated = false
-            for _, member in ipairs(list or {}) do
-                if state.cancelled then return end
-                if max_chapters and #chapters >= max_chapters then truncated = true; break end
-                local title, title_error = self:_parse(member, aliases(rule, { "chapterName", "name", "title" }), context, false)
-                if title_error then finish(nil, title_error); return end
-                local chapter_url, url_error = self:_parse_url(member, aliases(rule, { "chapterUrl", "url" }), context)
-                if url_error then finish(nil, url_error); return end
-                local vip, vip_error = self:_parse(member, aliases(rule, { "isVip", "vip" }), context, false)
-                if vip_error then finish(nil, vip_error); return end
-                local chapter=Models.chapter(book, source, { index = #chapters + 1, title = title, url = chapter_url, vip = vip }, final_url)
-                if not chapter_urls[chapter.url] and (not max_chapters or (trim(chapter_url) ~= "" and chapter.url:match("^https?://"))) then
-                    chapters[#chapters+1]=chapter; chapter_urls[chapter.url]=true
-                end
-            end
-            if truncated then
-                if options.on_progress then pcall(options.on_progress, page, #chapters) end
-                trace.catalog_complete = false
-                finish(chapters, nil)
-                return
-            end
-            local next_url, next_error = self:_parse_url(response.body, aliases(rule, { "nextTocUrl", "nextUrl", "next" }), context)
-            if next_error then finish(nil, next_error); return end
-            if options.on_progress then pcall(options.on_progress,page,#chapters) end
-            if state.cancelled then return end
-            -- Some mobile sites expose both "previous" and "next" links with
-            -- the same class.  The source rule then yields the already visited
-            -- previous link; choose the last unvisited candidate.
-            if next_url and seen[self.templates:resolve(final_url, next_url)] then
-                local next_rule = aliases(rule, { "nextTocUrl", "nextUrl", "next" })
-                local candidates = self.rules:parse(response.body, next_rule, context, true)
-                if type(candidates) == "table" then
-                    next_url = nil
-                    for i = #candidates, 1, -1 do
-                        local candidate = candidates[i]
-                        if type(candidate) == "string" and trim(candidate) ~= "" then
-                            local resolved = self.templates:resolve(final_url, candidate)
-                            if not seen[resolved] then next_url = candidate; break end
+            guarded(function()
+                if state.cancelled or state.completed then return end
+                if request_error then finish(nil, request_error); return end
+                trace = response_metadata(response)
+                local final_url = response.final_url or current_url
+                local context = { baseUrl = final_url, page = page, result = response.body }
+                local list, list_error = self:_parse(response.body, chapter_list, context, true)
+                if list_error then finish(nil, list_error); return end
+                list=list or {}
+                local cursor=1
+                local batch
+                batch=function()
+                    if state.cancelled or state.completed then return end
+                    local remaining=self.scheduler and type(self.scheduler.scheduleIn)=='function' and 15 or math.huge
+                    while cursor<=#list and remaining>0 and (not max_chapters or #chapters<max_chapters) do
+                        if state.cancelled then return end
+                        local member=list[cursor];cursor=cursor+1;remaining=remaining-1
+                        local title, title_error = self:_parse(member, aliases(rule, { "chapterName", "name", "title" }), context, false)
+                        if title_error then finish(nil, title_error); return end
+                        local chapter_url, url_error = self:_parse_url(member, aliases(rule, { "chapterUrl", "url" }), context)
+                        if url_error then finish(nil, url_error); return end
+                        local vip, vip_error = self:_parse(member, aliases(rule, { "isVip", "vip" }), context, false)
+                        if vip_error then finish(nil, vip_error); return end
+                        local chapter=Models.chapter(book, source, { index = #chapters + 1, title = title, url = chapter_url, vip = vip }, final_url)
+                        if not chapter_urls[chapter.url] and (not max_chapters or (trim(chapter_url) ~= "" and chapter.url:match("^https?://"))) then
+                            chapters[#chapters+1]=chapter; chapter_urls[chapter.url]=true
                         end
                     end
+                    if max_chapters and #chapters>=max_chapters and cursor<=#list then
+                        progress()
+                        trace.catalog_complete = false
+                        finish(chapters, nil)
+                        return
+                    end
+                    if cursor<=#list then
+                        progress()
+                        if state.cancelled or state.completed then return end
+                        parse_job=function() parse_job=nil;guarded(batch) end
+                        -- Zero-delay tasks are drained in the same KOReader sweep.
+                        self.scheduler:scheduleIn(.01,parse_job)
+                        return
+                    end
+                    local next_url, next_error = self:_parse_url(response.body, aliases(rule, { "nextTocUrl", "nextUrl", "next" }), context)
+                    if next_error then finish(nil, next_error); return end
+                    progress()
+                    if state.cancelled then return end
+                    -- Some mobile sites expose both "previous" and "next" links with
+                    -- the same class.  The source rule then yields the already visited
+                    -- previous link; choose the last unvisited candidate.
+                    if next_url and seen[self.templates:resolve(final_url, next_url)] then
+                        local next_rule = aliases(rule, { "nextTocUrl", "nextUrl", "next" })
+                        local candidates = self.rules:parse(response.body, next_rule, context, true)
+                        if type(candidates) == "table" then
+                            next_url = nil
+                            for i = #candidates, 1, -1 do
+                                local candidate = candidates[i]
+                                if type(candidate) == "string" and trim(candidate) ~= "" then
+                                    local resolved = self.templates:resolve(final_url, candidate)
+                                    if not seen[resolved] then next_url = candidate; break end
+                                end
+                            end
+                        end
+                    end
+                    if next_url ~= nil and trim(next_url) ~= "" then
+                        if max_chapters and #chapters >= max_chapters then trace.catalog_complete=false; finish(chapters, nil); return end
+                        if page >= max_pages then
+                            if reverse then finish(nil, Errors.new(Errors.PARSE_ERROR, 'reversed catalog is incomplete; the first chapter cannot be located', { maximum = max_pages }))
+                            elseif options.max_pages then trace.catalog_complete=false; finish(chapters, nil)
+                            else finish(nil, Errors.new(Errors.PARSE_ERROR, "catalog pagination exceeds the safe limit", { maximum = max_pages })) end
+                            return
+                        end
+                        page = page + 1
+                        fetch(self.templates:resolve(final_url, next_url))
+                        return
+                    end
+                    trace.catalog_complete=true
+                    finish(chapters, nil)
                 end
-            end
-            if next_url ~= nil and trim(next_url) ~= "" then
-                if max_chapters and #chapters >= max_chapters then trace.catalog_complete=false; finish(chapters, nil); return end
-                if page >= max_pages then
-                    if reverse then finish(nil, Errors.new(Errors.PARSE_ERROR, 'reversed catalog is incomplete; the first chapter cannot be located', { maximum = max_pages }))
-                    elseif options.max_pages then trace.catalog_complete=false; finish(chapters, nil)
-                    else finish(nil, Errors.new(Errors.PARSE_ERROR, "catalog pagination exceeds the safe limit", { maximum = max_pages })) end
-                    return
-                end
-                page = page + 1
-                fetch(self.templates:resolve(final_url, next_url))
-                return
-            end
-            trace.catalog_complete=true
-            finish(chapters, nil)
+                batch()
+            end)
         end)
         state.children[#state.children + 1] = child
     end
-    fetch(url)
+    guarded(function() fetch(url) end)
     return handle
 end
 

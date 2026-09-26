@@ -33,7 +33,7 @@ end
 local f=fixture();f.choose()
 eq(1,f.session.active.index,'unloaded bookmark must not jump to last known chapter')
 eq(1,#f.requests,'bookmark requests missing catalog on demand')
-eq(true,f.requests[1].target>=40,'catalog demand includes saved chapter')
+eq(true,f.requests[1].target==nil or f.requests[1].target>=40,'catalog scan can reach the saved chapter')
 f.requests[1].done(chapters(45),nil,{catalog_complete=false})
 eq(40,f.session.active.index,'bookmark resolves exact chapter after lazy catalog load')
 eq(.4,f.session.active.document.fraction,'bookmark restores its saved within-chapter position')

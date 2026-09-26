@@ -123,7 +123,9 @@ do
     eq(nil,f.bodies.c2,'paused-menu suspended worker cannot publish late content')
     opened.callbacks.resume(opened.doc);f.scheduler:runNext()
     eq(2,#f.catalog,'resume retries the unfinished three-chapter catalog demand')
-    eq(4,f.catalog[2].options.max_chapters,'resumed request still targets all three successors')
+    f.catalog[2].options.on_progress(1,4,{f.chapters[1],f.chapters[2],f.chapters[3],f.chapters[4]})
+    f:finish('c2');f:finish('c3')
+    eq('c4',f.requests[#f.requests].chapter.uid,'resume prefetches the third successor before the full catalog finishes')
     f.session:close()
 end
 -- Suspending cancels both workers; stale completions cannot write, and resume refills.
@@ -164,8 +166,10 @@ end
 do
     local f=fixture(3);f.scheduler:runNext()
     eq(1,#f.catalog,'partial catalog is immediately extended to the complete prefetch window')
-    eq(4,f.catalog[1].options.max_chapters,'prepares three chapters after current, not three including current')
     eq(0,f.scheduler.now_value,'display refresh throttle does not delay catalog requests')
+    f.catalog[1].options.on_progress(1,4,{f.chapters[1],f.chapters[2],f.chapters[3],f.chapters[4]})
+    f:finish('c3')
+    eq('c4',f.requests[#f.requests].chapter.uid,'third successor starts from incremental catalog before final completion')
     f.catalog[1].callback(f.chapters,nil,{catalog_complete=true})
     f.session:close()
 end
