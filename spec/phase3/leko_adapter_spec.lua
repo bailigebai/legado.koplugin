@@ -36,6 +36,14 @@ local callbacks={
     error=function(proxy,err) eq(true,err.code=='STORAGE_ERROR' or err.code=='READER_ERROR','runtime failure reaches host diagnostics') end,
 }
 local document=assert(Adapter.open(owner,{state=state,body=body,progress=progress},callbacks))
+local saved_context=callbacks.context
+callbacks.context=function()return {catalog_error='TIMEOUT'}end
+local saved_label=document.widget._paintLabel
+local failed_label=false
+document.widget._paintLabel=function(_,_,text)if text=='目录加载失败' then failed_label=true end end
+document.widget:_paintTo(h.screen.bb,0,0)
+eq(true,failed_label,'failed background catalog paints a failure label instead of loading forever')
+document.widget._paintLabel=saved_label;callbacks.context=saved_context
 eq(1,counts.ready,'one candidate has one ready notification')
 eq(1,#events,'latest initial page state is published once after ready')
 eq(document,events[1].proxy,'page callback receives the session proxy')

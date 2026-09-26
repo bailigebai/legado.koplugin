@@ -520,7 +520,8 @@ function View:_paintTo(bb,x,y)
     local g=self.page.geometry;local layout=self.page.style._chrome_layout;local context=self:getReadingContext()
     local values={time=os.date('%H:%M'),title=self.book.name or self.book.title or '',chapter=self.chapter.title or '',off='',
         chapter_page=(context.chapter_page or '—')..'/'..(context.chapter_pages or '—'),
-        progress=context.book_fraction and string.format('约 %.1f%%',context.book_fraction*100) or '目录加载中'}
+        progress=context.book_fraction and string.format('约 %.1f%%',context.book_fraction*100)
+            or (context.catalog_error and '目录加载失败' or '目录加载中')}
     local pad=layout.pad;local w=self.dimen.w-2*pad;local quarter=math.floor(w/4)
     if self.page.style.show_header then
         local header_y=y+g.body_top+math.floor((g.header_height-layout.header_text_height)/2)
@@ -616,7 +617,7 @@ function View:getReadingContext()
         chapter_pages=self.page_total,chapter_fraction=fraction,chapter_progress=fraction,
         book_fraction=self.catalog_complete~=false and self.count and self.count>0 and (self.index-1+fraction)/self.count or nil}
     local extra=self:_call('context',context)
-    if type(extra)=='table' then for _,key in ipairs{'reading_seconds','chapter_remaining','book_remaining','chapter_remaining_text','prefetch'} do context[key]=extra[key] end end
+    if type(extra)=='table' then for _,key in ipairs{'reading_seconds','chapter_remaining','book_remaining','chapter_remaining_text','prefetch','catalog_error'} do context[key]=extra[key] end end
     return context
 end
 function View:flushProgress() return self:_call('flush') end

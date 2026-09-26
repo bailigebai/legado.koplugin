@@ -57,7 +57,7 @@ for _, async in ipairs({ false, true }) do
     scheduler:runNext()
     eq('ready', state.events[1], 'first observable completion belongs to the document')
     eq(2, #state.requests, 'the follow-up does not duplicate immediate prefetch')
-    eq(6, scheduler.queue[1].at, 'full catalog stays behind first chapter and prefetch')
+    eq(true, scheduler.queue[1].at>0 and scheduler.queue[1].at<1, 'full catalog yields for first paint but starts promptly after prefetch')
     scheduler:runNext()
     eq('catalog', state.events[#state.events], 'catalog eventually starts in the background')
     session:close()

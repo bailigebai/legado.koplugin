@@ -84,11 +84,11 @@ local delayed, background_loaded
 local background_scheduler={scheduleIn=function(_,delay,callback) delayed={delay=delay,callback=callback}; return callback end,
     unschedule=function() end}
 local background=Session.new{cache=cache,storage=storage,ui=reader,service=service,scheduler=background_scheduler}
-local background_state={active=true,offline=false,catalog_complete=false,index=1}
+local background_state={active=true,offline=false,catalog_complete=false,index=1,book={id='background',source_id='source'}}
 background.active=background_state
 background.loadCatalog=function(_,state) background_loaded=state end
 background:_scheduleBackgroundCatalog(background_state)
-eq(6,delayed.delay,'background catalog waits six seconds before network work')
+eq(true,delayed.delay>0 and delayed.delay<1,'background catalog starts promptly after first paint without a six-second wait')
 delayed.callback()
 eq(background_state,background_loaded,'background catalog starts without opening or refreshing a UI')
 -- Use the public reading TOC and its real Presenter cancel action. Rendering,

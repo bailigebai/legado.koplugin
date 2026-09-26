@@ -11,6 +11,8 @@ BookService.MAX_CONCURRENCY = 3
 BookService.FAST_SEARCH_CONCURRENCY = 4
 BookService.MAX_PAGES = 20
 BookService.MAX_CATALOG_PAGES = 64
+BookService.MAX_BACKGROUND_CATALOG_PAGES = 512
+BookService.MAX_CATALOG_CHAPTERS = 100000
 BookService.MAX_CONTENT_BYTES = 4 * 1024 * 1024
 local priorities = { foreground = 1, next = 2, background = 3 }
 
@@ -541,7 +543,8 @@ function BookService:getChapters(source, book, callback, options)
     local url = book.toc_url or book.url
     local handle, state = composite()
     options = options or {}
-    local max_pages = math.max(1, tonumber(options.max_pages) or BookService.MAX_CATALOG_PAGES)
+    local max_pages = math.max(1, math.min(BookService.MAX_BACKGROUND_CATALOG_PAGES,tonumber(options.max_pages)
+        or (options.background_catalog and BookService.MAX_BACKGROUND_CATALOG_PAGES or BookService.MAX_CATALOG_PAGES)))
     local max_chapters = tonumber(options.max_chapters)
     -- In a newest-first catalog the oldest chapter is only known after every
     -- page arrives. A startup chapter cap would open a late chapter as #1.
@@ -575,19 +578,35 @@ function BookService:getChapters(source, book, callback, options)
         if options.on_progress then pcall(options.on_progress,page,#chapters,not reverse and chapters or nil) end
     end
     local fetch
-    fetch = function(current_url)
+    fetch = function(current_url, attempt)
         if state.cancelled or state.completed then return end
-        if seen[current_url] then finish(nil, Errors.new(Errors.PARSE_ERROR, "catalog pagination loop detected")); return end
+        attempt=attempt or 0
+        if attempt==0 and seen[current_url] then finish(nil, Errors.new(Errors.PARSE_ERROR, "catalog pagination loop detected")); return end
         seen[current_url] = true
         trace = nil
         local child = self:_request(source, current_url, { baseUrl = current_url, page = page, result = "" }, function(response, request_error)
             guarded(function()
                 if state.cancelled or state.completed then return end
-                if request_error then finish(nil, request_error); return end
+                if request_error then
+                    local code=type(request_error)=='table' and request_error.code
+                    local details=type(request_error)=='table' and request_error.details
+                    local status=details and tonumber(details.status)
+                    local transient=code==Errors.TIMEOUT or code==Errors.NETWORK_ERROR
+                        and not (details and details.reason) and (not status or status>=500)
+                    if options.background_catalog and transient and attempt<2 and self.scheduler and self.scheduler.scheduleIn then
+                        -- Retry this page only; keep the parsed prefix and page number.
+                        parse_job=function()parse_job=nil;guarded(function()fetch(current_url,attempt+1)end)end
+                        self.scheduler:scheduleIn(attempt==0 and 1 or 3,parse_job)
+                    else finish(nil,request_error) end
+                    return
+                end
                 trace = response_metadata(response)
                 local final_url = response.final_url or current_url
                 local context = { baseUrl = final_url, page = page, result = response.body }
-                local list, list_error = self:_parse(response.body, chapter_list, context, true)
+                local list, list_error
+                if self.rules.parseCatalogElements then
+                    list,list_error=self.rules:parseCatalogElements(response.body,chapter_list,context)
+                else list,list_error=self:_parse(response.body,chapter_list,context,true) end
                 if list_error then finish(nil, list_error); return end
                 list=list or {}
                 local cursor=1
@@ -606,6 +625,10 @@ function BookService:getChapters(source, book, callback, options)
                         if vip_error then finish(nil, vip_error); return end
                         local chapter=Models.chapter(book, source, { index = #chapters + 1, title = title, url = chapter_url, vip = vip }, final_url)
                         if not chapter_urls[chapter.url] and (not max_chapters or (trim(chapter_url) ~= "" and chapter.url:match("^https?://"))) then
+                            if #chapters>=BookService.MAX_CATALOG_CHAPTERS then
+                                finish(nil,Errors.new(Errors.PARSE_ERROR,'catalog exceeds the chapter limit',{maximum=BookService.MAX_CATALOG_CHAPTERS}))
+                                return
+                            end
                             chapters[#chapters+1]=chapter; chapter_urls[chapter.url]=true
                         end
                     end

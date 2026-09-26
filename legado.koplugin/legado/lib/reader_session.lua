@@ -227,17 +227,21 @@ end
 
 function ReaderSession:_scheduleBackgroundCatalog(state)
     if state.offline or state.catalog_complete ~= false or not self.scheduler or not self.scheduler.scheduleIn then return false end
+    if self.catalog_state==state or self.catalog_background_action then return true end
     self.catalog_background_generation = self.catalog_background_generation + 1
     local generation = self.catalog_background_generation
     local function load()
-        if generation ~= self.catalog_background_generation or self.active ~= state or not state.active then return end
+        local current=self.active
+        if generation ~= self.catalog_background_generation or not same_book(current,state) or not current.active then return end
         self.catalog_background_action = nil
-        self:loadCatalog(state, function(_, err)
-            if not err and self.active == state and state.active then self:_prefetch(state) end
+        self:loadCatalog(current, function(_, err)
+            if not err and same_book(self.active,current) and self.active.active then self:_prefetch(self.active) end
         end)
     end
     self.catalog_background_action = load
-    self.scheduler:scheduleIn(6, load)
+    -- Reader commit already happened; yield for its first paint, not a UI
+    -- refresh-throttle interval. Directory collection is independent of menus.
+    self.scheduler:scheduleIn(.1, load)
     return true
 end
 
@@ -291,6 +295,12 @@ function ReaderSession:_activate_candidate(state, document)
     end
     local previous = state.previous
     if same_book(previous, state) then
+        if state.inherits_catalog then
+            local chapter=state.chapters[state.index]
+            state.chapters,state.catalog_complete=previous.chapters,previous.catalog_complete
+            state.catalog_error=previous.catalog_error
+            state.index=self:recoverIndex(state.chapters,{chapter_uid=chapter.uid,chapter_url=chapter.url,chapter_index=state.index})
+        end
         state.prefetch_failures = previous.prefetch_failures
         if self.catalog_state == previous then self.catalog_state = state end
     end
@@ -357,7 +367,8 @@ function ReaderSession:_callbacks(state)
         error=function(_,err) self.diagnostics('read',err) end,
         context=function(_,base)
             local elapsed=not state.paused and state.started_at and math.max(0,os.time()-state.started_at) or 0
-            local context={reading_seconds=(state.reading_seconds or 0)+elapsed,prefetch=state.prefetch_status}
+            local context={reading_seconds=(state.reading_seconds or 0)+elapsed,prefetch=state.prefetch_status,
+                catalog_error=state.catalog_error and state.catalog_error.code}
             if state.backend=='immersive' and state.prefetch_status and self.ui.getPreparedChapterStatus then
                 local ok, prepared=pcall(self.ui.getPreparedChapterStatus,self.ui,state)
                 if ok and prepared then
@@ -432,7 +443,7 @@ function ReaderSession:_callbacks(state)
                 state.active = false
                 self:_cancelForeground()
                 self:_cancelPrefetch()
-                self:_cancelCatalog()
+                if not (replacing and same_book(state,self.pending)) then self:_cancelCatalog() end
                 return saved,save_error
             end
         end,
@@ -498,6 +509,7 @@ function ReaderSession:_open_cached(state, index, restore_fraction)
         index = index, restore_fraction = restore_fraction, previous = self.active, active = false,
         offline = state.offline, on_complete = state.on_complete, notification = state.notification,
         catalog_complete = state.catalog_complete,
+        inherits_catalog = previous and state.chapters==previous.chapters,
         prepared_html = state.prepared_html,
         reader_settings_book_id = state.reader_settings_book_id,
         statistics_book_id = state.statistics_book_id,
@@ -780,6 +792,7 @@ function ReaderSession:loadCatalog(state,callback,on_progress,options)
     end
     self:_cancelCatalog()
     local generation,completed=self.catalog_generation,false
+    state.catalog_error=nil
     local waiters = { waiter }
     self.catalog_state, self.catalog_waiters = state, waiters
     local function deliver(other,chapters,err,metadata)
@@ -791,7 +804,10 @@ function ReaderSession:loadCatalog(state,callback,on_progress,options)
         if completed or generation ~= self.catalog_generation then return end
         completed = true
         local request=self.catalog_request
+        local owner=self.catalog_state or state
+        owner.catalog_error=err
         self.catalog_request, self.catalog_state, self.catalog_waiters = nil, nil, nil
+        if err then pcall(self.diagnostics,'catalog',err) end
         if err and request and request.cancel then pcall(request.cancel,request) end
         local active=self.active
         for _, other in ipairs(waiters) do
@@ -836,7 +852,7 @@ function ReaderSession:loadCatalog(state,callback,on_progress,options)
         for _,other in ipairs(waiters) do
             if other.active and other.on_progress then pcall(other.on_progress,page,count) end
         end
-    end,max_pages=options.max_pages})
+    end,max_pages=options.max_pages,background_catalog=true})
     if not ok or not handle then
         finish(nil, not ok and self:_reader_error('catalog request failed',handle,'catalog')
             or start_error or Errors.new(Errors.NETWORK_ERROR,'catalog request did not start'))

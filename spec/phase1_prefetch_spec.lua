@@ -75,8 +75,8 @@ end
 do
     local f = fixture(); f.open(nil, 1, { catalog_complete = false })
     f.scheduler:runNext() -- immediate prefetch work
-    f.scheduler:runNext() -- six-second background catalog work
-    eq(1, #f.catalog_requests, 'background catalog starts after the six-second delay')
+    f.scheduler:runNext() -- background catalog after first paint
+    eq(1, #f.catalog_requests, 'background catalog starts after the first-paint yield')
     eq(nil, f.catalog_options.max_chapters, 'background catalog is not capped to a partial page')
     f.session:close()
 end

@@ -43,11 +43,12 @@ local function append(output, value)
     if value ~= nil then output[#output + 1] = value end
 end
 
-local function enforce_output_limit(values)
-    if #values > Capabilities.LIMITS.MAX_OUTPUT_ITEMS then
+local function enforce_output_limit(values, engine)
+    local maximum = engine and engine.max_output_items or Capabilities.LIMITS.MAX_OUTPUT_ITEMS
+    if #values > maximum then
         return parse_failure("rule output exceeds the safe item limit", {
             limit = "output_items",
-            maximum = Capabilities.LIMITS.MAX_OUTPUT_ITEMS,
+            maximum = maximum,
         })
     end
     return values
@@ -448,7 +449,7 @@ function RuleEngine:_json_path(input, rule)
                     if seen[current] then traversal_error = 'recursive JSONPath contains a cycle'; return end
                     seen[current] = true
                     append(next_values, current[token.name])
-                    if #next_values > Capabilities.LIMITS.MAX_OUTPUT_ITEMS then traversal_error = 'recursive JSONPath output limit'; return end
+                    if #next_values > (self.max_output_items or Capabilities.LIMITS.MAX_OUTPUT_ITEMS) then traversal_error = 'recursive JSONPath output limit'; return end
                     local keys = {}
                     for key in pairs(current) do
                         keys[#keys + 1] = key
@@ -477,12 +478,12 @@ function RuleEngine:_json_path(input, rule)
             end
         end
         values = next_values
-        local limited, limit_error = enforce_output_limit(values)
+        local limited, limit_error = enforce_output_limit(values, self)
         if not limited then return nil, limit_error end
     end
     local output = {}
     for _, value in ipairs(values) do output[#output + 1] = copy(value) end
-    return enforce_output_limit(output)
+    return enforce_output_limit(output, self)
 end
 
 local function parse_extractor(rule)
@@ -743,7 +744,7 @@ function RuleEngine:_css_select(root, selector, selector_depth, include_root)
         end
         table.sort(candidates, function(left, right) return (left.index or 0) < (right.index or 0) end)
         subjects = apply_positions(candidates, parsed.positional)
-        local limited, limit_error = enforce_output_limit(subjects)
+        local limited, limit_error = enforce_output_limit(subjects, self)
         if not limited then return nil, limit_error end
     end
     return subjects
@@ -769,7 +770,7 @@ function RuleEngine:_extract_nodes(nodes, extractor, context)
             end
         end
     end
-    return enforce_output_limit(output)
+    return enforce_output_limit(output, self)
 end
 
 function RuleEngine:_css(input, rule, context)
@@ -868,7 +869,7 @@ function RuleEngine:_default_select(root, rule)
             for _, value in ipairs(values) do selected[#selected + 1] = value end
         end
         subjects = selected
-        local limited, limit_error = enforce_output_limit(subjects)
+        local limited, limit_error = enforce_output_limit(subjects, self)
         if not limited then return nil, limit_error end
     end
     return subjects
@@ -995,7 +996,7 @@ function RuleEngine:_xpath(input, rule, context, preserve_elements)
                     end
                 else append(output, node_attribute(node, raw:sub(2))) end
             end
-            return enforce_output_limit(output)
+            return enforce_output_limit(output, self)
         end
         local step, step_error = parse_xpath_step(raw)
         if not step then return parse_failure(step_error) end
@@ -1011,13 +1012,13 @@ function RuleEngine:_xpath(input, rule, context, preserve_elements)
             for _, node in ipairs(filtered) do next_subjects[#next_subjects + 1] = node end
         end
         subjects = next_subjects
-        local limited, limit_error = enforce_output_limit(subjects)
+        local limited, limit_error = enforce_output_limit(subjects, self)
         if not limited then return nil, limit_error end
     end
     local output = {}
     if preserve_elements then return subjects end
     for _, node in ipairs(subjects) do output[#output + 1] = self:_node_text(node) end
-    return enforce_output_limit(output)
+    return enforce_output_limit(output, self)
 end
 
 local function find_template_end(value, start)
@@ -1311,7 +1312,7 @@ function RuleEngine:_evaluate(input, rule, context, want_list, depth, template_d
             if transform_error then return parse_failure(transform_error) end
             output[#output + 1] = transformed
         end
-        return enforce_output_limit(output)
+        return enforce_output_limit(output, self)
     end
     rule = trim(rule)
     if rule == "" then return {} end
@@ -1328,7 +1329,7 @@ function RuleEngine:_evaluate(input, rule, context, want_list, depth, template_d
             if not ok then return parse_failure("invalid Lua cleanup pattern", { cause = tostring(replaced) }) end
             output[#output + 1] = replaced
         end
-        return enforce_output_limit(output)
+        return enforce_output_limit(output, self)
     end
 
     local fallbacks, fallback_error = split_top_level(rule, "||")
@@ -1351,7 +1352,7 @@ function RuleEngine:_evaluate(input, rule, context, want_list, depth, template_d
             if value_error then return nil, value_error end
             for _, value in ipairs(values) do output[#output + 1] = value end
         end
-        local limited, limit_error = enforce_output_limit(output)
+        local limited, limit_error = enforce_output_limit(output, self)
         if not limited then return nil, limit_error end
         if want_list then return output end
         local strings = {}
@@ -1373,7 +1374,7 @@ function RuleEngine:parse(input, rule, context, want_list)
         return nil, Errors.new(Errors.PARSE_ERROR, "rule evaluation failed safely", { cause = tostring(values) })
     end
     if err then return nil, err end
-    local limited, limit_error = enforce_output_limit(values)
+    local limited, limit_error = enforce_output_limit(values, self)
     if not limited then return nil, limit_error end
     if want_list == true then
         local output = {}
@@ -1407,7 +1408,7 @@ function RuleEngine:_parse_elements(input, rule, context, depth)
             if not ok then return parse_failure("invalid Lua cleanup pattern", { cause = tostring(replaced) }) end
             output[#output + 1] = replaced
         end
-        return enforce_output_limit(output)
+        return enforce_output_limit(output, self)
     end
 
     if rule:find("{{", 1, true) then
@@ -1437,7 +1438,7 @@ function RuleEngine:_parse_elements(input, rule, context, depth)
             if value_error then return nil, value_error end
             for _, value in ipairs(values) do output[#output + 1] = value end
         end
-        return enforce_output_limit(output)
+        return enforce_output_limit(output, self)
     end
 
     if rule:lower():match("^@json:") or rule:sub(1, 1) == "$" then return self:_json_path(input, rule) end
@@ -1448,7 +1449,7 @@ function RuleEngine:_parse_elements(input, rule, context, depth)
         for _, value in ipairs(values) do
             output[#output + 1] = type(value) == "table" and node_outer_html(value) or copy(value)
         end
-        return enforce_output_limit(output)
+        return enforce_output_limit(output, self)
     end
 
     local lower = rule:lower()
@@ -1463,7 +1464,7 @@ function RuleEngine:_parse_elements(input, rule, context, depth)
         if select_error then return nil, select_error end
         local output = {}
         for _, node in ipairs(nodes) do output[#output + 1] = node_outer_html(node) end
-        return enforce_output_limit(output)
+        return enforce_output_limit(output, self)
     end
 
     local css_rule = trim(rule:gsub("^@%s*[Cc][Ss][Ss]:%s*", ""))
@@ -1476,7 +1477,14 @@ function RuleEngine:_parse_elements(input, rule, context, depth)
     if has_extractor then return self:_extract_nodes(nodes, extractor, context) end
     local output = {}
     for _, node in ipairs(nodes) do output[#output + 1] = node_outer_html(node) end
-    return enforce_output_limit(output)
+    return enforce_output_limit(output, self)
+end
+
+-- Only catalog selection gets a larger output allowance. DOM, recursion and
+-- byte limits stay intact; this scoped engine cannot affect concurrent searches.
+function RuleEngine:parseCatalogElements(input, rule, context)
+    local catalog = setmetatable({max_output_items=10000}, {__index=self})
+    return catalog:parseElements(input, rule, context)
 end
 
 function RuleEngine:parseElements(input, rule, context)
@@ -1489,7 +1497,7 @@ function RuleEngine:parseElements(input, rule, context)
         return nil, Errors.new(Errors.PARSE_ERROR, "element rule evaluation failed safely", { cause = tostring(values) })
     end
     if err then return nil, err end
-    local limited, limit_error = enforce_output_limit(values)
+    local limited, limit_error = enforce_output_limit(values, self)
     if not limited then return nil, limit_error end
     local output = {}
     for _, value in ipairs(values) do output[#output + 1] = copy(value) end
