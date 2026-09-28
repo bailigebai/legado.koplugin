@@ -2180,6 +2180,11 @@ local function download_items(self, view)
             if not view.alive then return false end
             local actions = {}
             local action_menu
+            local function leave_downloads()
+                self:_closeWidget(action_menu)
+                self:_closeWidget(self.view_widgets[view])
+                view:close()
+            end
             local function update(method)
                 local result, err = view[method](view, task.id)
                 self:_closeWidget(action_menu)
@@ -2197,10 +2202,21 @@ local function download_items(self, view)
                 actions[#actions + 1] = { text = "继续下载", callback = function() return update("resume") end }
             elseif task.status == "completed" and task.kind == "cache" then
                 actions[#actions + 1] = { text = "返回书架阅读", callback = function()
+                    leave_downloads()
+                    if view._back then return view._back() end
                     return self.app and self.app:openBookshelf() or false
                 end }
             elseif task.status == "completed" then
-                actions[#actions + 1] = { text = "打开 EPUB", callback = function() return view:open(task.id) end }
+                actions[#actions + 1] = { text = "打开 EPUB", callback = function()
+                    local result, err = view:open(task.id)
+                    if not result then
+                        self:_closeWidget(action_menu)
+                        self:_downloads(view)
+                        return self:_info("EPUB 打开失败 · " .. safe_token(type(err) == "table" and err.code, "OPEN_ERROR"), "下载管理")
+                    end
+                    leave_downloads()
+                    return result
+                end }
             end
             if #actions == 0 then actions[1] = { text = "暂无可用操作", enabled = false } end
             action_menu = construct(self.menu, { title = "下载操作", item_table = actions,

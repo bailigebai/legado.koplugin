@@ -262,4 +262,67 @@ do
     equal(false, view.alive, "closing the refreshed download list releases its view")
 end
 
+do
+    local shown, closed, opened, returned = {}, {}, 0, 0
+    local task = { id = "ready-epub", kind = "epub", book = { name = "已导出" },
+        status = "completed", final_path = "downloads/ready.epub" }
+    local manager = { list = function() return { task } end,
+        open = function() opened = opened + 1; return "reader opened" end }
+    local presenter = Presenter.new({ menu = { new = function(_, options) return options end },
+        ui_manager = {
+            show = function(_, widget) shown[#shown + 1] = widget end,
+            close = function(_, widget) closed[widget] = true end,
+        } })
+    local view = Downloads.new({ manager = manager })
+    view._back = function() returned = returned + 1 end
+    local list = presenter:show(view)
+    local popup = list.item_table[1].callback()
+    popup.item_table[1].callback()
+    popup.close_callback() -- KOReader calls this after the selected item callback.
+    equal(1, opened, "completed EPUB opens once")
+    truthy(closed[popup] and closed[list], "opening EPUB closes both download menus")
+    equal(false, view.alive, "opening EPUB releases download refresh state")
+    equal(2, #shown, "download list does not reopen over the EPUB reader")
+    equal(0, returned, "opening EPUB does not navigate back to the shelf")
+end
+
+do
+    local shown, closed, returned = {}, {}, 0
+    local task = { id = "ready-cache", kind = "cache", book = { name = "已缓存" }, status = "completed" }
+    local view = Downloads.new({ manager = { list = function() return { task } end } })
+    view._back = function() returned = returned + 1 end
+    local presenter = Presenter.new({ menu = { new = function(_, options) return options end },
+        ui_manager = {
+            show = function(_, widget) shown[#shown + 1] = widget end,
+            close = function(_, widget) closed[widget] = true end,
+        } })
+    local list = presenter:show(view)
+    local popup = list.item_table[1].callback()
+    popup.item_table[1].callback()
+    popup.close_callback()
+    equal(1, returned, "completed cache returns through the original shelf path")
+    truthy(closed[popup] and closed[list], "returning to the shelf closes both download menus")
+    equal(false, view.alive, "returning to the shelf releases download refresh state")
+    equal(2, #shown, "download list does not reopen over the shelf")
+end
+
+do
+    local shown = {}
+    local task = { id = "broken-epub", kind = "epub", book = { name = "打开失败" },
+        status = "completed", final_path = "downloads/broken.epub" }
+    local view = Downloads.new({ manager = { list = function() return { task } end,
+        open = function() return nil, { code = "STORAGE_ERROR" } end } })
+    local presenter = Presenter.new({ menu = { new = function(_, options) return options end },
+        info_message = { new = function(_, options) options.kind = "info"; return options end },
+        ui_manager = { show = function(_, widget) shown[#shown + 1] = widget end,
+            close = function() end } })
+    local list = presenter:show(view)
+    local popup = list.item_table[1].callback()
+    popup.item_table[1].callback()
+    popup.close_callback()
+    equal("info", shown[#shown].kind, "failed EPUB open shows an error instead of navigating")
+    equal(true, view.alive, "failed EPUB open keeps download management available")
+    equal(4, #shown, "late menu close does not reopen another list over the error")
+end
+
 return count

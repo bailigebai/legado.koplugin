@@ -130,7 +130,7 @@ local download_view = {
     items = { { text = "Book · 完成", task = { id = "d1", status = "completed" } } },
     refresh = function(self) return self.items end,
     open = function(_, id) opened = opened + 1; return id == "d1" end,
-    close = function() download_closes = download_closes + 1; return true end,
+    close = function(self) self.alive = false; download_closes = download_closes + 1; return true end,
 }
 local downloads = presenter:show(download_view)
 choose(downloads, downloads.item_table[1])
@@ -138,12 +138,22 @@ equal(0, download_closes, "selecting a download row does not close the downloads
 local download_actions = shown[#shown]
 download_actions.item_table[1].callback()
 equal(1, opened, "download action still reaches the manager-backed view")
-download_view.items = { { text = "Book 2 · 完成", task = { id = "d2", status = "completed" } } }
-download_view.on_refresh(download_view)
+equal(1, download_closes, "opening EPUB releases the downloads model")
+download_actions.close_callback()
+local refreshed_view = {
+    kind = "downloads", alive = true,
+    items = { { text = "Book · 等待中", task = { id = "d2", status = "queued" } } },
+    refresh = function(self) return self.items end,
+    cancel = function() return true end,
+    close = function(self) self.alive = false; download_closes = download_closes + 1; return true end,
+}
+downloads = presenter:show(refreshed_view)
+refreshed_view.items = { { text = "Book 2 · 等待中", task = { id = "d2", status = "queued" } } }
+refreshed_view.on_refresh(refreshed_view)
 choose(downloads, downloads.item_table[1])
-equal(0, download_closes, "refreshed download rows retain selection lifecycle protection")
+equal(1, download_closes, "refreshed download rows retain selection lifecycle protection")
 downloads.close_callback()
-equal(1, download_closes, "physical downloads close reaches the model")
+equal(2, download_closes, "physical downloads close reaches the model")
 
 -- InputDialog contract: show first, keyboard once, and close exactly once on cancel/valid submit.
 local search_closes, submits = 0, 0
