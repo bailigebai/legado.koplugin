@@ -380,8 +380,8 @@ function App:openSettings(document, chrome_only, back, section)
     local cache = self.reader_session and self.reader_session.cache
     local function no_active_downloads()
         for _,task in ipairs(self.storage and self.storage.listDownloadTasks and self.storage:listDownloadTasks() or {}) do
-            if task.status=='running' or task.status=='queued' then
-                return nil,{code='DOWNLOAD_ACTIVE',message='请先取消或完成下载'}
+            if task.status=='running' or task.status=='queued' or task.status=='cancelling' then
+                return nil,{code='DOWNLOAD_ACTIVE',message='请等待下载结束或取消完成'}
             end
         end
         return true
@@ -429,9 +429,7 @@ function App:openSettings(document, chrome_only, back, section)
             return applied
         end,
         clear_cache = self.reader_session and self.reader_session.cache and function()
-            for _,task in ipairs(self.storage.listDownloadTasks and self.storage:listDownloadTasks() or {}) do
-                if task.status=='running' or task.status=='queued' then return nil,{code='DOWNLOAD_ACTIVE',message='请先暂停或完成下载'} end
-            end
+            local ready,err=no_active_downloads();if not ready then return nil,err end
             local state=self.reader_session.active
             return self.reader_session.cache:clear(state and state.active and {source_id=state.book.source_id,book_id=state.book.id} or nil)
         end or nil,

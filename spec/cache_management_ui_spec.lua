@@ -1,6 +1,7 @@
 require('library_screen_stub')
 local A=require('assertions')
 local Presenter=require('legado.ui.presenter')
+local App=require('legado.ui.app')
 local count=0
 local function eq(expected,actual,message) count=count+1;A.equal(expected,actual,message) end
 package.loaded['ui/widget/confirmbox']={new=function(_,options) return options end}
@@ -19,4 +20,21 @@ page.item_table[5].callback()
 eq(false,removed,'cache is untouched until explicit confirmation')
 shown[#shown].ok_callback()
 eq(true,removed,'confirmation starts cache cleanup')
+local task={status='cancelling'}
+local plugin_clears,reading_clears=0,0
+local app=App.new{storage={listDownloadTasks=function() return {task} end},
+    settings={all=function() return {} end},
+    cache_management={clear=function() plugin_clears=plugin_clears+1;return {removed=0} end},
+    reader_session={cache={clear=function() reading_clears=reading_clears+1;return 0 end}}}
+local settings_view=app:openSettings()
+local plugin_result,plugin_error=settings_view.plugin_cache_clear()
+eq(nil,plugin_result,'plugin cache cannot clear while cancellation is still in progress')
+eq('DOWNLOAD_ACTIVE',plugin_error.code,'cancelling download is reported as active')
+local reading_result,reading_error=settings_view.clear_cache()
+eq(nil,reading_result,'reading cache cannot clear while cancellation is still in progress')
+eq('DOWNLOAD_ACTIVE',reading_error.code,'reading cache sees the same active download')
+eq(0,plugin_clears+reading_clears,'neither cache is touched during cancellation')
+task.status='cancelled'
+eq(0,settings_view.plugin_cache_clear().removed,'plugin cache can clear after cancellation finishes')
+eq(0,settings_view.clear_cache(),'reading cache can clear after cancellation finishes')
 return count
