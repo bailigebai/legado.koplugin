@@ -30,6 +30,9 @@ presenter.app = app
 local function last() return shown[#shown] end
 local function open_group(label) return item(last().actions, label).callback() end
 local function search_again()
+    for _, action in ipairs(last().actions or {}) do
+        if action.text == "搜索书名" then return action.callback() end
+    end
     item(last().actions, "更多").callback()
     return item(last().items, "搜索书名").callback()
 end
@@ -55,6 +58,10 @@ open_group("找书")
 item(last().items, "搜索").callback()
 last().buttons[1][2].callback("甲")
 eq("搜索 · 甲", last().title, "search results show the first query")
+eq("搜索书名", last().actions[1].text, "completed search makes a new query the primary action")
+for _, action in ipairs(last().actions) do
+    eq(false, action.text == "重试", "successful search does not offer a failure retry")
+end
 local original_view = presenter.library_view
 search_again()
 last().buttons[1][1].callback()
@@ -75,6 +82,7 @@ end
 search_again()
 last().buttons[1][2].callback("丙")
 eq("搜索 · 丙", last().title, "a new query can remain in flight")
+eq("停止", last().actions[1].text, "loading search keeps stop as the primary action")
 search_again()
 local new_query_dialog = last()
 eq(true, pending[1].cancelled, "opening a new search stops the old in-flight query")
@@ -82,8 +90,14 @@ pending[1].callback({groups = {}, completed = 1, total = 1})
 eq(new_query_dialog, last(), "a late old result cannot cover the new search dialog")
 last().buttons[1][2].callback("丁")
 eq("搜索 · 丁", last().title, "a late result cannot replace the newer query")
-pending[2].callback({groups = {}, completed = 1, total = 1})
+pending[2].callback({groups = {}, errors = {{source_name = "测试站点", code = "REQUEST_ERROR"}},
+    completed = 1, total = 1})
 eq(original_view, presenter.library_view, "queries during loading still reuse the same controller")
+eq("搜索书名", last().actions[1].text,
+    "partial source failures do not hide the new search action")
+item(last().actions, "更多").callback()
+item(last().items, "重试")
+item(last().items, "失败详情")
 
 local source = {id = 'catalog-source', bookSourceName = '测试站点', enabled = true,
     enabledExplore = true, exploreUrl = 'https://example.test/categories'}

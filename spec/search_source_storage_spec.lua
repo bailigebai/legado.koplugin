@@ -50,6 +50,7 @@ eq(true, last().empty_text:find("错误代码：STORAGE_ERROR", 1, true) ~= nil,
     "search page explains why sources could not be read")
 eq(true, last().subtitle:find("STORAGE_ERROR", 1, true) ~= nil,
     "search status does not claim there were simply no matches")
+eq("重试", last().actions[1].text, "failed search keeps retry as the primary action")
 local stale_retry = action(last().actions, "重试").callback
 state = "ready"
 stale_retry()

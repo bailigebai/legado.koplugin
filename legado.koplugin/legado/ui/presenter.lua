@@ -855,16 +855,23 @@ function Presenter:_search_results(view)
         actions[#actions+1]={text="停止",callback=function() view:cancel(); return self:_search_results(view) end}
     elseif view.cancelled then status=status.." · 已停止" end
     if view.error then status=status.." · "..safe_token(view.error.code,"REQUEST_ERROR") end
-    if #(view.errors or {})>0 then
-        status=status.." · 失败 "..#view.errors
+    local has_source_errors = #(view.errors or {}) > 0
+    if has_source_errors then status=status.." · 失败 "..#view.errors end
+    local function retry()
+        actions[#actions+1]={text="重试",callback=function()
+            return self:_runSearch(view,view.keyword,view.source_ids,view.page or 1)
+        end}
+    end
+    if not view.loading and (view.error or view.cancelled) then retry() end
+    if self.app then actions[#actions+1]={text="搜索书名",callback=function() return self:_search(view,true) end} end
+    if not view.loading and not view.error and not view.cancelled and has_source_errors then retry() end
+    if has_source_errors then
         actions[#actions+1]={text="失败详情",callback=function()
             local failures={}
             for _,err in ipairs(view.errors) do failures[#failures+1]={title=(err.source_name or "书源").." · "..safe_token(err.code,"REQUEST_ERROR"),enabled=false} end
             return self:_library(view,{title="搜索诊断",items=failures,subpage="search_diagnostics",on_back=function() return self:_search_results(view) end})
         end}
     end
-    if not view.loading then actions[#actions+1]={text="重试",callback=function() return self:_runSearch(view,view.keyword,view.source_ids,view.page or 1) end} end
-    if self.app then actions[#actions+1]={text="搜索书名",callback=function() return self:_search(view,true) end} end
     local empty = view.loading and "正在各书源查找，找到后会自动显示封面和简介。" or "未找到匹配书籍，可换个书名或检查已启用的书源。"
     if not view.loading and not view.error and progress.total == 0 and #items == 0 then
         empty = "暂无已启用的书源，请先在“书源与下载 → 书源管理”导入或启用书源。"
