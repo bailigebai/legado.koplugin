@@ -201,10 +201,11 @@ function WeRead:cancel()
     if self.request and type(self.request.cancel) == "function" then self.request:cancel() end
     if self.store_request and type(self.store_request.cancel) == "function" then self.store_request:cancel() end
     if self.add_request and type(self.add_request.cancel) == "function" then self.add_request:cancel() end
+    if self.review_request and type(self.review_request.cancel) == "function" then self.review_request:cancel() end
     if self.scheduled and self.scheduler and type(self.scheduler.unschedule) == "function" then
         pcall(self.scheduler.unschedule, self.scheduler, self.scheduled)
     end
-    self.request, self.store_request, self.add_request, self.scheduled = nil, nil, nil, nil
+    self.request, self.store_request, self.add_request, self.review_request, self.scheduled = nil, nil, nil, nil, nil
     if self.alive and self.status ~= "已登录" then self.status = "已取消" end
 end
 

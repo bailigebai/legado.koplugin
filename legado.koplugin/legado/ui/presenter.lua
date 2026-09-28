@@ -440,6 +440,10 @@ function Presenter:_home(view)
         empty_text="还没有最近阅读的书，搜索书名即可从各书源找书。"})
 end
 
+local function weread_page_active(presenter, view, page)
+    return view.alive and presenter.library_view == view and presenter.library_subpage == page
+end
+
 function Presenter:_weread(view)
     local model = view:page(view.display_page)
     local items = {}
@@ -452,7 +456,9 @@ function Presenter:_weread(view)
     if #items == 0 then items[1] = { text = view.status, enabled = false } end
     local actions = {}
     actions[#actions + 1] = { text = "同步书架", enabled = view.client ~= nil, callback = function()
-        return view:sync(function() if view.alive and self.library_view == view then self:_weread(view) end end)
+        return view:sync(function()
+            if weread_page_active(self, view, "weread_shelf") then self:_weread(view) end
+        end)
     end }
     actions[#actions + 1] = { text = "书城发现", enabled = view.client ~= nil, callback = function()
         view.store_keyword, view.store_results = nil, nil
@@ -466,7 +472,7 @@ function Presenter:_weread(view)
                     if view.qr_widget ~= widget then return end
                     view.qr_widget = nil
                     view:cancel()
-                    if self.library_view == view then self:_weread(view) end
+                    if weread_page_active(self, view, "weread_shelf") then self:_weread(view) end
                 end })
             view.qr_widget = widget
             self:_show(widget)
@@ -478,11 +484,11 @@ function Presenter:_weread(view)
                 self:_closeWidget(widget)
             end
             if success then view.synced = false end
-            if self.library_view == view then self:_weread(view) end
+            if weread_page_active(self, view, "weread_shelf") then self:_weread(view) end
         end)
     end }
     local has_books = model.total > 0
-    local widget = self:_library(view, { title = "微信读书", subtitle = view.status,
+    local widget = self:_library(view, { title = "微信读书", subpage = "weread_shelf", subtitle = view.status,
         items = items, mode = has_books and model.mode or "list", grouped_actions = true,
         hero_action = has_books and model.page == 1 and { text = "查看最近阅读", callback = items[1].callback } or nil,
         grid_columns = 4, grid_rows = 3, already_paginated = true,
@@ -492,7 +498,9 @@ function Presenter:_weread(view)
         on_back = view._back,
         empty_text = "微信书架还没有书。扫码登录后可同步书架。" })
     if not view.synced and view.client and view.auth and view.auth:hasSession() then
-        view:sync(function() if view.alive and self.library_view == view then self:_weread(view) end end)
+        view:sync(function()
+            if weread_page_active(self, view, "weread_shelf") then self:_weread(view) end
+        end)
     end
     return self.library_widget or widget
 end
@@ -538,7 +546,7 @@ function Presenter:_wereadStore(view)
     local items = {}
     local function search(keyword)
         view:searchStore(keyword, function()
-            if view.alive and self.library_view == view then self:_wereadStore(view) end
+            if weread_page_active(self, view, "weread_store_results") then self:_wereadStore(view) end
         end)
         return self:_wereadStore(view)
     end
@@ -558,14 +566,16 @@ function Presenter:_wereadStore(view)
                 { text = "确定", is_enter_default = true, callback = accepted } } } })
         return self:_showInput(dialog)
     end } }
-    return self:_library(view, { title = "微信书城", items = items, actions = actions,
+    return self:_library(view, { title = "微信书城", subpage = "weread_store_home", items = items, actions = actions,
         on_back = function() return self:_weread(view) end })
 end
 
 function Presenter:_wereadBook(view, book)
     local item = { book = book, title = book.name, subtitle = book.author,
         intro = book.intro, cover_url = book.cover_url }
-    return self:_library(view, { title = "微信读书 · " .. book.name, items = { item }, mode = "detail",grouped_actions=true,
+    local detail_page = "weread_book_detail:" .. book.remote_id
+    return self:_library(view, { title = "微信读书 · " .. book.name, subpage = detail_page,
+        items = { item }, mode = "detail",grouped_actions=true,
         subtitle = "阅读进度：" .. tostring(math.floor(tonumber(book.progress_percent) or 0)) .. "%",
         actions = {
             {text='开始阅读',callback=function()
@@ -578,7 +588,7 @@ function Presenter:_wereadBook(view, book)
                 or {text='加入微信书架',callback=function()
                     return view:addToShelf(book,function(added,err)
                         if not added then return self:_info(err or '加入微信书架失败','微信读书') end
-                        if view.alive and self.library_view==view then self:_wereadBook(view,book) end
+                        if weread_page_active(self, view, detail_page) then self:_wereadBook(view,book) end
                     end)
                 end},
             { text = "阅读评论", callback = function() return self:_wereadReviews(view, book) end },
@@ -590,6 +600,15 @@ function Presenter:_wereadBook(view, book)
 end
 
 function Presenter:_wereadReviews(view, book)
+    local review_page = "weread_reviews:" .. book.remote_id
+    local function back()
+        view.review_generation = (view.review_generation or 0) + 1
+        if view.review_request and type(view.review_request.cancel) == "function" then
+            view.review_request:cancel()
+        end
+        view.review_request = nil
+        return self:_wereadBook(view, book)
+    end
     if view.review_book_id == book.remote_id and view.review_rows then
         local items = {}
         for _, row in ipairs(view.review_rows) do
@@ -601,20 +620,25 @@ function Presenter:_wereadReviews(view, book)
                     callback = function() return self:_info(content, "微信读书评论") end }
             end
         end
-        return self:_library(view, { title = "阅读评论 · " .. book.name, items = items,
-            empty_text = "这本书还没有评论。", on_back = function() return self:_wereadBook(view, book) end })
+        return self:_library(view, { title = "阅读评论 · " .. book.name, subpage = review_page,
+            items = items, empty_text = "这本书还没有评论。", on_back = back })
     end
-    local widget = self:_library(view, { title = "阅读评论 · " .. book.name,
+    local widget = self:_library(view, { title = "阅读评论 · " .. book.name, subpage = review_page,
         items = { { text = "正在加载评论…", enabled = false } },
-        on_back = function() return self:_wereadBook(view, book) end })
+        on_back = back })
     if not view.client then return widget end
     view.review_book_id = book.remote_id
-    view.review_request = view.client:bookReviews(book.remote_id, function(data, err)
-        if not view.alive or self.library_view ~= view or view.review_book_id ~= book.remote_id then return end
+    view.review_generation = (view.review_generation or 0) + 1
+    local generation, delivered = view.review_generation, false
+    local handle = view.client:bookReviews(book.remote_id, function(data, err)
+        delivered = true
+        if not weread_page_active(self, view, review_page)
+            or view.review_generation ~= generation or view.review_book_id ~= book.remote_id then return end
         view.review_request = nil
         if data then view.review_rows = data.reviews or {}; self:_wereadReviews(view, book)
         else self:_info(err or "评论加载失败", "微信读书评论") end
     end)
+    if not delivered then view.review_request = handle end
     return self.library_widget or widget
 end
 
