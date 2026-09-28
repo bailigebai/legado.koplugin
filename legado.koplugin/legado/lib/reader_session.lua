@@ -83,6 +83,7 @@ function ReaderSession:_timing(stage, started, backend, state, details)
     if details then
         metric.over_budget = details.over_budget == true
         metric.pages = tonumber(details.pages)
+        metric.chapters = tonumber(details.chapters)
     end
     pcall(self.timing, metric)
 end
@@ -646,7 +647,9 @@ function ReaderSession:_end(state, document, started)
                 local err=Errors.new(Errors.STORAGE_ERROR,'catalog is incomplete; connect to load more chapters')
                 self.diagnostics('read',err); return nil,err
             end
+            local catalog_started=clock()
             return self:loadCatalog(state,function(_,err)
+                self:_timing('catalog_wait',catalog_started,state.backend,state,{chapters=#state.chapters})
                 state.end_handled=false
                 if err then self.diagnostics('read',err)
                 elseif state.active and (state.index < #state.chapters or state.catalog_complete ~= false) then self:_end(state,document,started)
@@ -709,8 +712,10 @@ function ReaderSession:navigate(index, request)
     generation=self.foreground_generation
     if self.pending then self.pending.cancelled = true; self.pending = nil end
     if (bookmark_missing or index>#active.chapters) and active.catalog_complete==false then
+        local catalog_started=clock()
         return self:loadCatalog(active,function(_,err)
             if not current() then return end
+            self:_timing('catalog_wait',catalog_started,active.backend,nil,{chapters=#active.chapters})
             if err then
                 self.diagnostics('read',err)
                 if request.on_complete then request.on_complete(nil,err) end
@@ -768,12 +773,17 @@ function ReaderSession:_updateCatalog(state,chapters,complete,persist)
     local current=state.chapters[state.index] or {}
     local index=self:recoverIndex(snapshot,{chapter_url=current.url,chapter_uid=current.uid,chapter_index=state.index})
     if persist then
+        local persist_started=clock()
+        local function record_persist()
+            self:_timing('catalog_persist',persist_started,state.backend,state,{chapters=#snapshot})
+        end
         local path,err=self.cache:writeCatalog(state.book.source_id,state.book.id,{chapters=snapshot,complete=complete})
-        if not path then return nil,err or Errors.new(Errors.STORAGE_ERROR,'目录缓存保存失败') end
+        if not path then record_persist(); return nil,err or Errors.new(Errors.STORAGE_ERROR,'目录缓存保存失败') end
         if self.storage.replaceChapters then
             local saved; saved,err=self.storage:replaceChapters(state.book.id,snapshot)
-            if not saved then return nil,err or Errors.new(Errors.STORAGE_ERROR,'目录保存失败') end
+            if not saved then record_persist(); return nil,err or Errors.new(Errors.STORAGE_ERROR,'目录保存失败') end
         end
+        record_persist()
     end
     state.chapters,state.index,state.catalog_complete=snapshot,index,complete
     -- Publish completion once; intermediate parsing never repaints the drawer.

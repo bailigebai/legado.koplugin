@@ -162,6 +162,21 @@ do
     f.session:close()
 end
 
+-- Turning past the known catalog also reports the time spent waiting for more chapters.
+do
+    local metrics={}
+    local f=fixture(1,function(metric)metrics[#metrics+1]=metric end)
+    f.opened[1].callbacks.end_of_book(f.opened[1].doc)
+    eq(1,#f.catalog,'end of known catalog waits for another chapter')
+    f.catalog[1].callback(nil,{code='NETWORK_ERROR',message='test outage'})
+    local saw_wait=false
+    for _,metric in ipairs(metrics) do
+        if metric.stage=='catalog_wait' and metric.chapters==1 then saw_wait=true end
+    end
+    eq(true,saw_wait,'automatic next-chapter path times catalog wait')
+    f.session:close()
+end
+
 -- A short initial catalog must not hold the third upcoming chapter for six seconds.
 do
     local f=fixture(3);f.scheduler:runNext()

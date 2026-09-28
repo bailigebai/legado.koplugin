@@ -4,6 +4,12 @@ local data_root = assert(os.getenv("LEGADO_PLUGIN_ROOT")):gsub("/legado%.koplugi
 local events = {}
 local sources = {}
 local storage_license
+local slow_timings = {}
+
+package.preload['logger'] = function() return {
+    dbg=function() end,
+    warn=function(...) slow_timings[#slow_timings+1]={...} end,
+} end
 
 package.preload["datastorage"] = function() return { getDataDir = function() return data_root end } end
 package.preload["ui/uimanager"] = function() return {
@@ -45,4 +51,15 @@ assertx.equal(app.download_manager.offline_cache, app.reader_session.offline_cac
 assertx.equal(0, #app:openSearch():sourceChoices(), "fresh startup leaves sources empty until the user imports them")
 assertx.equal(nil, app.settings:get('default_sources_initialized'), "startup has no default-source initialization setting")
 
-return 12
+app.reader_session.timing({stage='catalog_wait',ms=1200,backend='native',
+    attempt=3,total_ms=1500,chapters=21,url='https://private.invalid'})
+assertx.equal(1,#slow_timings,'slow catalog wait appears in normal warning log')
+assertx.equal('[LegadoTimingSlow]',slow_timings[1][1],'warning has a searchable marker')
+assertx.equal('catalog_wait',slow_timings[1][2],'warning identifies its stage')
+for _,value in ipairs(slow_timings[1]) do
+    assertx.equal(nil,tostring(value):find('private',1,true),'warning never includes source URL')
+end
+app.reader_session.timing({stage='catalog_wait',ms=50,backend='native',chapters=21})
+assertx.equal(1,#slow_timings,'fast catalog waits do not flood normal log')
+
+return 17

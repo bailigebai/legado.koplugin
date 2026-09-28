@@ -4,6 +4,12 @@ local Settings = require("legado.lib.settings")
 
 local Bootstrap = {}
 
+local slow_timing_threshold_ms = {
+    catalog_wait=750, catalog_persist=250, foreground_content=1500,
+    progress_save=250, cache_hit=250, html_write=250,
+    reader_ready=750, page_prepare=750, reader_validate=750, paint_drawn=750,
+}
+
 local function optional(name)
     local ok, value = pcall(require, name)
     return ok and value or nil
@@ -137,7 +143,14 @@ function Bootstrap.build(plugin, options)
                     local logger=optional('logger')
                     if logger and logger.dbg then
                         logger.dbg('[LegadoTiming]',metric.stage,metric.ms,metric.backend,
-                            'attempt',metric.attempt,'total_ms',metric.total_ms,'over_budget',metric.over_budget)
+                            'attempt',metric.attempt,'total_ms',metric.total_ms,'over_budget',metric.over_budget,
+                            'chapters',metric.chapters)
+                    end
+                    local threshold=slow_timing_threshold_ms[metric.stage]
+                    if logger and logger.warn and threshold and metric.ms>=threshold then
+                        logger.warn('[LegadoTimingSlow]',metric.stage,metric.ms,metric.backend,
+                            'attempt',metric.attempt or 0,'total_ms',metric.total_ms or 0,
+                            'chapters',metric.chapters or 0)
                     end
                 end,
                 diagnostics = function(stage, err)
