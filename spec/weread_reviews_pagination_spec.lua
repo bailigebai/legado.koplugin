@@ -17,7 +17,8 @@ local view = View.new{auth = auth, client = client}
 view.synced = true
 view.books = {{id = "local-1", remote_id = "remote-1", source_id = "weread",
     name = "测试书", intro = "简介"}}
-local presenter = Presenter.new{ui_manager = {show = function(_, widget) shown[#shown + 1] = widget end}}
+local presenter = Presenter.new{ui_manager = {show = function(_, widget) shown[#shown + 1] = widget end},
+    screen = {getHeight = function() return 800 end}}
 local function action(label)
     for _, item in ipairs(shown[#shown].actions or {}) do
         if item.text == label then return item end
@@ -74,13 +75,15 @@ html_view.books = view.books
 presenter:show(html_view)
 shown[#shown].items[1].callback()
 action("阅读评论").callback()
+local long_review = ("这是一段完整评论。"):rep(100)
 requests[#requests].callback({reviews = {{review = {review = {book = {bookId = "remote-1"},
     htmlContent = "<p>完整&nbsp;评论</p><p>第二段</p>"}}},
     {review = {review = {book = {bookId = "remote-1"}, htmlContent = "<p> </p>"}}},
     {review = {review = {book = {bookId = "remote-1"},
         htmlContent = "<script>忽略</script><p>正文</p>"}}},
     {review = {review = {book = {bookId = "remote-1"},
-        content = "摘要", htmlContent = "<p>可阅读的完整点评</p>"}}}}, has_more = false})
+        content = "摘要", htmlContent = "<p>可阅读的完整点评</p>"}}},
+    {review = {review = {book = {bookId = "remote-1"}, content = long_review}}}}, has_more = false})
 eq("完整 评论\n第二段", shown[#shown].items[1].text,
     "a rich-text-only review appears as readable plain text")
 eq("无文字评论", shown[#shown].items[2].text,
@@ -93,8 +96,14 @@ local review_screen = shown[#shown]
 review_screen.items[1].callback()
 eq("完整 评论\n第二段", shown[#shown].text,
     "opening a rich-text-only review shows its full plain text")
+eq(nil, shown[#shown].height, "short reviews keep their adaptive dialog height")
 review_screen.items[4].callback()
 eq("可阅读的完整点评", shown[#shown].text,
     "opening a review with both fields shows the complete rich text")
+review_screen.items[5].callback()
+eq(long_review, shown[#shown].text, "opening a long review preserves its entire text")
+eq(560, shown[#shown].height, "long reviews request a bounded scrollable text area")
+eq("weread_reviews:remote-1", presenter.library_subpage,
+    "opening a review keeps the review list as the return page")
 
 return count

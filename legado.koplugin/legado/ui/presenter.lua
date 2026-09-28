@@ -287,8 +287,8 @@ function Presenter:_modelMenu(view, options)
     return self:_show(widget)
 end
 
-function Presenter:_info(text, title)
-    local widget=construct(self.info_message, { text = text or "", title = title })
+function Presenter:_info(text, title, height)
+    local widget=construct(self.info_message, { text = text or "", title = title, height = height })
     local shown=self:_show(widget)
     -- A failed pause/save must not hide the error explaining that failure.
     if not shown and self.ui_manager and self.ui_manager.show then self.ui_manager:show(widget) end
@@ -717,7 +717,19 @@ function Presenter:_wereadReviews(view, book, page)
             if type(review) == "table" and (owner == nil or tostring(owner) == book.remote_id) then
                 local content = review_text(review)
                 items[#items + 1] = { text = content ~= "" and content or "无文字评论",
-                    callback = function() return self:_info(content, "微信读书评论") end }
+                    callback = function()
+                        local height
+                        if #content > 480 then
+                            local screen = self.screen or (optional("device") or {}).screen
+                            if screen and type(screen.getHeight) == "function" then
+                                local screen_height = tonumber(screen:getHeight())
+                                if screen_height and screen_height > 0 then
+                                    height = math.floor(screen_height * 0.7)
+                                end
+                            end
+                        end
+                        return self:_info(content, "微信读书评论", height)
+                    end }
             end
         end
         local page_count = loaded + (view.review_has_more and 1 or 0)
