@@ -525,4 +525,47 @@ do
     equal(shown_before_stale, #shown, "stale recovery action cannot reopen a closed download page")
 end
 
+do
+    local shown, cancels = {}, 0
+    local task = { id = "finishing-cache", kind = "cache", book = { name = "将完成的书" },
+        status = "running", completed = 2, total = 3 }
+    local manager = { list = function() return { task } end,
+        cancel = function() cancels = cancels + 1; return false end }
+    local presenter = Presenter.new({ menu = { new = function(_, options) return options end },
+        ui_manager = { show = function(_, widget) shown[#shown + 1] = widget end,
+            close = function() end } })
+    local view = Downloads.new({ manager = manager })
+    local list = presenter:show(view)
+    local actions = list.item_table[1].callback()
+    equal("取消下载", actions.item_table[1].text, "running cache initially offers cancellation")
+    task.status, task.completed = "completed", 3
+    actions.item_table[1].callback()
+    equal(0, cancels, "stale cancel action does not touch a completed cache task")
+    local refreshed = shown[#shown]
+    truthy(refreshed.item_table[1].text:find("完成", 1, true),
+        "status change returns to an updated download list")
+    local completed_actions = refreshed.item_table[1].callback()
+    equal("返回书架阅读", completed_actions.item_table[1].text,
+        "completed cache now offers the appropriate action")
+    local returned = 0
+    view._back = function() returned = returned + 1 end
+    view:close()
+    completed_actions.item_table[1].callback()
+    equal(0, returned, "closed download manager ignores its old action popup")
+end
+
+do
+    local task = { id = "finished-before-tap", kind = "cache", book = { name = "已完成" },
+        status = "running", completed = 1, total = 2 }
+    local view = Downloads.new({ manager = { list = function() return { task } end } })
+    local presenter = Presenter.new({ menu = { new = function(_, options) return options end },
+        ui_manager = { show = function() end, close = function() end } })
+    local list = presenter:show(view)
+    task.status, task.completed = "completed", 2
+    local actions = list.item_table[1].callback()
+    equal("返回书架阅读", actions.item_table[1].text,
+        "opening a task from a stale list uses its current completed status")
+    view:close()
+end
+
 return count

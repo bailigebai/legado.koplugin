@@ -2588,17 +2588,40 @@ local function download_items(self, view)
         end }
     end
     for _, row in ipairs(view.items or {}) do
-        local task = row.task
+        local task_id = row.task.id
         items[#items + 1] = { text = row.text, callback = function()
             if not view.alive then return false end
+            local function latest_row()
+                view:refresh()
+                if view.persistence_error then return nil end
+                for _, current in ipairs(view.items or {}) do
+                    if current.task.id == task_id then return current end
+                end
+            end
+            local row = latest_row()
+            if not row then return self:_downloads(view) end
+            local task = row.task
             local actions = {}
             local action_menu
+            local function require_current(allowed)
+                if not view.alive then return nil end
+                local current = latest_row()
+                if current and allowed(current) then return current end
+                self:_closeWidget(action_menu)
+                self:_downloads(view)
+                return nil
+            end
             local function leave_downloads()
                 self:_closeWidget(action_menu)
                 self:_closeWidget(self.view_widgets[view])
                 view:close()
             end
             local function update(method)
+                local valid = {cancel = {queued = true, running = true},
+                    retry = {failed = true, cancelled = true}, resume = {interrupted = true}}
+                if not require_current(function(current)
+                    return valid[method] and valid[method][current.task.status]
+                end) then return false end
                 local result, err = view[method](view, task.id)
                 self:_closeWidget(action_menu)
                 self:_downloads(view)
@@ -2615,6 +2638,9 @@ local function download_items(self, view)
                 and self.app and self.app.storage and type(self.app.createBookDetail) == "function" then
                 actions[#actions + 1] = { text = "重新选择缓存范围", callback = function()
                     if not view.alive then return false end
+                    if not require_current(function(current)
+                        return current.task.status == "failed" and current.catalog_changed
+                    end) then return false end
                     self:_closeWidget(action_menu)
                     return self:_downloadBookPicker(view)
                 end }
@@ -2624,12 +2650,18 @@ local function download_items(self, view)
                 actions[#actions + 1] = { text = "继续下载", callback = function() return update("resume") end }
             elseif task.status == "completed" and task.kind == "cache" then
                 actions[#actions + 1] = { text = "返回书架阅读", callback = function()
+                    if not require_current(function(current)
+                        return current.task.status == "completed" and current.task.kind == "cache"
+                    end) then return false end
                     leave_downloads()
                     if view._back then return view._back() end
                     return self.app and self.app:openBookshelf() or false
                 end }
             elseif task.status == "completed" then
                 actions[#actions + 1] = { text = "打开 EPUB", callback = function()
+                    if not require_current(function(current)
+                        return current.task.status == "completed" and current.task.kind ~= "cache"
+                    end) then return false end
                     local result, err = view:open(task.id)
                     if not result then
                         self:_closeWidget(action_menu)
