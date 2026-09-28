@@ -5,7 +5,8 @@ local function eq(expected,actual,message) count=count+1;A.equal(expected,actual
 local book={id='book-local',remote_id='remote-1',source_id='weread',name='测试书'}
 local chapter={uid='chapter-local',remote_uid='remote-chapter',index=1,source_id='weread',book_id='book-local',title='第一章'}
 local values={}
-local storage={getProgress=function() return nil end,putProgress=function(_,progress)
+local stored_progress
+local storage={getProgress=function() return stored_progress end,putProgress=function(_,progress)
     values.saved=progress;return progress
 end}
 local session={cache={writeCatalog=function(_,source,id,catalog)
@@ -18,9 +19,11 @@ local service={getChapters=function(_,source,target,callback)
     callback({chapter});return {cancel=function() end}
 end}
 local cloud_progress={book={chapterUid='remote-chapter',chapterOffset=4500}}
+local cloud_error, progress_queries = nil, 0
 local client={getProgress=function(_,remote_id,callback)
+    progress_queries=progress_queries+1
     eq('remote-1',remote_id,'historical progress is requested for the selected remote book')
-    callback(cloud_progress)
+    callback(cloud_progress,cloud_error)
     return {cancel=function() end}
 end}
 local app=App.new{storage=storage,reader_session=session,weread_service=service,weread_client=client}
@@ -35,6 +38,23 @@ values.saved=nil
 app:startWeReadReading(book,function(document) opened=document end)
 eq(nil,values.saved,'empty cloud progress is not stored as a fabricated reading record')
 eq('native',opened.backend,'a book without cloud history still opens from the beginning')
+
+cloud_progress,cloud_error=nil,'网络暂时不可用'
+values.resume,values.saved=nil,nil
+local progress_failure
+app:startWeReadReading(book,function(_,err) progress_failure=err end)
+eq(nil,values.resume,'failed cloud progress lookup cannot open at a false first-chapter position')
+eq(nil,values.saved,'failed cloud progress lookup does not save a replacement position')
+eq('NETWORK_ERROR',progress_failure and progress_failure.code,
+    'failed cloud progress lookup reports a retryable reading error')
+
+stored_progress={book_id='book-local',source_id='weread',chapter_index=1,fraction=0.25}
+local queries_before_local=progress_queries
+values.resume=nil
+app:startWeReadReading(book,function(document) opened=document end)
+eq(queries_before_local,progress_queries,'existing local position does not depend on cloud progress availability')
+eq('native',opened.backend,'a book with local progress still opens while the cloud is unavailable')
+stored_progress=nil
 
 values.resume=nil
 local delayed_chapters

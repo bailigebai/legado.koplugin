@@ -346,14 +346,15 @@ function App:startWeReadReading(book,callback)
         if read_error then return deliver(nil,read_error) end
         if existing then return open(chapters) end
         stage(function(done) return self.weread_client:getProgress(book.remote_id,done) end,function(wire)
-            if wire then
-                local index,fraction=WeReadMapper.progress(wire,chapters)
-                if index then
-                    local chapter=chapters[index]
-                    local saved,save_error=self.storage:putProgress({book_id=book.id,source_id='weread',chapter_uid=chapter.uid,
-                        chapter_index=index,fraction=fraction,updated_at=os.time()})
-                    if not saved then return deliver(nil,save_error) end
-                end
+            if type(wire)~='table' then
+                return deliver(nil,{code='NETWORK_ERROR',message='微信读书阅读进度获取失败，请重试'})
+            end
+            local index,fraction=WeReadMapper.progress(wire,chapters)
+            if index then
+                local chapter=chapters[index]
+                local saved,save_error=self.storage:putProgress({book_id=book.id,source_id='weread',chapter_uid=chapter.uid,
+                    chapter_index=index,fraction=fraction,updated_at=os.time()})
+                if not saved then return deliver(nil,save_error) end
             end
             open(chapters)
         end)
