@@ -843,7 +843,9 @@ function Presenter:_categories(view, source)
     end
     return self:_library(view,{title=source.bookSourceName or "站点分类",subtitle=err and "该书源的分类规则暂不支持" or "选择分类查看图书",
         items=items,empty_text=err and diagnostic_text(err) or "此书源未提供分类。可以通过搜索书名查找。",
-        actions=self.app and {{text="搜索书名",callback=function() return self.app:openSearch() end}} or {},
+        actions=self.app and {{text="搜索书名",callback=function()
+            return self.app:openSearch(nil,function() return self:_categories(view,source) end)
+        end}} or {},
         on_back=function() return self:_discovery(view) end})
 end
 

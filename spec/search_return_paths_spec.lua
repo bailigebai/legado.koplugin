@@ -84,4 +84,23 @@ last().buttons[1][2].callback("丁")
 eq("搜索 · 丁", last().title, "a late result cannot replace the newer query")
 pending[2].callback({groups = {}, completed = 1, total = 1})
 eq(original_view, presenter.library_view, "queries during loading still reuse the same controller")
+
+local source = {id = 'catalog-source', bookSourceName = '测试站点', enabled = true,
+    enabledExplore = true, exploreUrl = 'https://example.test/categories'}
+storage.listSources = function() return {source} end
+service.exploreCategories = function() return {{title = '悬疑', url = 'https://example.test/mystery'}} end
+app:openHome()
+last().on_next()
+open_group('找书')
+item(last().items, '发现').callback()
+eq('发现', last().title, 'discovery opens from the find group')
+last().items[1].callback()
+eq('测试站点', last().title, 'source opens its category page')
+item(last().actions, '搜索书名').callback()
+last().buttons[1][1].callback()
+eq('测试站点', last().title, 'cancelling search from a category returns to that category')
+last().on_back()
+eq('发现', last().title, 'category back returns to discovery')
+last().on_back()
+eq(2, last().page, 'discovery back preserves the shelf page')
 return count
