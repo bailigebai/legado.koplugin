@@ -63,11 +63,13 @@ function AI:_chat(provider, messages, callback)
     if not config then callback(nil, "AI 服务商不可用"); return nil end
     local key, key_error = self:_key(provider)
     if not key then callback(nil, key_error); return nil end
+    local body = { model = config.model, messages = messages, stream = false }
+    if provider == "mimo" then body.thinking = { type = "disabled" } end
     return self.requests:execute({ url = config.base_url .. "/chat/completions",
         method = "POST", source_id = "ai-" .. provider, priority = "foreground",
         timeout = 90, max_bytes = 512 * 1024,
         headers = { Authorization = "Bearer " .. key },
-        body_type = "json", body = { model = config.model, messages = messages, stream = false },
+        body_type = "json", body = body,
     }, function(response, err)
         if err then callback(nil, "AI 连接失败，请检查网络、密钥或服务余额"); return end
         local status = response and tonumber(response.status or response.code)

@@ -28,6 +28,7 @@ ai:explain("庄周梦蝶", "补充时代背景", function(value) answer = value 
 eq("https://api.deepseek.com/chat/completions", pending[1].spec.url, "explanation uses chat completions")
 eq("Bearer secret-deepseek", pending[1].spec.headers.Authorization, "key is sent only in authorization header")
 eq("deepseek-flash", pending[1].spec.body.model, "request uses provider model")
+eq(nil, pending[1].spec.body.thinking, "DeepSeek keeps its provider default request shape")
 eq(true, pending[1].spec.body.messages[1].content:find("补充时代背景", 1, true) ~= nil,
     "custom prompt is appended to the default system prompt")
 eq("庄周梦蝶", pending[1].spec.body.messages[2].content, "only selected text is sent as user content")
@@ -41,8 +42,13 @@ ai:testConnection(function(value, err) connected, connection_error = value, err 
 eq("https://api.xiaomimimo.com/v1/chat/completions", pending[2].spec.url,
     "connection test uses the selected provider")
 eq("mimo-v2.5-pro", pending[2].spec.body.model, "MiMo test uses its default model")
+eq("disabled", pending[2].spec.body.thinking and pending[2].spec.body.thinking.type,
+    "MiMo's short connection test skips default deep thinking")
 pending[2].callback({status = 200, body = Json.encode({choices = {{message = {}}}})})
 eq(nil, connected, "missing answer content does not count as a connected model")
 eq("AI 返回内容不可用，请检查密钥、模型和服务余额", connection_error,
     "a successful HTTP status without text reports a useful error")
+ai:explain("庄周梦蝶", nil, function() end)
+eq("disabled", pending[3].spec.body.thinking and pending[3].spec.body.thinking.type,
+    "MiMo reading explanations skip default deep thinking")
 return count
