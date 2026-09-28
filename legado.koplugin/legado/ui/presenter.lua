@@ -859,9 +859,11 @@ function Presenter:_shelf(view, page)
     else empty_text='书架还是空的，点击“找书”收藏第一本书。' end
     return self:_library(view,{title=local_mode and '本地书架' or '书架',brand_logo=true,
         subtitle=subtitle,items=items,
-        mode=model.mode=="hero" and model.page==1 and "shelf_hero" or "grid",hero_action=hero_action,
+        mode=model.mode=="text" and "list" or model.mode=="hero" and model.page==1 and "shelf_hero" or "grid",
+        hero_action=hero_action,
         header_action=header_action,
-        grid_columns=4,grid_rows=3,categories={},already_paginated=true,page=model.page,page_count=model.page_count,
+        grid_columns=model.mode=="text" and 1 or 4,grid_rows=model.mode=="text" and 8 or 3,
+        categories={},already_paginated=true,page=model.page,page_count=model.page_count,
         batch_select=view.batch_select, selected_books=view.selected_books, storage=view.storage,
         actions=ShelfMenu.groups(self,view,model.page),grouped_actions=true,navigation={},
         on_prev=model.page>1 and function() return self:_shelf(view,model.page-1) end or nil,
@@ -1607,6 +1609,11 @@ function Presenter:_settings(view)
     editable("并发书源：" .. tostring(values.concurrency or 2), "concurrency", "2–3")
     editable("预取章节：" .. tostring(values.prefetch or 3), "prefetch", "0–10")
     items[#items+1]={text="书架布局：首页 1 + 4 本，后续每页 4 × 3 本",enabled=false}
+    items[#items+1]={text='书架封面：'..(values.covers_enabled==false and '关闭' or '开启'),callback=function()
+        local saved,err=view:set('covers_enabled',values.covers_enabled==false)
+        if saved==nil then return self:_info('设置保存失败（'..safe_token(err and err.code,'STORAGE_ERROR')..'）','设置') end
+        return self:_settings(view)
+    end}
     if view.ai_service then items[#items + 1] = { text = "AI 服务设置", callback = function()
         return self:_aiSettings(view)
     end } end

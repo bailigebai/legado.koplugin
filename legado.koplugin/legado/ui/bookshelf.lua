@@ -164,9 +164,11 @@ function Shelf:page(page, mode, page_size_override)
     for name, amount in pairs(category_counts) do categories[#categories+1] = { name = name, count = amount } end
     table.sort(categories, function(a,b) return a.name < b.name end)
     page = math.max(1, math.floor(tonumber(page) or 1))
-    mode = mode == "hero" and self.covers_enabled and "hero"
+    local requested_hero = mode == "hero"
+    mode = requested_hero and self.covers_enabled and "hero"
         or mode == "cover" and self.covers_enabled and "cover" or "text"
     local page_size = math.max(1, math.floor(tonumber(page_size_override) or (mode == "cover" and 12 or self.page_size)))
+    if requested_hero and mode == "text" then page_size = math.min(page_size, 8) end
     local hero = mode == "hero"
     local page_count = hero and (1 + math.ceil(math.max(0, #books - 5) / 12))
         or math.max(1, math.ceil(#books / page_size))

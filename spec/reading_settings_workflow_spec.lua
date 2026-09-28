@@ -116,6 +116,19 @@ prefetch_dialog.buttons[1][2].callback("0")
 equal(0, settings:get("prefetch"), "settings dialog persists the boundary value zero")
 equal(true, tostring(shown[#shown].item_table[#shown[#shown].item_table].text):find("KOReader", 1, true) ~= nil,
     "appearance entry explicitly delegates styling to KOReader")
+local function shelf_cover_action(label)
+    for _, entry in ipairs(shown[#shown].item_table or {}) do
+        if entry.text == label then return entry.callback end
+    end
+end
+local cover_action = shelf_cover_action("书架封面：开启")
+equal("function", type(cover_action), "settings expose the cover display switch")
+cover_action()
+equal(false, settings:get("covers_enabled"), "cover switch persists disabled state")
+cover_action = shelf_cover_action("书架封面：关闭")
+equal("function", type(cover_action), "disabled state is visible in settings")
+cover_action()
+equal(true, settings:get("covers_enabled"), "cover switch can restore the grid")
 
 -- Falling back from a failed online catalog to a failed offline open must not
 -- deliver the same terminal error twice.

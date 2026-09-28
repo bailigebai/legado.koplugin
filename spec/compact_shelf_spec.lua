@@ -305,4 +305,31 @@ receive()
 eq("more",last().subpage,"late metadata does not eject secondary menu")
 last():onClose()
 eq("新完整简介",last().items[1].intro,"return from secondary menu rebuilds latest detail metadata")
+
+do
+    local text_books = {}
+    for index = 1, 19 do text_books[index] = {id = "text-" .. index, name = "文字书" .. index} end
+    local text_shown = {}
+    local text_presenter = Presenter.new{ui_manager = {
+        show = function(_, widget) text_shown[#text_shown + 1] = widget end,
+        close = function() end,
+    }}
+    local text_app = App.new{storage = {listShelf = function() return text_books end},
+        settings = {get = function(_, key)
+            if key == "covers_enabled" then return false end
+            if key == "shelf_page" then return 20 end
+        end},
+        show = function(view) return text_presenter:show(view) end}
+    text_presenter.app = text_app
+    text_app:openBookshelf()
+    eq("list", text_shown[#text_shown].mode, "disabled covers show a text list")
+    eq(1, text_shown[#text_shown].grid_columns, "text list uses one column")
+    eq(8, #text_shown[#text_shown].items, "text shelf keeps a readable first page")
+    eq(3, text_shown[#text_shown].page_count, "nineteen text books span three pages")
+    text_shown[#text_shown].on_next()
+    eq(8, #text_shown[#text_shown].items, "second text page remains bounded")
+    text_shown[#text_shown].on_next()
+    eq(3, #text_shown[#text_shown].items, "last text page keeps all remaining books")
+    eq("text-19", text_shown[#text_shown].items[3].book.id, "last book remains reachable")
+end
 return count
