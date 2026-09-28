@@ -550,6 +550,13 @@ function Presenter:_wereadBook(view, book)
                     if err then self:_info(err.message or '微信读书章节打开失败','微信读书') end
                 end)
             end},
+            view:hasBook(book) and {text='已在微信书架',enabled=false}
+                or {text='加入微信书架',callback=function()
+                    return view:addToShelf(book,function(added,err)
+                        if not added then return self:_info(err or '加入微信书架失败','微信读书') end
+                        if view.alive and self.library_view==view then self:_wereadBook(view,book) end
+                    end)
+                end},
             { text = "阅读评论", callback = function() return self:_wereadReviews(view, book) end },
         },
         on_back = function() return self:_weread(view) end })

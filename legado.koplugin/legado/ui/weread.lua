@@ -56,11 +56,14 @@ function WeRead:sync(callback)
         self.account_id, self.books = session.vid, load_books(self.fs, self.path, session.vid)
     end
     self.status, self.synced = "正在同步微信书架…", true
-    local generation, delivered = self.generation, false
+    self.sync_generation = (self.sync_generation or 0) + 1
+    local generation, sync_generation, delivered = self.generation, self.sync_generation, false
     local handle = self.client:shelfSync(function(wire, err)
         delivered = true
-        if not self.alive or generation ~= self.generation then return end
+        if not self.alive or generation ~= self.generation or sync_generation ~= self.sync_generation then return end
         self.request = nil
+        local current = self.auth:session()
+        if not current or current.vid ~= session.vid then return callback(nil, "微信读书账号已切换") end
         if not wire then
             self.status = "书架同步失败，显示上次记录"
             return callback(nil, err)
@@ -74,6 +77,50 @@ function WeRead:sync(callback)
         callback(self.books)
     end)
     if not delivered then self.request = handle end
+    return handle
+end
+
+function WeRead:hasBook(book)
+    local remote_id = type(book) == "table" and book.remote_id or book
+    for _, saved in ipairs(self.books) do
+        if saved.remote_id == remote_id then return true end
+    end
+    return false
+end
+
+function WeRead:addToShelf(book, callback)
+    callback = callback or function() end
+    if not self.alive or not self.client or type(self.client.addToShelf) ~= "function"
+        or type(book) ~= "table" or type(book.remote_id) ~= "string" or book.remote_id == "" then
+        callback(nil, "微信书架不可用")
+        return nil
+    end
+    if self:hasBook(book) then callback(true); return nil end
+    local generation, delivered = self.generation, false
+    local account_id = self.account_id
+    local function same_account()
+        local session = self.auth and self.auth:session()
+        return session and session.vid == account_id and self.account_id == account_id
+    end
+    local handle = self.client:addToShelf(book.remote_id, function(result, err)
+        delivered = true
+        if not self.alive or generation ~= self.generation then return end
+        self.add_request = nil
+        if not same_account() then return callback(nil, "微信读书账号已切换") end
+        if not result then return callback(nil, err or "加入微信书架失败") end
+        self:sync(function()
+            if not self.alive or generation ~= self.generation then return end
+            if not same_account() then return callback(nil, "微信读书账号已切换") end
+            if not self:hasBook(book) then
+                self.books[#self.books + 1] = book
+                if self.fs and self.path then
+                    self.fs:atomicWrite(self.path, Json.encode({ account_id = self.account_id, books = self.books }))
+                end
+            end
+            callback(true)
+        end)
+    end)
+    if not delivered then self.add_request = handle end
     return handle
 end
 
@@ -104,10 +151,11 @@ function WeRead:cancel()
     self.generation = self.generation + 1
     if self.request and type(self.request.cancel) == "function" then self.request:cancel() end
     if self.store_request and type(self.store_request.cancel) == "function" then self.store_request:cancel() end
+    if self.add_request and type(self.add_request.cancel) == "function" then self.add_request:cancel() end
     if self.scheduled and self.scheduler and type(self.scheduler.unschedule) == "function" then
         pcall(self.scheduler.unschedule, self.scheduler, self.scheduled)
     end
-    self.request, self.store_request, self.scheduled = nil, nil, nil
+    self.request, self.store_request, self.add_request, self.scheduled = nil, nil, nil, nil
     if self.alive and self.status ~= "已登录" then self.status = "已取消" end
 end
 

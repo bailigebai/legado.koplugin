@@ -157,6 +157,12 @@ function Client:shelfSync(callback)
     return self:_call("GET", "/web/shelf/sync?synckey=0&teenmode=0", nil, false, callback)
 end
 
+function Client:addToShelf(book_id, callback)
+    book_id = tostring(book_id or "")
+    if book_id == "" then callback(nil, "书籍标识无效"); return nil end
+    return self:_call("POST", "/web/shelf/add", { bookIds = { book_id } }, false, callback)
+end
+
 function Client:search(keyword, cursor, callback)
     keyword = tostring(keyword or "")
     if keyword == "" then callback({ books = {} }); return nil end

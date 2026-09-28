@@ -48,4 +48,11 @@ handle:cancel()
 eq(true, requests[6].cancelled, "cancel propagates to transport")
 requests[6].callback({ status = 200, body = "{}" })
 eq(false, cancelled, "cancelled response cannot update the page")
+local added
+client:addToShelf("b3", function(value) added = value end)
+eq("POST", requests[7].spec.method, "adding a store book writes to the WeRead shelf")
+eq("https://weread.qq.com/web/shelf/add", requests[7].spec.url, "shelf addition uses the official Web endpoint")
+eq("b3", requests[7].spec.body.bookIds[1], "shelf addition sends the selected remote book ID")
+requests[7].callback({ status = 200, body = Json.encode({ errCode = 0 }) })
+eq(0, added.errCode, "successful shelf addition reaches the caller")
 return count

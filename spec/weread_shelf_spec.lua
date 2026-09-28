@@ -31,4 +31,22 @@ eq(19, #restarted.books, "offline restart restores the last synced shelf")
 restarted:sync()
 callback(nil, "network offline")
 eq(19, #restarted.books, "network failure keeps the cached WeRead shelf")
+local account, add_response, new_sync, add_error = "account-1", nil, nil, nil
+local switched = View.new{auth={session=function() return {vid=account} end,hasSession=function() return true end},
+    client={addToShelf=function(_, _, done) add_response=done;return {cancel=function() end} end,
+        shelfSync=function(_, done) new_sync=done;return {cancel=function() end} end}}
+switched:addToShelf({remote_id="old-book",name="旧账号书籍"},function(_,err) add_error=err end)
+account="account-2"
+add_response({errCode=0})
+eq(nil,new_sync,"an account switch does not refresh the new account with an old addition")
+eq(0,#switched.books,"an old account's book is not inserted into the new account shelf")
+eq("微信读书账号已切换",add_error,"account switch is reported to the caller")
+local pending_sync, sync_error
+local switching = View.new{auth={session=function() return {vid=account} end,hasSession=function() return true end},
+    client={shelfSync=function(_,done) pending_sync=done;return {cancel=function() end} end}}
+switching:sync(function(_,err) sync_error=err end)
+account="account-3"
+pending_sync({books={{bookId="old-book",title="旧账号书籍"}}})
+eq(0,#switching.books,"a late response cannot show books from a previous account")
+eq("微信读书账号已切换",sync_error,"late shelf response reports the account change")
 return count
