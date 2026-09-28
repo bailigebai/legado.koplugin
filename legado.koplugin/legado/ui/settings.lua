@@ -8,6 +8,8 @@ function SettingsView.new(options)
         kind = "settings",
         settings = options.settings,
         settings_error = options.settings_error,
+        ai_service = options.ai_service,
+        plugin_cache_usage = options.plugin_cache_usage, plugin_cache_clear = options.plugin_cache_clear,
         default_download_cache_dir = options.default_download_cache_dir,
         validate_download_cache_dir = options.validate_download_cache_dir,
         temporary_reader_mode = options.temporary_reader_mode,

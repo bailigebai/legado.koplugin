@@ -52,7 +52,7 @@ local function action(label)
 end
 app:openHome()
 A.equal("library_screen",last().kind,"empty home is plugin fullscreen")
-A.equal(3,#last().navigation,"home keeps three compact main destinations")
+A.equal(0,#last().navigation,"home keeps its four grouped actions without duplicate navigation")
 app:openSearch()
 last().buttons[1][2].callback("测试书")
 A.equal("library_screen",last().kind,"search starts directly with a results screen")

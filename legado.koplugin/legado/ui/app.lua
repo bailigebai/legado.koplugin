@@ -7,6 +7,8 @@ local Downloads = require("legado.ui.downloads")
 local SideToc = require("legado.ui.side_toc")
 local Models = require("legado.lib.models")
 local ReadingHistory = require("legado.lib.reading_history")
+local WeRead = require("legado.ui.weread")
+local WeReadMapper = require('legado.lib.weread_mapper')
 
 local App = {}
 App.__index = App
@@ -20,6 +22,12 @@ function App.new(options)
         reading_hook = options.reading_hook, download_hook = options.download_hook,
         reader_session = options.reader_session,
         download_manager = options.download_manager,
+        weread_auth = options.weread_auth,
+        weread_client = options.weread_client, weread_shelf_path = options.weread_shelf_path,
+        weread_service = options.weread_service,
+        ai_service = options.ai_service,
+        cache_management = options.cache_management,
+        presenter = options.presenter,
         default_download_cache_dir = options.default_download_cache_dir,
         validate_download_cache_dir = options.validate_download_cache_dir,
         scheduler = options.scheduler,
@@ -42,9 +50,9 @@ function App:openHome()
     return self:openBookshelf()
 end
 
-function App:openReadingReview(book, document)
+function App:openReadingReview(book, document, back)
     return self:_present({kind='reading_review',book=book,document=document,
-        _back=not document and function() return self:openBookshelf() end or nil})
+        _back=back or (not document and function() return self:openBookshelf() end or nil)})
 end
 
 function App:openNativeStatistics(document)
@@ -118,6 +126,8 @@ function App:toggleImmersiveReader(document)
 end
 
 function App:exitReader(document)
+    local from_weread=document and document.reading_state and document.reading_state.book
+        and document.reading_state.book.source_id=='weread'
     if document and document.backend=='immersive' and not document.closed then
         local saved,err=document:close()
         if not saved then return nil,err end
@@ -127,6 +137,7 @@ function App:exitReader(document)
         local saved,err=self.reader_session:close()
         if not saved then return nil,err end
     end
+    if from_weread then return self:openWeRead(function() return self:openBookshelf() end) end
     return self:openBookshelf(document and document.is_local and 'local' or nil)
 end
 
@@ -164,38 +175,48 @@ function App:openCurrentReceipt(document)
     if book then return self:_present({kind='reading_receipt',book=book,document=document}) end
 end
 
-function App:openBookshelf(mode)
+function App:openBookshelf(mode, restore)
     if not self.storage then return self:_present({ title = "书架", empty_text = "书架尚未初始化" }) end
     local page_size = self.settings and self.settings:get("shelf_page") or 20
     local covers_enabled = not self.settings or self.settings:get("covers_enabled") ~= false
-    return self:_present(Shelf.new({ storage = self.storage, settings = self.settings, page_size = page_size, covers_enabled = covers_enabled, cover_loader = self.cover_loader,
+    local view = Shelf.new({ storage = self.storage, settings = self.settings, page_size = page_size, covers_enabled = covers_enabled, cover_loader = self.cover_loader,
         is_cached = self.download_manager and function(book) return self.download_manager:isCached(book) end or nil,
         source_mode = mode or (self.settings and self.settings:get("shelf_source")) or "sources", local_library = self.local_library,
-        on_search = function() return self:openSearch() end, on_sources = function() return self:openSources() end }))
+        on_search = function() return self:openSearch() end, on_sources = function() return self:openSources() end })
+    if restore then
+        view:setFilter(restore.reading_state, restore.category)
+        view.start_page = restore.page
+        view.batch_select = restore.batch_select
+        view.selected_books = restore.selected_books
+    end
+    return self:_present(view)
 end
-function App:openSearch(keyword)
-    if not self.service then return self:_present({ title = "搜索", error = "搜索服务尚未初始化" }) end
+function App:openSearch(keyword, back)
+    if not self.service then return self:_present({ title = "搜索", error = "搜索服务尚未初始化", _back = back }) end
     local view = SearchView.new({
         service = self.service,
         source_provider = self.storage and function() return self.storage:listSources() end or nil,
     })
     view.initial_keyword = keyword
+    view._back = back
     return self:_present(view)
 end
-function App:openSources()
+function App:openSources(back)
     if self.source_manager then
         self.source_manager.on_search = function() return self:openSearch() end
     end
     if self.source_manager and type(self.source_manager.reopen) == "function" then self.source_manager:reopen() end
-    return self:_present(self.source_manager or { title = "书源管理", empty_text = "暂无书源" })
+    local view = self.source_manager or { title = "书源管理", empty_text = "暂无书源" }
+    view._back = back
+    return self:_present(view)
 end
-function App:openDiscovery()
-    if not self.service or not self.storage then return self:_present({ title = "发现", error = "书源服务尚未初始化" }) end
+function App:openDiscovery(back)
+    if not self.service or not self.storage then return self:_present({ title = "发现", error = "书源服务尚未初始化", _back = back }) end
     local sources = {}
     for _, source in ipairs(self.storage:listSources() or {}) do
         sources[#sources + 1] = source
     end
-    return self:_present({ kind = "discovery", service = self.service, sources = sources,
+    return self:_present({ kind = "discovery", service = self.service, sources = sources, _back = back,
         empty_text = #sources == 0 and "请先导入书源" or nil })
 end
 function App:openReaderSourceSites(state, document, detail)
@@ -269,18 +290,106 @@ function App:switchReaderSource(state, candidate, callback, row)
     end
     return handle
 end
-function App:openDownloads()
-    if not self.download_manager then return self:_present({ title = "下载管理", empty_text = "下载功能尚未初始化" }) end
-    return self:_present(Downloads.new({ manager = self.download_manager, scheduler = self.scheduler }))
+function App:openDownloads(back)
+    if not self.download_manager then return self:_present({ title = "下载管理", empty_text = "下载功能尚未初始化", _back = back }) end
+    local view = Downloads.new({ manager = self.download_manager, scheduler = self.scheduler })
+    view._back = back
+    return self:_present(view)
 end
-function App:openSettings(document, chrome_only)
+function App:openWeRead(back)
+    local view = WeRead.new({ auth = self.weread_auth, client = self.weread_client,
+        fs = self.fs, path = self.weread_shelf_path, scheduler = self.scheduler })
+    view._back = back
+    return self:_present(view)
+end
+function App:startWeReadReading(book,callback)
+    callback=callback or function() end
+    if not self.weread_service or not self.reader_session or not self.storage then
+        callback(nil,{code='NETWORK_ERROR',message='微信读书阅读服务未初始化'})
+        return nil
+    end
+    local cancelled,active,finished=false,nil,false
+    local function deliver(value,err)
+        if cancelled or finished then return end
+        finished=true
+        active=nil
+        callback(value,err)
+    end
+    local function stage(start,done)
+        local delivered=false
+        local handle=start(function(...)
+            delivered=true
+            active=nil
+            if not cancelled then done(...) end
+        end)
+        if not delivered then active=handle end
+    end
+    local function open(chapters)
+        if cancelled then return end
+        local cache=self.reader_session.cache
+        if cache then cache:writeCatalog('weread',book.id,{chapters=chapters,complete=true}) end
+        stage(function(done)
+            return self.reader_session:resume({id='weread'},book,chapters,done,{catalog_complete=true})
+        end,deliver)
+    end
+    local function progress(chapters)
+        if cancelled then return end
+        local existing,read_error=self.storage:getProgress(book.id)
+        if read_error then return deliver(nil,read_error) end
+        if existing then return open(chapters) end
+        stage(function(done) return self.weread_client:getProgress(book.remote_id,done) end,function(wire)
+            if wire then
+                local index,fraction=WeReadMapper.progress(wire,chapters)
+                local chapter=chapters[index]
+                local saved,save_error=self.storage:putProgress({book_id=book.id,source_id='weread',chapter_uid=chapter.uid,
+                    chapter_index=index,fraction=fraction,updated_at=os.time()})
+                if not saved then return deliver(nil,save_error) end
+            end
+            open(chapters)
+        end)
+    end
+    stage(function(done) return self.weread_service:getChapters({id='weread'},book,done) end,function(chapters,err)
+        if not chapters then return deliver(nil,err) end
+        progress(chapters)
+    end)
+    return {cancel=function()
+        if cancelled or finished then return false end
+        cancelled=true
+        if active and active.cancel then active:cancel() end
+        return true
+    end}
+end
+function App:explainSelection(text, document)
+    if not self.ai_service then return nil, { code = 'AI_UNAVAILABLE', message = 'AI 服务未初始化' } end
+    if self.presenter and type(self.presenter.explainSelection)=='function' then
+        return self.presenter:explainSelection(self.ai_service, text, document)
+    end
+    return self.ai_service:explain(text, nil, function() end)
+end
+function App:openSettings(document, chrome_only, back, section)
     local independent=document and type(document.refreshAppearance)=='function'
     local function refresh()
         if independent then return document:refreshAppearance() end
         if document and document.chrome then return document.chrome:refresh() end
     end
     local cache = self.reader_session and self.reader_session.cache
-    return self:_present(SettingsView.new({ settings = self.settings, settings_error = self.settings_error,
+    local function no_active_downloads()
+        for _,task in ipairs(self.storage and self.storage.listDownloadTasks and self.storage:listDownloadTasks() or {}) do
+            if task.status=='running' or task.status=='queued' then
+                return nil,{code='DOWNLOAD_ACTIVE',message='请先取消或完成下载'}
+            end
+        end
+        return true
+    end
+    local view=SettingsView.new({ settings = self.settings, settings_error = self.settings_error,
+        ai_service = self.ai_service,
+        plugin_cache_usage = self.cache_management and function() return self.cache_management:usage() end or nil,
+        plugin_cache_clear = self.cache_management and function()
+            local ready,err=no_active_downloads();if not ready then return nil,err end
+            local state=self.reader_session and self.reader_session.active
+            local keep=state and state.active and {source_id=state.book.source_id,book_id=state.book.id} or nil
+            return self.cache_management:clear(keep)
+        end or nil,
         default_download_cache_dir = self.default_download_cache_dir,
         validate_download_cache_dir = self.validate_download_cache_dir,
         temporary_reader_mode=self.reader_mode_temporary,
@@ -307,7 +416,7 @@ function App:openSettings(document, chrome_only)
         end,
         appearance = not independent and self.appearance or nil, local_library = self.local_library,
         on_sources = function() return self:openSources() end,
-        on_close = not document and function(local_changed) return self:openBookshelf(local_changed and 'local' or nil) end or nil,
+        on_close = not document and (back or function(local_changed) return self:openBookshelf(local_changed and 'local' or nil) end) or nil,
         on_progress_change = document and function()
             if independent then return refresh() end
             local applied = self.reader_session.ui:applyProgressBar(document.reader)
@@ -321,11 +430,13 @@ function App:openSettings(document, chrome_only)
             local state=self.reader_session.active
             return self.reader_session.cache:clear(state and state.active and {source_id=state.book.source_id,book_id=state.book.id} or nil)
         end or nil,
-    }))
+    })
+    view.section=section
+    return self:_present(view)
 end
-function App:openAbout()
+function App:openAbout(back)
     return self:_present({ kind = About.kind, title = About.title,
-        text = "版本：" .. tostring(self.version or "未知") .. "\n\n" .. About.text })
+        text = "版本：" .. tostring(self.version or "未知") .. "\n\n" .. About.text, _back = back })
 end
 function App:startReading(book, chapters, index, callback, intent)
     if self.reading_hook then return self.reading_hook(book, chapters, index, callback, intent) end
@@ -446,9 +557,9 @@ function App:startDownload(book)
     if self.download_manager then return self.download_manager:enqueue(book) end
     return "下载功能尚未初始化"
 end
-function App:startCache(book)
+function App:startCache(book, end_index)
     if self.download_manager and type(self.download_manager.enqueueCache) == "function" then
-        return self.download_manager:enqueueCache(book)
+        return self.download_manager:enqueueCache(book, nil, end_index)
     end
     return nil, { code = "STORAGE_ERROR", message = "离线缓存未初始化" }
 end
@@ -598,7 +709,7 @@ function App:createBookDetail(book, alternatives)
             return self:startReading(selected, selected_chapters, selected_index, selected_callback, intent)
         end,
         download_hook = function(selected) return self:startDownload(selected) end,
-        cache_hook = function(selected) return self:startCache(selected) end,
+        cache_hook = function(selected, end_index) return self:startCache(selected, end_index) end,
     })
 end
 

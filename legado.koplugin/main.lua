@@ -52,23 +52,11 @@ function Legado:addToMainMenu(menu_items)
         return
     end
 
-    local function action(name)
-        return function()
-            return self:_open(name)
-        end
-    end
     menu_items.legado = {
         text = "不亦阅乎",
         sorting_hint = "tools",
         sub_item_table = {
-            { text = "首页", callback = action("openHome") },
-            { text = "书架", callback = action("openBookshelf") },
-            { text = "搜索", callback = action("openSearch") },
-            { text = "书源管理", callback = action("openSources") },
-            { text = "下载管理", callback = action("openDownloads") },
-            { text = "设置", callback = action("openSettings") },
-            { text = "关于", callback = action("openAbout") },
-            { text = "发现", callback = action("openDiscovery") },
+            { text = "打开书架", callback = function() return self:openBookshelf() end },
         },
     }
 end

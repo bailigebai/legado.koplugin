@@ -238,6 +238,12 @@ function Adapter.open(owner,payload,callbacks)
         local fn=owner[handler]
         if type(fn)=='function' then core[action]=function() if proxy.closed or not accepted then return false end;return fn(proxy) end end
     end
+    if type(owner.on_ai)=='function' then
+        core.ai=function(_,selected)
+            if proxy.closed or not accepted then return false end
+            return owner.on_ai(selected,proxy)
+        end
+    end
     -- An explicit mode-switch fraction is newer than a prior immersive cursor.
     local fraction=state.restore_fraction
     if fraction==nil and progress.chapter_uid==chapter.uid then fraction=progress.fraction end

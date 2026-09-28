@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
-$venvPython = Join-Path $repositoryRoot ".tools\python\python.exe"
+$venvPython = Join-Path $repositoryRoot ".tools\python\Scripts\python.exe"
 
 if (-not (Test-Path -LiteralPath $venvPython)) {
     & (Join-Path $PSScriptRoot "bootstrap-tests.ps1")

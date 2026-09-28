@@ -5,7 +5,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
-$python = Join-Path $repositoryRoot ".tools\python\python.exe"
+$python = Join-Path $repositoryRoot ".tools\python\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
     & (Join-Path $PSScriptRoot "bootstrap-tests.ps1")
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

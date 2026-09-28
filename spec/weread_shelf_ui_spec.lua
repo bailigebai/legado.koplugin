@@ -1,0 +1,35 @@
+require("library_screen_stub")
+local A = require("assertions")
+local Presenter = require("legado.ui.presenter")
+local View = require("legado.ui.weread")
+local count = 0
+local function eq(expected, actual, message) count = count + 1; A.equal(expected, actual, message) end
+local shown = {}
+local presenter = Presenter.new{ui_manager = { show = function(_, widget) shown[#shown + 1] = widget end }}
+local client = { bookReviews = function(_, _, callback) callback({ reviews = {
+    { review = { review = { bookId = "remote-1", content = "评论正文", reviewId = "r1" } } },
+} }); return { cancel = function() end } end }
+local auth = { hasSession = function() return true end,
+    session = function() return { vid = "account" } end }
+local view = View.new{auth = auth, client = client}
+view.synced = true
+for index = 1, 6 do view.books[index] = {
+    id = "local-" .. index, remote_id = "remote-" .. index, source_id = "weread",
+    name = "书" .. index, intro = "简介" .. index, progress_percent = index * 10,
+} end
+presenter:show(view)
+eq("shelf_hero", shown[#shown].mode, "WeRead shelf shares the homepage hero layout")
+eq(5, #shown[#shown].items, "WeRead first page has one hero and four covers")
+eq("简介1", shown[#shown].items[1].intro, "remote hero shows its summary")
+shown[#shown].items[1].callback()
+eq("微信读书 · 书1", shown[#shown].title, "remote book opens its own detail page")
+eq("detail", shown[#shown].mode, "remote detail shows cover and summary")
+eq("简介1", shown[#shown].items[1].intro, "remote detail keeps the full summary")
+local review_action
+for _, item in ipairs(shown[#shown].actions) do if item.text == "阅读评论" then review_action = item end end
+eq("function", type(review_action and review_action.callback), "remote book exposes clickable reviews")
+review_action.callback()
+eq("评论正文", shown[#shown].items[1].text, "review list shows content")
+shown[#shown].items[1].callback()
+eq("评论正文", shown[#shown].text, "review opens a detail message")
+return count

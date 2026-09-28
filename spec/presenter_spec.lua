@@ -38,7 +38,7 @@ local home = {
 local home_widget = presenter:show(home)
 assertx.equal("library_screen",home_widget.kind,"home uses standalone fullscreen browser")
 assertx.equal("Recent",home_widget.items[1].title,"home shows recent book cards")
-assertx.equal("书架",home_widget.navigation[1].text,"home keeps primary navigation")
+assertx.equal(0,#home_widget.navigation,"home does not repeat global navigation")
 local shelf={kind="bookshelf",page=function(_,page)
     return {page=page,page_count=2,items={{title="Book",book={name="Book",author="Author"}}}}
 end}
@@ -65,7 +65,7 @@ assertx.equal("menu", settings_widget.widget_type, "settings renders native acti
 assertx.equal("请求超时：20 秒", settings_widget.item_table[1].text, "settings display the active timeout default")
 assertx.equal("并发书源：2", settings_widget.item_table[2].text, "settings display concurrency")
 assertx.equal("预取章节：3", settings_widget.item_table[3].text, "settings display prefetch")
-assertx.equal("书架布局：每页 4 × 3 本", settings_widget.item_table[4].text, "settings describe the fixed grid")
+assertx.equal("书架布局：首页 1 + 4 本，后续每页 4 × 3 本", settings_widget.item_table[4].text, "settings describe the shelf layout")
 assertx.equal("阅读外观", settings_widget.item_table[#settings_widget.item_table].text, "native appearance action remains visible after reading and shelf settings")
 
 local source_view = {

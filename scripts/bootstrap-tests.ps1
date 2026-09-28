@@ -3,7 +3,7 @@ $ErrorActionPreference = "Stop"
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $toolsRoot = Join-Path $repositoryRoot ".tools"
 $venvRoot = Join-Path $toolsRoot "python"
-$venvPython = Join-Path $venvRoot "python.exe"
+$venvPython = Join-Path $venvRoot "Scripts\python.exe"
 $bundledCodexPython = "C:\Users\98199\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
 
 function Invoke-Python {

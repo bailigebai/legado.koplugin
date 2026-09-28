@@ -11,6 +11,7 @@ local RequestEngine = {}
 RequestEngine.__index = RequestEngine
 RequestEngine.DEFAULT_TIMEOUT = 20
 RequestEngine.MAX_TIMEOUT = 20
+RequestEngine.MAX_EXTENDED_TIMEOUT = 90
 RequestEngine.DEFAULT_MAX_BYTES = 4 * 1024 * 1024
 RequestEngine.MAX_BYTES = 16 * 1024 * 1024
 RequestEngine.DEFAULT_REDIRECTS = 5
@@ -243,6 +244,8 @@ function RequestEngine.new(options)
         settings = settings,
         now = options.now or default_now(scheduler),
         concurrency = concurrency,
+        max_timeout = math.max(RequestEngine.MAX_TIMEOUT,
+            math.min(RequestEngine.MAX_EXTENDED_TIMEOUT, tonumber(options.max_timeout) or RequestEngine.MAX_TIMEOUT)),
         active_count = 0,
         pending = {},
         draining = false,
@@ -274,7 +277,7 @@ function RequestEngine:_normalize(request)
         return nil, Errors.new(Errors.INVALID_INPUT, "request method is unsupported", { method = normalized.method })
     end
     normalized.timeout = clamp(request.timeout or setting(self.settings, "timeout", RequestEngine.DEFAULT_TIMEOUT),
-        RequestEngine.DEFAULT_TIMEOUT, RequestEngine.MAX_TIMEOUT, false)
+        RequestEngine.DEFAULT_TIMEOUT, self.max_timeout, false)
     normalized.max_bytes = clamp(request.max_bytes or setting(self.settings, "max_response_bytes", RequestEngine.DEFAULT_MAX_BYTES),
         RequestEngine.DEFAULT_MAX_BYTES, RequestEngine.MAX_BYTES, true)
     normalized.max_redirects = clamp(request.max_redirects or setting(self.settings, "redirects", RequestEngine.DEFAULT_REDIRECTS),

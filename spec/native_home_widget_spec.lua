@@ -46,6 +46,9 @@ local home=app:openHome()
 local screen=shown[#shown]
 equal("library_screen",screen.kind,"populated Home uses LibraryScreen")
 equal(3,#screen.cells,"default shelf includes unread books")
+equal(1,#screen.layout[2],"recent-reading hero has its own focus row")
+equal(130,screen.cells[1].cover:getSize().w,"recent-reading hero has a larger cover")
+equal("简介甲",screen.cells[1].intro_widget.text,"recent-reading hero shows the summary")
 equal("cached.jpg",screen.cells[2].cover[1].file,"synchronous cached cover reaches ImageWidget")
 local old_height=screen:getSize().h
 callbacks.recent("recent.jpg")
@@ -74,16 +77,19 @@ equal(presenter.backdrop,next(windows),"starting the reader retains the session 
 
 local nav_home=app:openHome()
 local nav_screen=shown[#shown]
-local shelf_button
+local find_button
 for _,row in ipairs(nav_screen.layout) do
-    for _,button in ipairs(row) do if button.text=="书架" then shelf_button=button end end
+    for _,button in ipairs(row) do if button.text=="找书" then find_button=button end end
 end
-truthy(shelf_button,"bottom navigation is focus/touch reachable")
-shelf_button.callback()
-equal(nil,windows[nav_screen],"navigation replaces the old Home screen")
-equal(false,nav_home.alive,"navigation closes the old Home controller")
+truthy(find_button,"grouped find action is focus/touch reachable")
+find_button.callback()
+equal(nil,windows[nav_screen],"group menu replaces the old Home screen")
+equal(true,nav_home.alive,"group menu preserves the Home controller")
 local shelf=shown[#shown]
-equal("library_screen",shelf.kind,"navigation opens shelf as native library")
+equal("library_screen",shelf.kind,"group action opens a native library page")
+shelf:onClose()
+shelf=shown[#shown]
+equal("library_screen",shelf.kind,"group Back returns to the bookshelf")
 shelf:onClose()
 equal(true,windows[shelf],"Back keeps shelf visible while requesting confirmation")
 shelf:closeForReplacement()

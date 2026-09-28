@@ -40,15 +40,15 @@ local deferred_items = {}
 local deferred_ok = pcall(deferred.addToMainMenu, deferred, deferred_items)
 truthy(deferred_ok, "menu registration does not depend on optional service startup")
 truthy(deferred_items.legado, "menu entry remains visible when a service is unavailable")
-equal("首页", deferred_items.legado.sub_item_table[1].text, "deferred menu keeps home action")
-local click_ok, click_result = pcall(deferred_items.legado.sub_item_table[2].callback)
+equal("打开书架", deferred_items.legado.sub_item_table[1].text, "deferred menu keeps the shelf entry")
+local click_ok, click_result = pcall(deferred_items.legado.sub_item_table[1].callback)
 truthy(click_ok, "startup failure must not crash the host on click")
 equal(false, click_result, "failed startup returns an explicit unsuccessful result")
 equal(1, #messages, "startup failure displays a diagnostic")
 truthy(messages[1]:find("legado.missing", 1, true), "diagnostic identifies the missing module")
 equal(nil, messages[1]:find("private-input", 1, true), "diagnostic omits arbitrary error payloads")
 function deferred:_getApp() return { openBookshelf = function() return "recovered" end } end
-equal("recovered", deferred_items.legado.sub_item_table[2].callback(), "a later click retries startup")
+equal("recovered", deferred_items.legado.sub_item_table[1].callback(), "a later click retries startup")
 
 local instance = setmetatable({ ui = {} }, { __index = plugin })
 local ok, app = pcall(instance._getApp, instance)

@@ -331,6 +331,7 @@ local function validate_download_listing(value)
         local diagnostic = type(task) == "table" and rawget(task, "published_diagnostic") or nil
         local final_path = type(task) == "table" and rawget(task, "final_path") or nil
         local kind = type(task) == "table" and rawget(task, "kind") or nil
+        local end_index = type(task) == "table" and rawget(task, "end_index") or nil
         local book_id = type(task) == "table" and rawget(task, "book_id") or nil
         local source_id = type(task) == "table" and rawget(task, "source_id") or nil
         local requires_book = status ~= "completed"
@@ -351,7 +352,9 @@ local function validate_download_listing(value)
             or (warning ~= nil and not valid_restored_diagnostic(warning))
             or (diagnostic ~= nil and not valid_restored_diagnostic(diagnostic))
             or (final_path ~= nil and type(final_path) ~= "string")
-            or (kind ~= nil and kind ~= "cache" and kind ~= "epub") then
+            or (kind ~= nil and kind ~= "cache" and kind ~= "epub")
+            or (end_index ~= nil and (kind ~= "cache" or type(end_index) ~= "number"
+                or end_index < 1 or end_index % 1 ~= 0 or end_index >= MAX_SAFE_QUEUE_SEQUENCE)) then
             return nil, Errors.new(Errors.STORAGE_ERROR, "invalid persisted download task", { index = index })
         end
         rawset(task, "created_at", created_at)
@@ -656,7 +659,7 @@ function DownloadManager:_download(task, source, chapters, index)
     if index > #chapters then
         if task.kind == "cache" then
             local saved, save_error = self.offline_cache:writeCatalog(task.source_id, task.book_id,
-                { chapters = chapters, complete = true })
+                { chapters = task.chapters, complete = true })
             if not saved then return self:_fail(task, save_error) end
             return self:_terminal(task, "completed")
         end
@@ -679,7 +682,11 @@ end
 
 function DownloadManager:_with_chapters(task, source, values)
     local chapters = {}
-    for _, chapter in ipairs(values or {}) do
+    if task.end_index and task.end_index > #(values or {}) then
+        return self:_fail(task, Errors.new(Errors.INVALID_INPUT, "selected ending chapter is outside the catalog"))
+    end
+    for index, chapter in ipairs(values or {}) do
+        if task.end_index and index > task.end_index then break end
         if type(chapter) == "table" then
             if chapter.vip == true and task.kind == "cache" then
                 return self:_fail(task, Errors.new(Errors.INVALID_INPUT, "VIP chapters cannot be fully cached"))
@@ -701,7 +708,7 @@ function DownloadManager:_catalog(task, source)
         values = self.storage:listChapters(task.book_id)
         if type(values) == "table" and #values == 0 then values = nil end
     end
-    if values and #values > 0 then return self:_with_chapters(task, source, values) end
+    if task.kind ~= "cache" and values and #values > 0 then return self:_with_chapters(task, source, values) end
     local generation = task.generation
     return self:_request(task, generation, function(callback)
         return self.service:getChapters(source, task.book, callback,
@@ -710,6 +717,18 @@ function DownloadManager:_catalog(task, source)
         if err or type(chapters) ~= "table" then return self:_fail(task, err) end
         if task.kind == "cache" and (not metadata or metadata.catalog_complete ~= true) then
             return self:_fail(task, Errors.new(Errors.PARSE_ERROR, "download catalog is incomplete"))
+        end
+        if task.kind == "cache" and values and #values > 0 then
+            local changed = #values ~= #chapters
+            if not changed then
+                for index, previous in ipairs(values) do
+                    if previous.uid ~= chapters[index].uid then changed = true; break end
+                end
+            end
+            if changed then
+                return self:_terminal(task, "failed", Errors.new(Errors.INVALID_INPUT,
+                    "目录已变化，请从书籍详情重新选择缓存范围"))
+            end
         end
         local persisted, persist_error = self.storage:replaceChapters(task.book_id, chapters)
         if not persisted then return self:_fail(task, persist_error) end
@@ -754,7 +773,7 @@ function DownloadManager:_schedulePump()
     else self:_pump() end
 end
 
-function DownloadManager:enqueue(book, chapters, callback, kind)
+function DownloadManager:enqueue(book, chapters, callback, kind, end_index)
     if type(chapters) == "function" then callback, chapters = chapters, nil end
     if self.persistence_blocked then return nil, self.init_error end
     if kind == "cache" and not self.offline_cache then
@@ -764,6 +783,10 @@ function DownloadManager:enqueue(book, chapters, callback, kind)
         return nil, Errors.new(Errors.INVALID_INPUT, "download requires a normalized book")
     end
     if chapters ~= nil and type(chapters) ~= "table" then return nil, Errors.new(Errors.INVALID_INPUT, "chapters must be a table") end
+    if end_index ~= nil and (kind ~= "cache" or type(end_index) ~= "number"
+        or end_index < 1 or end_index % 1 ~= 0 or end_index >= MAX_SAFE_QUEUE_SEQUENCE) then
+        return nil, Errors.new(Errors.INVALID_INPUT, "ending chapter must be a positive integer")
+    end
     self.sequence = self.sequence + 1
     local created = self.now()
     local id = "download-" .. Identity.hash(book.id .. "\n" .. tostring(created) .. "\n" .. tostring(self.sequence))
@@ -771,7 +794,7 @@ function DownloadManager:enqueue(book, chapters, callback, kind)
     local next_queue_sequence, sequence_allocation_error = self:_nextQueueSequence()
     if not next_queue_sequence then return self:_blockSequenceAllocation(sequence_allocation_error) end
     local task = { id = id, book_id = book.id, source_id = book.source_id, book = copy(book), chapters = copy(chapters),
-        kind = kind,
+        kind = kind, end_index = end_index,
         status = "queued", total = 0, completed = 0, failed = 0, current = nil, cancel_requested = false,
         created_at = created, updated_at = created, queue_sequence = next_queue_sequence,
         final_path = kind ~= "cache" and (self.output_root .. "/" .. EpubBuilder.exportFilename(book)) or nil,
@@ -785,8 +808,9 @@ function DownloadManager:enqueue(book, chapters, callback, kind)
     return copy(task)
 end
 
-function DownloadManager:enqueueCache(book, callback)
-    return self:enqueue(book, nil, callback, "cache")
+function DownloadManager:enqueueCache(book, callback, end_index)
+    if type(callback) == "number" and end_index == nil then end_index, callback = callback, nil end
+    return self:enqueue(book, nil, callback, "cache", end_index)
 end
 
 function DownloadManager:isCached(book)

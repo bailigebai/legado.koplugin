@@ -335,6 +335,44 @@ do
 end
 
 do
+    local entries = {}
+    for index = 1, 5 do entries[index] = chapter(book_two, index) end
+    local manager, state = manager_fixture({ offline = true })
+    local task = assert(manager:enqueueCache(book_two, nil, 3))
+    equal(3, task.end_index, "selected ending chapter is persisted in the task")
+    state.service.catalog_pending[1].callback(entries, nil, { catalog_complete = true })
+    equal(3, manager:get(task.id).total, "partial progress covers chapter one through the ending chapter")
+    for index = 1, 3 do
+        equal(entries[index].uid, state.service.requested[index], "partial cache requests chapters in order")
+        state.service.pending[index].callback({ content = "<p>chapter</p>" }, nil)
+    end
+    equal("completed", manager:get(task.id).status, "selected range completes")
+    equal(3, #state.service.requested, "chapters beyond the ending chapter are not fetched")
+    equal(5, #state.offline_cache.catalogs[book_two.source_id .. "/" .. book_two.id].chapters,
+        "offline reading retains the full catalog")
+    equal(false, manager:isCached(book_two), "partial cache never sets the full-book cover marker")
+    local restarted = manager_fixture({ offline = true, initial = state.storage_adapter:listDownloadTasks() })
+    equal(3, restarted:get(task.id).end_index, "range survives manager restart")
+    local invalid = manager:enqueueCache(book_two, nil, 0)
+    equal(nil, invalid, "chapter zero cannot be selected")
+end
+
+do
+    local entries = { chapter(book_two, 1), chapter(book_two, 2), chapter(book_two, 3) }
+    local manager, state = manager_fixture({ offline = true })
+    local task = assert(manager:enqueueCache(book_two, nil, 2))
+    state.service.catalog_pending[1].callback(entries, nil, { catalog_complete = true })
+    truthy(manager:cancel(task.id), "running range can be cancelled")
+    truthy(manager:retry(task.id), "cancelled range can be retried")
+    local changed = { entries[1], chapter(book_two, 9), entries[3] }
+    state.service.catalog_pending[2].callback(changed, nil, { catalog_complete = true })
+    equal("failed", manager:get(task.id).status, "changed catalog blocks stale range retry")
+    equal("目录已变化，请从书籍详情重新选择缓存范围", manager:get(task.id).error.message,
+        "changed catalog gives a safe next step")
+    equal(1, #state.service.requested, "changed catalog starts no new body request")
+end
+
+do
     local many = {}
     local cached = {}
     for index = 1, 1200 do

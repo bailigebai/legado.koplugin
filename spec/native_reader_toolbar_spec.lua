@@ -15,15 +15,22 @@ dofile=function(path)
 end
 local ReaderMenu=require('apps/reader/modules/readermenu')
 local reader={document={file='chapter.html'},onClose=function() end,handleEvent=function() end}
+reader.highlight={selected_text={text='庄周梦蝶'},onClose=function() end,
+    addToHighlightDialog=function(self,key,button) self[key]=button end,
+    removeFromHighlightDialog=function(self,key) self[key]=nil end}
 reader.menu=ReaderMenu:new{ui=reader}
 local Adapter=require('legado.lib.koreader_reader_ui')
-local toc_calls,toggle_calls=0,0
+local toc_calls,toggle_calls,ai_text=0,0,nil
 local review_calls, site_calls, chrome_calls, receipt_calls,statistics_calls = 0, 0, 0, 0,0
 local adapter=Adapter.new{ReaderUI={showReader=function(_,_,_,_,_,ready) ready(reader) end},on_toc=function() toc_calls=toc_calls+1 end,
     on_review=function() review_calls=review_calls+1 end,on_receipt=function() receipt_calls=receipt_calls+1 end,on_source_sites=function() site_calls=site_calls+1 end,
     on_chrome_settings=function() chrome_calls=chrome_calls+1 end,on_statistics=function() statistics_calls=statistics_calls+1 end,
-    on_toggle_reader=function() toggle_calls=toggle_calls+1;return true end}
+    on_toggle_reader=function() toggle_calls=toggle_calls+1;return true end,
+    on_ai=function(text) ai_text=text;return true end}
 adapter:openDocument('chapter.html',{end_of_book=function() end})
+eq('function',type(reader.highlight['11_legado_ai']),'native highlight dialog offers AI explanation')
+reader.highlight['11_legado_ai'](reader.highlight).callback()
+eq('庄周梦蝶',ai_text,'native selection is delivered to AI')
 reader.menu:setUpdateItemTable()
 eq(true,reader.menu.tab_item_table[1].legado_reader,'unmodified native menu sorter exposes toolbar first')
 eq(9,#reader.menu.tab_item_table[1],'native tab includes both reader mode and existing tools')
@@ -58,4 +65,6 @@ eq('书源书架',shelf.layout[1][2].text,'local shelf switch stays in header')
 eq(true,shelf.content:getSize().h<=shelf.content_height,'local twelve-cover shelf fits native 600x800 layout')
 local progress=LibraryScreen.new{title='正在准备章节',compact=true,progress=.25,items={},navigation={}}
 eq(true,progress.content:getSize().h<=progress.content_height,'native progress widget fits loading screen')
+reader:onClose()
+eq(nil,reader.highlight['11_legado_ai'],'AI action is removed when plugin reader closes')
 return count

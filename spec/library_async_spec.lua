@@ -84,11 +84,11 @@ for index = 1, 7 do books[index] = { id = index, name = "Book " .. index } end
 local shelf = Shelf.new({ storage = { listShelf = function() return books end } })
 local second = shelf:page(2, "text", 3)
 A.equal("Book 4", second.items[1].title, "shelf page-size override advances one card screen")
-local requested_size
+local requested_mode
 presenter:_shelf({
     kind = "bookshelf",
-    page = function(_, _, _, size) requested_size = size; return { page = 1, page_count = 1, items = {} } end,
+    page = function(_, _, mode) requested_mode = mode; return { page = 1, page_count = 1, items = {} } end,
 })
-A.equal(12, requested_size, "presenter requests one twelve-book grid from shelf storage")
+A.equal("hero", requested_mode, "presenter requests the homepage plus later twelve-book pages")
 
 return 8

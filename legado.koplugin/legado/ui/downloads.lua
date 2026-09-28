@@ -54,11 +54,16 @@ function Downloads:refresh()
         local progress = total > 0 and (" · " .. completed .. "/" .. total) or ""
         if total > 0 then progress = progress .. " · " .. tostring(math.floor(completed * 100 / total)) .. "%" end
         local kind = task.kind == "cache" and "章节缓存" or "EPUB 导出"
+        if task.kind == "cache" and task.end_index then
+            kind = kind .. " · 第 1 至 " .. tostring(task.end_index) .. " 章"
+        end
         local failures = (tonumber(task.failed) or 0) > 0 and (" · 失败 " .. tostring(task.failed)) or ""
         local warning = (task.warning or task.published_diagnostic) and " · 警告" or ""
+        local catalog_changed = task.error and task.error.message == "目录已变化，请从书籍详情重新选择缓存范围"
+        local next_step = catalog_changed and " · 目录已变化，请重新选择" or ""
         items[#items + 1] = { task = task, text = tostring(task.book and task.book.name or task.book_id or "未命名")
             .. " · " .. kind
-            .. " · " .. (labels[task.status] or tostring(task.status or "未知")) .. progress .. failures .. warning }
+            .. " · " .. (labels[task.status] or tostring(task.status or "未知")) .. progress .. failures .. warning .. next_step }
     end
     self.items = items
     self.navigation:setCount(#items)

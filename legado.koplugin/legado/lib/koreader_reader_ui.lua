@@ -20,6 +20,7 @@ function Adapter.new(options)
         on_source_sites = options.on_source_sites,
         on_chrome_settings = options.on_chrome_settings,
         on_review=options.on_review,on_receipt=options.on_receipt,on_statistics=options.on_statistics,
+        on_ai=options.on_ai,
         on_toggle_reader=options.on_toggle_reader,on_book_info=options.on_book_info,on_add_to_shelf=options.on_add_to_shelf,
         ui_manager=options.ui_manager,
         settings = options.settings }, Adapter)
@@ -380,6 +381,21 @@ function Adapter:openDocument(path, callbacks)
             for _,tab in ipairs(reader.menu.tab_item_table or {}) do remember(tab,{'callback'}) end
         end
         self:_attachMenu(reader, proxy, callbacks)
+        if self.on_ai and reader.highlight and type(reader.highlight.addToHighlightDialog)=='function' then
+            reader.highlight:addToHighlightDialog('11_legado_ai', function(highlight)
+                return {text='AI 解释',callback=function()
+                    local selected=highlight.selected_text and highlight.selected_text.text
+                    if type(selected)~='string' or selected=='' then return false end
+                    if highlight.onClose then highlight:onClose() end
+                    return self.on_ai(selected,proxy)
+                end}
+            end)
+            rollbacks[#rollbacks+1]=function()
+                if reader.highlight and reader.highlight.removeFromHighlightDialog then
+                    reader.highlight:removeFromHighlightDialog('11_legado_ai')
+                end
+            end
+        end
         self:applyTouchZones(reader,proxy)
         if self.settings then self:applyProgressBar(reader) end
         proxy.flushProgress=function() if callbacks and callbacks.flush then return callbacks.flush(proxy) end end
@@ -442,6 +458,9 @@ function Adapter:openDocument(path, callbacks)
             reader.onClose = function(instance, ...)
                 if proxy.closed then return end
                 proxy.closed = true
+                if self.on_ai and reader.highlight and type(reader.highlight.removeFromHighlightDialog)=='function' then
+                    reader.highlight:removeFromHighlightDialog('11_legado_ai')
+                end
                 if self.current_document==proxy then self.current_document=nil end
                 if proxy.chrome then proxy.chrome:close() end
                 if callbacks and callbacks.close then pcall(callbacks.close,proxy) end

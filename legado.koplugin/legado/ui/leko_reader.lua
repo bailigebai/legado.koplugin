@@ -864,7 +864,25 @@ function View:onSwipe(_,ges) return safe_event(self, function()
     if ges and ges.direction=='east' then return self:previousPage() end
     return self:showMenu()
 end) end
-function View:onHold() return safe_event(self, function() return self:showMenu() end) end
+function View:onHold(_,ges) return safe_event(self,function()
+    local y=ges and ges.pos and tonumber(ges.pos.y)
+    if self.callbacks.ai and y and self.page and self.page.geometry then
+        local geometry=self.page.geometry
+        local top=geometry.body_top+geometry.header_height
+        for _,element in ipairs(self.page.elements or {}) do
+            if element.type=='gap' then top=top+element.height
+            else
+                top=top+(element.top_gap or 0)
+                if element.type=='line' and y>=top and y<top+element.height then
+                    local selected=tostring(element.text or ''):match('^%s*(.-)%s*$')
+                    if selected~='' then return self:_call('ai',selected) end
+                end
+                top=top+element.height+(element.bottom_gap or 0)
+            end
+        end
+    end
+    return self:showMenu()
+end) end
 function View:onReaderMenu() return safe_event(self, function() return self:showMenu() end) end
 function View:onPageForward() return safe_event(self, function() self:_resumeIfVisible();return self:nextPage() end) end
 function View:onPageBackward() return safe_event(self, function() self:_resumeIfVisible();return self:previousPage() end) end

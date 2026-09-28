@@ -15,10 +15,9 @@ end
 local menu = {}
 Plugin:addToMainMenu(menu)
 for _, item in ipairs(menu.legado.sub_item_table) do item.callback() end
-for index, method in ipairs(methods) do
-    assertx.equal(method, calls[index], "menu dispatches to " .. method)
-end
+assertx.equal(1, #menu.legado.sub_item_table, "native menu has one bookshelf entry")
+assertx.equal("openBookshelf", calls[1], "native menu opens the grouped bookshelf")
 assertx.equal("openBookshelf", Plugin:openBookshelf(), "public shelf entry delegates to app")
 assertx.equal("openHome", Plugin:launch(), "stable launch entry opens home")
 
-return 11
+return 4

@@ -42,7 +42,8 @@ function Bootstrap.build(plugin, options)
     local LicenseStore = require("legado.lib.license_store")
     local license = License.new({ store = LicenseStore.new(settings) })
     local storage, service, source_manager, cover_loader, reader_session, download_manager, root, local_library
-    local offline_cache
+    local requests, weread_auth, weread_client, weread_service, ai_service
+    local offline_cache,cache_management
     local presenter
     local DataStorage = optional("datastorage")
     local fs = options.fs or Fs.new()
@@ -69,7 +70,16 @@ function Bootstrap.build(plugin, options)
             local RequestEngine = require("legado.lib.request_engine")
             local UrlTemplate = require("legado.lib.url_template")
             local BookService = require("legado.lib.book_service")
-            local requests = RequestEngine.new({ scheduler = UIManager, settings = settings })
+            requests = RequestEngine.new({ scheduler = UIManager, settings = settings })
+            ai_service = require("legado.lib.ai_service").new({
+                requests = RequestEngine.new({ scheduler = UIManager, settings = settings, max_timeout = 90 }),
+                fs = fs, settings = settings,
+            })
+            local weread_requests = RequestEngine.new({scheduler=UIManager,settings=settings,max_timeout=90})
+            weread_auth = require("legado.lib.weread_session").new({ requests = weread_requests, fs = fs,
+                path = root .. "/weread-session.json" })
+            weread_client = require("legado.lib.weread_client").new({ requests = weread_requests, auth = weread_auth })
+            weread_service = require('legado.lib.weread_service').new(weread_client)
             local templates = UrlTemplate.new({ rule_engine = rules })
             service = BookService.new({ storage = storage, rule_engine = rules, request_engine = requests, url_template = templates, settings = settings })
             local diagnostics = require("legado.lib.diagnostics").new({ book_service = service })
@@ -104,13 +114,25 @@ function Bootstrap.build(plugin, options)
                 offline_cache = CacheStore.new({ fs = fs, root = offline_root, quarantine = false })
                 if offline_cache.init_error then offline_cache = nil end
             end
+            cache_management = require('legado.lib.cache_management').new({
+                reading=cache,offline=offline_cache,fs=fs,covers_root=root..'/covers',cover_loader=loader })
             local reader_ui = ReaderUIAdapter.new({settings=settings,ui_manager=UIManager})
             local Statistics=optional('legado.lib.koreader_statistics')
             local native=plugin.ui and plugin.ui.statistics
             local statistics=Statistics and Statistics.new{settings=native and native.settings or {is_enabled=false}}
             local statistics_warned=false
+            local reader_service={
+                getContent=function(_,source,...)
+                    if source and source.id=='weread' then return weread_service:getContent(source,...) end
+                    return service:getContent(source,...)
+                end,
+                getChapters=function(_,source,...)
+                    if source and source.id=='weread' then return weread_service:getChapters(source,...) end
+                    return service:getChapters(source,...)
+                end,
+            }
             reader_session = ReaderSession.new({ cache = cache, offline_cache = offline_cache, storage = storage,
-                service = service, ui = reader_ui, settings = settings, scheduler = UIManager,statistics=statistics,
+                service = reader_service, ui = reader_ui, settings = settings, scheduler = UIManager,statistics=statistics,
                 timing=function(metric)
                     local logger=optional('logger')
                     if logger and logger.dbg then
@@ -168,6 +190,12 @@ function Bootstrap.build(plugin, options)
         cover_loader = cover_loader,
         reader_session = reader_session,
         download_manager = download_manager,
+        weread_auth = weread_auth,
+        weread_client = weread_client, weread_shelf_path = root and (root .. "/weread-shelf.json") or nil,
+        weread_service = weread_service,
+        ai_service = ai_service,
+        cache_management = cache_management,
+        presenter = presenter,
         fs = fs,
         default_download_cache_dir = default_download_cache_dir,
         validate_download_cache_dir = default_download_cache_dir and function(path)
@@ -201,6 +229,7 @@ function Bootstrap.build(plugin, options)
         reader_session.ui.on_toggle_reader = function(doc) return app:toggleImmersiveReader(doc) end
         reader_session.ui.on_book_info = function(doc) return app:openReaderBookInfo(doc) end
         reader_session.ui.on_add_to_shelf = function(doc) return app:addReaderToShelf(doc) end
+        reader_session.ui.on_ai = function(text, doc) return app:explainSelection(text, doc) end
     end
     if shared then Bootstrap.active_app=app end
     return app

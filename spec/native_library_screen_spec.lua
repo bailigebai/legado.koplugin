@@ -153,6 +153,17 @@ local function books(amount)
     local result={}; for index=1,amount do result[index]={book={id=tostring(index)},title="Book "..index,
         subtitle="Author "..index,intro="Intro "..index} end; return result
 end
+local hero_items=books(5)
+hero_items[1].hero=true
+local hero_screen=LibraryScreen.new{title="最近阅读",items=hero_items,mode="shelf_hero",compact=true,
+    hero_action={text="继续阅读",callback=noop},actions={{text="找书",callback=noop},
+        {text="整理书架",callback=noop},{text="书源与下载",callback=noop},{text="更多",callback=noop}}}
+equal(5,#hero_screen.cells,"homepage keeps one large card and four cover cards")
+equal(1,#hero_screen.layout[2],"large card owns its focus row")
+equal(4,#hero_screen.layout[4],"four remaining covers share one row")
+equal(130,hero_screen.cells[1].cover:getSize().w,"homepage cover is visibly larger")
+equal("Intro 1",hero_screen.cells[1].intro_widget.text,"homepage summary is visible")
+equal(hero_screen.content_height,hero_screen.content:getSize().h,"hero page fits its fixed screen height")
 local categories={{text="全部",active=true,callback=noop},{text="在读",callback=noop},
     {text="未读",callback=noop},{text="分类",callback=noop}}
 local grid = LibraryScreen.new{title="书架",subtitle="第 1/2 页",items=books(12),mode="grid",compact=true,

@@ -1,5 +1,15 @@
 # Third-Party Notices
 
+## Adapted WeRead chapter protocol
+
+`legado.koplugin/legado/lib/weread_protocol.lua` adapts the chapter ID encoding,
+request signature and shard decoding algorithms from
+[AnkioTomas/moon](https://github.com/AnkioTomas/moon), tree
+`e0af48d2ae27db3605ec91844775a69d5207c448`, under AGPL-3.0-or-later.
+This plugin uses its own session, request and reader modules. The modified
+protocol source is distributed in the installation archive; the AGPL terms are
+in the root `LICENSE`.
+
 | Dependency | Exact source revision | License | Vendored runtime files |
 | --- | --- | --- | --- |
 | [msva/lua-htmlparser](https://github.com/msva/lua-htmlparser) | commit `5ce9a775a345cf458c0388d7288e246bb1b82bff` | LGPL-3.0 with the upstream iOS relinking exception | `legado.koplugin/legado/vendor/htmlparser/` |

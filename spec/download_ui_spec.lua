@@ -15,6 +15,7 @@ local tasks = {
       published_diagnostic = { code = "STORAGE_ERROR", message = "EPUB published with a cleanup warning" } },
     { id = "old", book = { name = "中断书" }, status = "interrupted", completed = 1, total = 2 },
     { id = "offline-done", kind = "cache", book = { name = "离线书" }, status = "completed", completed = 5, total = 5 },
+    { id = "partial", kind = "cache", end_index = 18, book = { name = "部分缓存" }, status = "queued", completed = 0, total = 18 },
 }
 local calls = {}
 local manager = {
@@ -30,10 +31,11 @@ local manager = {
 do
     local view = Downloads.new({ manager = manager })
     equal("downloads", view.kind, "download manager view has stable kind")
-    equal(5, #view.items, "download history is listed")
+    equal(6, #view.items, "download history is listed")
     truthy(view.items[1].text:find("2/5", 1, true), "active progress is visible")
     truthy(view.items[1].text:find("40%%"), "cache task shows a percentage")
     truthy(view.items[1].text:find("章节缓存", 1, true), "cache task is distinguished from EPUB export")
+    truthy(view.items[6].text:find("第 1 至 18 章", 1, true), "partial cache range is visible")
     truthy(view.items[2].text:find("失败", 1, true), "failure state is visible")
     truthy(view.items[3].text:find("完成", 1, true), "completion state is visible")
     truthy(view.items[3].text:find("警告", 1, true), "published cleanup diagnostic is visible without marking failure")
@@ -120,6 +122,44 @@ do
         truthy(item.text ~= "导出 EPUB" and item.text ~= "缓存整本（离线阅读）",
             "local documents do not show source-download actions")
     end
+end
+
+do
+    local shown, selected = {}, nil
+    local ui = { show = function(_, widget) shown[#shown + 1] = widget end }
+    local range_manager = { enqueueCache = function(_, _, _, ending)
+        selected = ending; return { id = "partial", status = "queued" }
+    end }
+    local app = App.new({ download_manager = range_manager })
+    local detail = app:createBookDetail({ id = "range-book", source_id = "range-source", name = "选章缓存" })
+    local chapters = {}
+    for index = 1, 45 do chapters[index] = { uid = "c" .. index, index = index, title = "第" .. index .. "章" } end
+    detail.catalog_lookup = function() return chapters end
+    local presenter = Presenter.new({ app = app, ui_manager = ui,
+        input_dialog = { new = function(_, options) return options end } })
+    local detail_menu = presenter:show(detail)
+    for _, action in ipairs(detail_menu.actions) do
+        if action.text == "更多" then action.callback(); break end
+    end
+    local partial
+    for _, action in ipairs(shown[#shown].items) do
+        if action.text == "缓存部分章节" then partial = action; break end
+    end
+    truthy(partial, "detail offers a partial chapter cache action")
+    partial.callback()
+    local catalog_menu = shown[#shown]
+    equal("选择缓存截至章节", catalog_menu.title, "partial cache opens chapter selector")
+    local jump
+    for _, action in ipairs(catalog_menu.actions or {}) do
+        if action.text == "跳转章节" then jump = action; break end
+    end
+    truthy(jump, "chapter selector supports fast jump")
+    jump.callback()
+    shown[#shown].buttons[1][2].callback("37")
+    catalog_menu = shown[#shown]
+    equal(3, catalog_menu.page, "jump opens the requested chapter page")
+    catalog_menu.items[7].callback()
+    equal(37, selected, "selected chapter is passed as the inclusive range end")
 end
 
 do

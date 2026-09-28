@@ -1,5 +1,6 @@
 local Presenter = {}
 Presenter.__index = Presenter
+local ShelfMenu = require("legado.ui.shelf_menu")
 
 local function optional(name)
     local ok, value = pcall(require, name)
@@ -90,6 +91,7 @@ function Presenter.new(options)
         menu = options.menu or optional("ui/widget/menu"),
         info_message = options.info_message or optional("ui/widget/infomessage"),
         input_dialog = options.input_dialog or optional("ui/widget/inputdialog"),
+        qr_message = options.qr_message or optional("ui/widget/qrmessage"),
         detail_factory = options.detail_factory,
         app = options.app, cover_loader = options.cover_loader,
         library_screen_factory = options.library_screen_factory or function(opts) return require("legado.ui.library_screen").new(opts) end,
@@ -336,16 +338,6 @@ function Presenter:_leaveLibrary(keep)
     self.controllers, self.library_view, self.library_subpage = {}, nil, nil
 end
 
-function Presenter:_navigation()
-    local items = {}
-    if self.app then
-        for _,entry in ipairs({{"书架", "openBookshelf"}, {"阅读回顾", "openReadingReview"}, {"发现", "openDiscovery"}}) do
-            items[#items+1] = {text=entry[1], callback=function() return self.app[entry[2]](self.app) end}
-        end
-    end
-    return items
-end
-
 function Presenter:_library(view, options)
     self:_ensureBackdrop()
     self.library_view = view
@@ -357,7 +349,7 @@ function Presenter:_library(view, options)
     local covers_enabled = view.covers_enabled ~= false
         and (not self.app or not self.app.settings or self.app.settings:get("covers_enabled") ~= false)
     display.cover_loader = covers_enabled and (self.cover_loader or (self.app and self.app.cover_loader) or view.cover_loader) or nil
-    display.navigation = options.navigation or self:_navigation()
+    display.navigation = options.navigation or {}
     local local_back = options.on_back
     local back = local_back or view._back
     if not back and (view.kind=='bookshelf' or view.kind=='home') then
@@ -393,59 +385,12 @@ function Presenter:_library(view, options)
     display.items, display.page, display.page_count = slice, page, pages > 1 and pages or nil
     display.on_prev = not options.already_paginated and page > 1 and function() return render(page-1) end or original_prev
     display.on_next = not options.already_paginated and page < pages and function() return render(page+1) end or original_next
-    if not options.secondary then
+    if options.grouped_actions then
+        display.actions = options.actions or {}
+    elseif not options.secondary then
         local primary, more = {}, {}
         for index,action in ipairs(options.actions or {}) do
             if index == 1 then primary[1] = action else more[#more+1] = action end
-        end
-        if view.kind=='bookshelf' or view.kind=='home' then
-            more[#more+1]={text='检查更新',callback=function() return self:_checkUpdates(view) end}
-            more[#more+1]={text='编辑分类',callback=function() return self:_editCategories(function()
-                if view.kind=='home' then return self:_home(view) end
-                return self:_shelf(view,1)
-            end) end}
-            if view.kind == 'bookshelf' then
-                if view.batch_select then
-                    more[#more+1] = {text='批量分类',callback=function()
-                        local selected = {}
-                        local selected_count = 0
-                        for id, enabled in pairs(view.selected_books or {}) do
-                            if enabled then selected[id] = true; selected_count = selected_count + 1 end
-                        end
-                        if selected_count == 0 then return self:_info('请先选择要分类的书籍。', '批量分类') end
-                        local books = {}
-                        for _, book in ipairs(view.storage and view.storage.listShelf and view.storage:listShelf() or {}) do
-                            if selected[book.id] then
-                                local copy = {}
-                                for key, value in pairs(book) do
-                                    if key == 'custom_categories' and type(value) == 'table' then
-                                        copy[key] = {}
-                                        for index, name in ipairs(value) do copy[key][index] = name end
-                                    else copy[key] = value end
-                                end
-                                books[#books + 1] = copy
-                            end
-                        end
-                        return self:_editCategories(function() return self:_shelf(view, page) end, nil, books)
-                    end}
-                    more[#more+1] = {text='退出批量选择',callback=function()
-                        view.batch_select, view.selected_books = false, {}
-                        return self:_shelf(view, page)
-                    end}
-                else
-                    more[#more+1] = {text='批量选择',callback=function()
-                        view.batch_select, view.selected_books = true, view.selected_books or {}
-                        return self:_shelf(view, page)
-                    end}
-                end
-            end
-        end
-        if self.app then
-            for _,entry in ipairs({{"阅读回顾","openReadingReview"},{"书源管理","openSources"},{"下载管理","openDownloads"},{"设置","openSettings"},{"关于","openAbout"}}) do
-                if type(self.app[entry[2]]) == "function" then
-                    more[#more+1] = {text=entry[1],callback=function() return self.app[entry[2]](self.app) end}
-                end
-            end
         end
         if #more > 0 then
             primary[#primary+1] = {text="更多",callback=function()
@@ -453,7 +398,6 @@ function Presenter:_library(view, options)
                     on_back=function()
                         if view.kind == "book_detail" then return self:_detail(view) end
                         if view.kind == "search" then return self:_search_results(view) end
-                        if view.kind == "bookshelf" then return self:_shelf(view,page) end
                         return render(page)
                     end})
             end}
@@ -492,17 +436,164 @@ function Presenter:_home(view)
         elseif action.text == "下载管理" or action.text == "设置" then actions[#actions+1]=action end
     end
     return self:_library(view, {title="不亦阅乎", subtitle="最近阅读 · 独立图书库", items=items, mode="cards",
-        actions=actions, navigation=self.app and self:_navigation() or model.actions,
+        actions=actions, navigation={},
         empty_text="还没有最近阅读的书，搜索书名即可从各书源找书。"})
+end
+
+function Presenter:_weread(view)
+    local model = view:page(view.display_page)
+    local items = {}
+    for index, book in ipairs(model.items) do
+        items[#items + 1] = { book = book, title = book.name, subtitle = book.author,
+            intro = index == 1 and model.page == 1 and book.intro or nil,
+            hero = index == 1 and model.page == 1, cover_url = book.cover_url,
+            callback = function() return self:_wereadBook(view, book) end }
+    end
+    if #items == 0 then items[1] = { text = view.status, enabled = false } end
+    local actions = {}
+    actions[#actions + 1] = { text = "同步书架", enabled = view.client ~= nil, callback = function()
+        return view:sync(function() if view.alive and self.library_view == view then self:_weread(view) end end)
+    end }
+    actions[#actions + 1] = { text = "书城发现", enabled = view.client ~= nil, callback = function()
+        view.store_keyword, view.store_results = nil, nil
+        return self:_wereadStore(view)
+    end }
+    actions[#actions + 1] = { text = "微信扫码登录", enabled = view.auth ~= nil, callback = function()
+        return view:start(function(qr)
+            local widget
+            widget = construct(self.qr_message, { text = qr.payload, timeout = 300,
+                dismiss_callback = function()
+                    if view.qr_widget ~= widget then return end
+                    view.qr_widget = nil
+                    view:cancel()
+                    if self.library_view == view then self:_weread(view) end
+                end })
+            view.qr_widget = widget
+            self:_show(widget)
+        end, function(success)
+            local widget = view.qr_widget
+            if widget then
+                view.qr_widget = nil
+                widget.dismiss_callback = nil
+                self:_closeWidget(widget)
+            end
+            if success then view.synced = false end
+            if self.library_view == view then self:_weread(view) end
+        end)
+    end }
+    local has_books = model.total > 0
+    local widget = self:_library(view, { title = "微信读书", subtitle = view.status,
+        items = items, mode = has_books and model.mode or "list", grouped_actions = true,
+        hero_action = has_books and model.page == 1 and { text = "查看最近阅读", callback = items[1].callback } or nil,
+        grid_columns = 4, grid_rows = 3, already_paginated = true,
+        page = model.page, page_count = model.page_count, actions = actions, navigation = {},
+        on_prev = model.page > 1 and function() view.display_page = model.page - 1; return self:_weread(view) end or nil,
+        on_next = model.page < model.page_count and function() view.display_page = model.page + 1; return self:_weread(view) end or nil,
+        on_back = view._back,
+        empty_text = "微信书架还没有书。扫码登录后可同步书架。" })
+    if not view.synced and view.client and view.auth and view.auth:hasSession() then
+        view:sync(function() if view.alive and self.library_view == view then self:_weread(view) end end)
+    end
+    return self.library_widget or widget
+end
+
+function Presenter:_wereadStore(view)
+    if view.store_keyword then
+        local items = {}
+        for _, book in ipairs(view.store_results or {}) do
+            items[#items + 1] = { book = book, title = book.name, subtitle = book.author,
+                intro = book.intro, cover_url = book.cover_url,
+                callback = function() return self:_wereadBook(view, book) end }
+        end
+        return self:_library(view, { title = "微信书城 · " .. view.store_keyword, items = items,
+            mode = "grid", grid_columns = 4, grid_rows = 3, page_size = 12,
+            subtitle = view.store_loading and "正在搜索…" or view.store_error,
+            empty_text = view.store_loading and "正在加载书城书籍…" or "没有找到书籍，可换个关键词。",
+            on_back = function() view.store_keyword, view.store_results = nil, nil; return self:_wereadStore(view) end })
+    end
+    local items = {}
+    local function search(keyword)
+        view:searchStore(keyword, function()
+            if view.alive and self.library_view == view then self:_wereadStore(view) end
+        end)
+        return self:_wereadStore(view)
+    end
+    for _, label in ipairs({ "科幻", "文学", "历史", "悬疑", "言情" }) do
+        items[#items + 1] = { text = label, callback = function() return search(label) end }
+    end
+    local actions = { { text = "搜索书名", callback = function()
+        local dialog
+        local function accepted(value)
+            if value == nil and dialog and type(dialog.getInputText) == "function" then value = dialog:getInputText() end
+            if type(value) ~= "string" or value:match("^%s*$") then return self:_info("请输入书名", "微信书城") end
+            if not self:_closeWidget(dialog) then return false end
+            return search(value)
+        end
+        dialog = construct(self.input_dialog, { title = "搜索微信书城", input_type = "string",
+            buttons = { { { text = "取消", callback = function() return self:_closeWidget(dialog) end },
+                { text = "确定", is_enter_default = true, callback = accepted } } } })
+        return self:_showInput(dialog)
+    end } }
+    return self:_library(view, { title = "微信书城", items = items, actions = actions,
+        on_back = function() return self:_weread(view) end })
+end
+
+function Presenter:_wereadBook(view, book)
+    local item = { book = book, title = book.name, subtitle = book.author,
+        intro = book.intro, cover_url = book.cover_url }
+    return self:_library(view, { title = "微信读书 · " .. book.name, items = { item }, mode = "detail",grouped_actions=true,
+        subtitle = "阅读进度：" .. tostring(math.floor(tonumber(book.progress_percent) or 0)) .. "%",
+        actions = {
+            {text='开始阅读',callback=function()
+                if not self.app or not self.app.startWeReadReading then return self:_info('微信读书阅读服务不可用') end
+                return self.app:startWeReadReading(book,function(document,err)
+                    if err then self:_info(err.message or '微信读书章节打开失败','微信读书') end
+                end)
+            end},
+            { text = "阅读评论", callback = function() return self:_wereadReviews(view, book) end },
+        },
+        on_back = function() return self:_weread(view) end })
+end
+
+function Presenter:_wereadReviews(view, book)
+    if view.review_book_id == book.remote_id and view.review_rows then
+        local items = {}
+        for _, row in ipairs(view.review_rows) do
+            local outer = type(row) == "table" and (row.review or row) or nil
+            local review = type(outer) == "table" and (outer.review or outer) or nil
+            if type(review) == "table" and (review.bookId == nil or tostring(review.bookId) == book.remote_id) then
+                local content = tostring(review.content or review.reviewContent or "")
+                items[#items + 1] = { text = content ~= "" and content or "无文字评论",
+                    callback = function() return self:_info(content, "微信读书评论") end }
+            end
+        end
+        return self:_library(view, { title = "阅读评论 · " .. book.name, items = items,
+            empty_text = "这本书还没有评论。", on_back = function() return self:_wereadBook(view, book) end })
+    end
+    local widget = self:_library(view, { title = "阅读评论 · " .. book.name,
+        items = { { text = "正在加载评论…", enabled = false } },
+        on_back = function() return self:_wereadBook(view, book) end })
+    if not view.client then return widget end
+    view.review_book_id = book.remote_id
+    view.review_request = view.client:bookReviews(book.remote_id, function(data, err)
+        if not view.alive or self.library_view ~= view or view.review_book_id ~= book.remote_id then return end
+        view.review_request = nil
+        if data then view.review_rows = data.reviews or {}; self:_wereadReviews(view, book)
+        else self:_info(err or "评论加载失败", "微信读书评论") end
+    end)
+    return self.library_widget or widget
 end
 
 function Presenter:_shelf(view, page)
     -- The screen owns cover requests; shelf storage remains the plugin's SQLite library.
-    local model = view:page(page or 1, "text", 12)
+    local model = view:page(page or 1, "hero")
     local items = {}
-    for _,item in ipairs(model.items or {}) do
+    for index,item in ipairs(model.items or {}) do
         local book_item=self:_bookItem(item.book, {item.book}, function() return self:_shelf(view,model.page) end)
-        book_item.subtitle,book_item.intro,book_item.source_count=nil,nil,nil
+        book_item.downloaded=item.downloaded
+        book_item.hero=model.mode=="hero" and model.page==1 and index==1
+        if not book_item.hero then book_item.subtitle,book_item.intro=nil,nil end
+        book_item.source_count=nil
         if view.batch_select then
             local selected = view.selected_books and view.selected_books[item.book.id] == true
             book_item.title = (selected and '✓ ' or '□ ') .. book_item.title
@@ -514,24 +605,6 @@ function Presenter:_shelf(view, page)
         end
         items[#items+1]=book_item
     end
-    local categories={}
-    for _,entry in ipairs({{"全部","all"},{"在读","reading"},{"未读","unread"}}) do
-        categories[#categories+1]={text=entry[1],active=(model.reading_state or "all")==entry[2],callback=function()
-            view:setFilter(entry[2],view.category)
-            return self:_shelf(view,1)
-        end}
-    end
-    categories[#categories+1]={text=model.category or "分类",active=model.category~=nil,callback=function()
-        local choices={{title="全部分类",callback=function() view:setFilter(view.reading_state,nil); return self:_shelf(view,1) end}}
-        for _,category in ipairs(model.categories or {}) do
-            choices[#choices+1]={title=category.name,subtitle=tostring(category.count).." 本",callback=function()
-                view:setFilter(view.reading_state,category.name)
-                return self:_shelf(view,1)
-            end}
-        end
-        return self:_library(view,{title="书架分类",items=choices,secondary=true,subpage="shelf_categories",
-            on_back=function() return self:_shelf(view,model.page) end})
-    end}
     local local_mode=view.source_mode=='local'
     local subtitle = model.warning or (tostring(model.total or #items)..' 本'..(local_mode and '本地书籍' or '收藏'))
     if view.batch_select then
@@ -539,20 +612,26 @@ function Presenter:_shelf(view, page)
         for _, enabled in pairs(view.selected_books or {}) do if enabled then selected_count = selected_count + 1 end end
         subtitle = subtitle .. ' · 已选 ' .. tostring(selected_count) .. ' 本'
     end
-    return self:_library(view,{title=local_mode and '本地书架' or '书架',subtitle=subtitle,items=items,mode="grid",
+    local hero_action
+    if items[1] and items[1].hero and not view.batch_select and self.app then
+        hero_action={text=model.items[1].reading and '继续阅读' or '开始阅读',callback=function()
+            local detail=self.app:createBookDetail(items[1].book,{items[1].book})
+            return self:_startReading(function(complete,progress) return detail:startReading(complete,progress) end,detail)
+        end}
+    end
+    return self:_library(view,{title=local_mode and '本地书架' or '书架',subtitle=subtitle,items=items,
+        mode=model.mode=="hero" and model.page==1 and "shelf_hero" or "grid",hero_action=hero_action,
         header_action={text=local_mode and '书源书架' or '本地书架',callback=function()
             view.source_mode=local_mode and 'sources' or 'local'; view:setFilter('all',nil)
             return self:_shelf(view,1)
         end},
-        grid_columns=4,grid_rows=3,categories=categories,already_paginated=true,page=model.page,page_count=model.page_count,
+        grid_columns=4,grid_rows=3,categories={},already_paginated=true,page=model.page,page_count=model.page_count,
         batch_select=view.batch_select, selected_books=view.selected_books, storage=view.storage,
-        actions={{text=local_mode and '添加目录' or '搜索添加',callback=local_mode and function()
-            if self.app then return self.app:openSettings() end
-        end or view.on_search or function() if self.app then return self.app:openSearch() end end}},
+        actions=ShelfMenu.groups(self,view,model.page),grouped_actions=true,navigation={},
         on_prev=model.page>1 and function() return self:_shelf(view,model.page-1) end or nil,
         on_next=model.page<model.page_count and function() return self:_shelf(view,model.page+1) end or nil,
-        empty_text=local_mode and '还没有本地书籍，点击“添加目录”选择存放小说的文件夹。' or (model.category or (model.reading_state and model.reading_state~="all"))
-            and "这个分类还没有书，可切换分类或搜索添加。" or "书架还是空的，点击“搜索添加”收藏第一本书。"})
+        empty_text=local_mode and '还没有本地书籍，可在“更多 → 设置”添加书籍目录。' or (model.category or (model.reading_state and model.reading_state~="all"))
+            and "这个分类还没有书，可在“整理书架”切换分类或去“找书”。" or "书架还是空的，点击“找书”收藏第一本书。"})
 end
 
 function Presenter:_search_results(view)
@@ -1247,13 +1326,19 @@ function Presenter:_settings(view)
     editable("请求超时：" .. tostring(values.timeout or 20) .. " 秒", "timeout", "1–20 秒")
     editable("并发书源：" .. tostring(values.concurrency or 2), "concurrency", "2–3")
     editable("预取章节：" .. tostring(values.prefetch or 3), "prefetch", "0–10")
-    items[#items+1]={text="书架布局：每页 4 × 3 本",enabled=false}
+    items[#items+1]={text="书架布局：首页 1 + 4 本，后续每页 4 × 3 本",enabled=false}
+    if view.ai_service then items[#items + 1] = { text = "AI 服务设置", callback = function()
+        return self:_aiSettings(view)
+    end } end
     local cache_usage
     if view.cache_usage then
         local ok, result = pcall(view.cache_usage)
         if ok and type(result) == "table" then cache_usage = result end
     end
     items[#items + 1] = { text = string.format("缓存：%.1f MiB（%d 个文件）", (cache_usage and cache_usage.bytes or 0) / 1048576, cache_usage and cache_usage.files or 0), enabled = false }
+    if view.plugin_cache_usage then items[#items+1]={text='插件缓存管理',callback=function()
+        return self:_cacheSettings(view)
+    end} end
     if view.default_download_cache_dir then
         local selected = values.download_cache_dir ~= "" and values.download_cache_dir or view.default_download_cache_dir
         items[#items + 1] = { text = "离线缓存目录：" .. tostring(selected), callback = function()
@@ -1387,6 +1472,127 @@ function Presenter:_settings(view)
     return widget
 end
 
+function Presenter:_aiSettings(view)
+    local values = view:refresh()
+    local provider = values.ai_provider == "mimo" and "mimo" or "deepseek"
+    local items = {}
+    for _, choice in ipairs({ { "DeepSeek", "deepseek" }, { "小米 MiMo", "mimo" } }) do
+        items[#items + 1] = { text = choice[1], callback = function()
+            view:set("ai_provider", choice[2])
+            return self:_aiSettings(view)
+        end }
+    end
+    local function save_key(path)
+        local saved, err = view.ai_service:setKeyFile(view.settings:get("ai_provider"), path)
+        if not saved then return self:_info(err or "密钥文件无效", "AI 服务") end
+        return self:_aiSettings(view)
+    end
+    items[#items + 1] = { text = "选择密钥 JSON 文件", callback = function()
+        local PathChooser = optional("ui/widget/pathchooser")
+        if PathChooser then
+            return self:_show(PathChooser:new{ title = "选择密钥 JSON 文件", select_file = true,
+                select_directory = false, show_files = true,
+                file_filter = function(path) return tostring(path):lower():match("%.json$") ~= nil end,
+                path = (G_reader_settings and G_reader_settings.readSetting
+                    and G_reader_settings:readSetting("home_dir")) or "/mnt/us/documents",
+                onConfirm = save_key })
+        end
+        local dialog
+        local function accepted(path)
+            if path == nil and dialog and type(dialog.getInputText) == "function" then path = dialog:getInputText() end
+            if not self:_closeWidget(dialog) then return false end
+            return save_key(path)
+        end
+        dialog = construct(self.input_dialog, { title = "密钥 JSON 文件路径", input_type = "string",
+            buttons = { { { text = "取消", callback = function() return self:_closeWidget(dialog) end },
+                { text = "确定", is_enter_default = true, callback = accepted } } } })
+        return self:_showInput(dialog)
+    end }
+    items[#items + 1] = { text = "补充提示词", callback = function()
+        local dialog
+        local function accepted(value)
+            if value == nil and dialog and type(dialog.getInputText) == "function" then value = dialog:getInputText() end
+            if type(value) ~= "string" or #value > 2000 then return self:_info("补充提示词不能超过 2000 字节", "AI 服务") end
+            if not self:_closeWidget(dialog) then return false end
+            view:set("ai_prompt_extra", value)
+            return self:_aiSettings(view)
+        end
+        dialog = construct(self.input_dialog, { title = "补充提示词", input = values.ai_prompt_extra or "",
+            multiline = true, buttons = { { { text = "取消", callback = function() return self:_closeWidget(dialog) end },
+                { text = "保存", is_enter_default = true, callback = accepted } } } })
+        return self:_showInput(dialog)
+    end }
+    items[#items + 1] = { text = "测试连接", callback = function()
+        return view.ai_service:testConnection(function(answer, err)
+            self:_info(answer and "AI 连接成功" or (err or "AI 连接失败"), "AI 服务")
+        end)
+    end }
+    local widget
+    widget = self:_modelMenu(view, { title = "AI 服务", item_table = items,
+        close_callback = function()
+            if not self:_closeWidget(widget) then return false end
+            return self:_settings(view)
+        end })
+    return widget
+end
+
+function Presenter:_cacheSettings(view)
+    local usage,err=view.plugin_cache_usage()
+    if not usage then return self:_info('缓存统计失败（'..safe_token(err and err.code,'STORAGE_ERROR')..'）','插件缓存') end
+    local function label(name,value)
+        value=value or {bytes=0,files=0}
+        return string.format('%s：%.1f MiB（%d 个文件）',name,value.bytes/1048576,value.files)
+    end
+    local items={
+        {text=label('全部插件缓存',usage),enabled=false},
+        {text=label('阅读临时缓存',usage.reading),enabled=false},
+        {text=label('离线章节缓存',usage.offline),enabled=false},
+        {text=label('封面缓存',usage.covers),enabled=false},
+    }
+    if view.plugin_cache_clear then items[#items+1]={text='清理全部插件缓存',callback=function()
+        local ConfirmBox=optional('ui/widget/confirmbox')
+        if not ConfirmBox then return false end
+        return self:_show(ConfirmBox:new{text='清理阅读临时文件、离线章节正文和封面？当前阅读文件、书架、阅读进度、密钥及导出的 EPUB 会保留。',
+            ok_callback=function()
+                local result,clear_error=view.plugin_cache_clear()
+                if not result then return self:_info(clear_error and clear_error.code=='DOWNLOAD_ACTIVE'
+                    and '请先取消或完成下载，再清理缓存。' or '缓存清理失败；可稍后重试。','插件缓存') end
+                self:_info('已清理 '..tostring(result.removed or 0)..' 个缓存文件。','插件缓存')
+                return self:_cacheSettings(view)
+            end})
+    end} end
+    local widget
+    widget=self:_modelMenu(view,{title='插件缓存',item_table=items,close_callback=function()
+        if not self:_closeWidget(widget) then return false end
+        return self:_settings(view)
+    end})
+    return widget
+end
+
+function Presenter:explainSelection(service, selected_text)
+    if type(selected_text) ~= 'string' or selected_text == '' or #selected_text > 4000 then
+        return self:_info('请选择不超过 4000 字节的阅读内容。', 'AI 解释')
+    end
+    local dialog
+    local default_extra = service.settings and service.settings:get('ai_prompt_extra') or ''
+    local function accepted(extra)
+        if extra == nil and dialog and type(dialog.getInputText) == 'function' then extra=dialog:getInputText() end
+        if type(extra) ~= 'string' or #extra > 2000 then
+            return self:_info('补充提示词不能超过 2000 字节。', 'AI 解释')
+        end
+        if not self:_closeWidget(dialog) then return false end
+        return service:explain(selected_text, extra, function(answer, err)
+            if not answer then return self:_info(err or 'AI 解释失败', 'AI 解释') end
+            local TextViewer=optional('ui/widget/textviewer')
+            return self:_show(construct(TextViewer or self.info_message, { title='AI 解释', text=answer }))
+        end)
+    end
+    dialog=construct(self.input_dialog, { title='AI 解释 · 补充要求', input=default_extra,
+        multiline=true, buttons={{{text='取消',callback=function() return self:_closeWidget(dialog) end},
+            {text='解释',is_enter_default=true,callback=accepted}}} })
+    return self:_showInput(dialog)
+end
+
 function Presenter:_readingResult(result, err, detail)
     local failure = err
     if not failure and type(result) == "table" and type(result.code) == "string" then failure = result end
@@ -1471,6 +1677,13 @@ function Presenter:_catalog(view)
     local items = {}
     for _, item in ipairs(page_items) do
         items[#items + 1] = { title = tostring(item.index) .. ". " .. item.title .. (item.cached and " ✓" or ""), callback = function()
+            if view.cache_selection then
+                local detail = view._detail
+                local task, err = detail:startCache(item.position)
+                detail._notice = type(task) == "table" and ("已加入第 1 至 " .. tostring(item.position) .. " 章缓存队列")
+                    or ("缓存失败 · " .. safe_token(type(err) == "table" and err.code, "DOWNLOAD_ERROR"))
+                return self:_detail(detail)
+            end
             self:_hideLibrary(); self.library_view = nil
             return self:_startReading(function(complete) return view:select(item.position, complete) end, view._detail)
         end }
@@ -1482,7 +1695,25 @@ function Presenter:_catalog(view)
         { text = view.reverse and "顺序" or "倒叙", callback = function() view:setOrder(not view.reverse); view.display_page = 1; return self:_catalog(view) end },
         { text = "下20页", enabled = page < page_count, callback = function() view.display_page = math.min(page_count, page + 20); return self:_catalog(view) end },
     }
-    return self:_library(view, { title = "目录", subtitle = view.error or view.status, items = items, mode = "list", grid_columns = 2, page = page,
+    if view.cache_selection then actions[#actions + 1] = { text = "跳转章节", callback = function()
+        local dialog
+        local function accepted(value)
+            if value == nil and dialog and type(dialog.getInputText) == "function" then value = dialog:getInputText() end
+            local target = tonumber(value)
+            if not target or target % 1 ~= 0 or target < 1 or target > #view.items then
+                return self:_info("请输入 1 至 " .. tostring(#view.items) .. " 的章节序号。", "跳转章节")
+            end
+            if not self:_closeWidget(dialog) then return false end
+            view.display_page = math.ceil(target / page_size)
+            return self:_catalog(view)
+        end
+        dialog = construct(self.input_dialog, { title = "跳转章节", input_type = "number", buttons = {
+            { { text = "取消", callback = function() return self:_closeWidget(dialog) end },
+                { text = "确定", is_enter_default = true, callback = accepted } },
+        } })
+        return self:_showInput(dialog)
+    end } end
+    return self:_library(view, { title = view.cache_selection and "选择缓存截至章节" or "目录", subtitle = view.error or view.status, items = items, mode = "list", grid_columns = 2, page = page,
         page_count = page_count, page_size = page_size, already_paginated = true, actions = actions,
         empty_text = view.loading and "正在准备目录…" or "目录为空", navigation = {}, secondary = true,
         on_prev = page > 1 and function() view.display_page = page - 1; return self:_catalog(view) end or nil,
@@ -1790,12 +2021,28 @@ function Presenter:_detail(view)
             view._notice=type(task)=="table" and "已加入章节缓存队列" or ("缓存失败 · "..safe_token(type(err)=="table" and err.code,"DOWNLOAD_ERROR"))
             return self:_detail(view)
         end},
+        {text="缓存部分章节",callback=function()
+            view._notice="正在加载目录…"
+            self:_detail(view)
+            return view:loadCatalog(function(catalog,err)
+                if view.alive==false or self.library_view~=view
+                    or (self.library_subpage~="detail" and self.library_subpage~="detail_more") then return end
+                if err or not catalog then
+                    view._notice="目录加载失败 · "..safe_token(err and err.code,"PARSE_ERROR")
+                    return self:_detail(view)
+                end
+                catalog.cache_selection=true
+                catalog.display_page=1
+                catalog._detail=view
+                catalog._back=function() return self:_detail(view) end
+                return self:_catalog(catalog)
+            end)
+        end},
         {text="导出 EPUB",callback=function()
             local task,err=view:startDownload()
             view._notice=type(task)=="table" and "已加入下载队列" or ("下载失败 · "..safe_token(type(err)=="table" and err.code,"DOWNLOAD_ERROR"))
             return self:_detail(view)
         end},
-        {text="阅读回顾",callback=function() return self:_readingReview(view) end},
         {text="阅读小票",callback=function() return self:_readingReceipt(view) end},
         {text="切换站点书源",enabled=self.app~=nil,callback=function()
             return self.app:openReaderSourceSites(nil,nil,view)
@@ -1815,7 +2062,7 @@ function Presenter:_detail(view)
     if book.is_local then
         local local_actions = { actions[1] }
         for _, action in ipairs(actions) do
-            if action.text == "阅读回顾" or action.text == "阅读小票" then
+            if action.text == "阅读小票" then
                 local_actions[#local_actions + 1] = action
             end
         end
@@ -1898,6 +2145,7 @@ function Presenter:_downloads(view)
     local widget
     widget = self:_modelMenu(view, { title = "下载管理", item_table = download_items(self, view),close_callback=function()
         self:_closeWidget(widget);view:close()
+        if view._back then return view._back() end
         if self.app then return self.app:openBookshelf() end
     end })
     view.on_refresh = function(current)
@@ -1941,11 +2189,16 @@ function Presenter:show(view)
         return widget
     end
     if view.kind == "home" then return self:_home(view) end
-    if view.kind == "bookshelf" then return self:_shelf(view, 1, "cover") end
+    if view.kind == "weread" then return self:_weread(view) end
+    if view.kind == "bookshelf" then return self:_shelf(view, view.start_page or 1) end
     if view.kind == "search" then return self:_search(view) end
     if view.kind == "discovery" then return self:_discovery(view) end
     if view.kind == "source_manager" then return self:_sources(view) end
-    if view.kind == "settings" then return self:_settings(view) end
+    if view.kind == "settings" then
+        if view.section=='ai' then return self:_aiSettings(view) end
+        if view.section=='cache' then return self:_cacheSettings(view) end
+        return self:_settings(view)
+    end
     if view.kind == "catalog" then return self:_catalog(view) end
     if view.kind == "reader_sources" then return self:_reader_sources(view) end
     if view.kind == "reader_source_sites" then return self:_reader_sources(view) end

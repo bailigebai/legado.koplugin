@@ -72,7 +72,7 @@ function Shelf:page(page, mode, page_size_override)
     self.generation = self.generation + 1
     local generation = self.generation
     local books, category_counts = {}, {}
-    local read_at, original_order = {}, {}
+    local read_at, read_state, original_order = {}, {}, {}
     local counts = { all = 0, reading = 0, unread = 0 }
     local all_books = {}
     if self.source_mode ~= "local" then for _, book in ipairs(self.storage:listShelf() or {}) do if not book.is_local then all_books[#all_books + 1] = book end end end
@@ -90,6 +90,7 @@ function Shelf:page(page, mode, page_size_override)
             if self.reading_state == "all" or self.reading_state == state then
                 books[#books+1] = book
                 read_at[book] = type(progress) == "table" and (tonumber(progress.updated_at or progress.updatedAt or progress.timestamp) or 0) or 0
+                read_state[book] = state
                 original_order[book] = index
             end
         end
@@ -105,13 +106,17 @@ function Shelf:page(page, mode, page_size_override)
     for name, amount in pairs(category_counts) do categories[#categories+1] = { name = name, count = amount } end
     table.sort(categories, function(a,b) return a.name < b.name end)
     page = math.max(1, math.floor(tonumber(page) or 1))
-    mode = mode == "cover" and self.covers_enabled and "cover" or "text"
+    mode = mode == "hero" and self.covers_enabled and "hero"
+        or mode == "cover" and self.covers_enabled and "cover" or "text"
     local page_size = math.max(1, math.floor(tonumber(page_size_override) or (mode == "cover" and 12 or self.page_size)))
-    local page_count = math.max(1, math.ceil(#books / page_size))
+    local hero = mode == "hero"
+    local page_count = hero and (1 + math.ceil(math.max(0, #books - 5) / 12))
+        or math.max(1, math.ceil(#books / page_size))
     page = math.min(page, page_count)
     local items = {}
-    local first = (page - 1) * page_size + 1
-    local last = math.min(#books, first + page_size - 1)
+    local first = hero and (page == 1 and 1 or 6 + (page - 2) * 12)
+        or (page - 1) * page_size + 1
+    local last = math.min(#books, hero and (page == 1 and 5 or first + 11) or first + page_size - 1)
     for index = first, last do
         local book = books[index]
         local cover_url = trim(book.cover_url)
@@ -121,6 +126,7 @@ function Shelf:page(page, mode, page_size_override)
             cover_text = cover_url == "" and "无封面" or (type(self.cover_loader) == "function" and "封面加载中" or "封面不可用"),
             cover_pending = mode == "cover" and cover_url ~= "" and type(self.cover_loader) == "function",
             downloaded = not book.is_local and type(self.is_cached) == "function" and self.is_cached(book) == true or false,
+            reading = read_state[book] == "reading",
         }
         items[#items + 1] = item
         if item.cover_pending then
@@ -134,7 +140,7 @@ function Shelf:page(page, mode, page_size_override)
             self.cover_handles[#self.cover_handles + 1] = handle
         end
     end
-    self.navigation.columns = mode == "cover" and 4 or 1
+    self.navigation.columns = (mode == "cover" or mode == "hero") and 4 or 1
     self.navigation:setCount(#items)
     return {
         items = items, page = page, page_count = page_count, mode = mode, total = #books,

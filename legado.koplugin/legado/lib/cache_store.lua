@@ -271,12 +271,12 @@ function CacheStore:readHtml(s,b,c)
     return value,path
 end
 function CacheStore:writeCover(s,b,v) return self:_write(s,b,"cover",nil,v) end; function CacheStore:readCover(s,b) return self:_read(s,b,"cover",nil) end
-function CacheStore:clear(keep)
+function CacheStore:clear(keep,include_catalog)
     self.known_bytes=nil
     local files,err=self:_scan();if not files then return nil,err end
     local count=0
     for _,entry in ipairs(files) do
-        if entry.removable and not self:_protected(entry,keep) then
+        if (entry.removable or include_catalog==true) and not self:_protected(entry,keep) then
             local safe,path_error=self:_validatePath(entry.path);if not safe then return nil,path_error end
             local removed,remove_error=self.fs:removeFile(entry.path);if not removed then return nil,remove_error end;count=count+1
         end

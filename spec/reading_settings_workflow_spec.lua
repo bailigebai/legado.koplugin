@@ -108,7 +108,7 @@ local settings_menu = presenter:show(view)
 equal(true, type(settings_menu.item_table[1].callback) == "function", "timeout row is focusable and actionable")
 equal(true, type(settings_menu.item_table[2].callback) == "function", "concurrency row is focusable and actionable")
 equal(true, type(settings_menu.item_table[3].callback) == "function", "prefetch row is focusable and actionable")
-equal("书架布局：每页 4 × 3 本", settings_menu.item_table[4].text, "fixed shelf layout is described without an ineffective page-size setting")
+equal("书架布局：首页 1 + 4 本，后续每页 4 × 3 本", settings_menu.item_table[4].text, "fixed shelf layout is described without an ineffective page-size setting")
 settings_menu.item_table[3].callback()
 if settings_menu.close_callback then settings_menu.close_callback() end
 local prefetch_dialog = shown[#shown]

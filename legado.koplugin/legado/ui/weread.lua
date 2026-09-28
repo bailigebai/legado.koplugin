@@ -1,0 +1,178 @@
+local WeRead = {}
+WeRead.__index = WeRead
+local Json = require("legado.lib.json_codec")
+local Mapper = require("legado.lib.weread_mapper")
+
+local function load_books(fs, path, account_id)
+    if not fs or not path or not account_id then return {} end
+    local raw = fs:readBounded(path, 2 * 1024 * 1024)
+    if type(raw) ~= "string" then return {} end
+    local ok, value = pcall(Json.decode, raw)
+    if not ok or type(value) ~= "table" or value.account_id ~= account_id
+        or type(value.books) ~= "table" or #value.books > 2000 then return {} end
+    local books = {}
+    for _, book in ipairs(value.books) do
+        if type(book) ~= "table" or type(book.id) ~= "string" or type(book.remote_id) ~= "string"
+            or book.source_id ~= "weread" or type(book.name) ~= "string" then return {} end
+        books[#books + 1] = book
+    end
+    return books
+end
+
+function WeRead.new(options)
+    options = options or {}
+    local session = options.auth and type(options.auth.session) == "function" and options.auth:session()
+    local account_id = session and session.vid
+    return setmetatable({ kind = "weread", auth = options.auth, client = options.client,
+        fs = options.fs, path = options.path, account_id = account_id,
+        books = load_books(options.fs, options.path, account_id), synced = false,
+        scheduler = options.scheduler,
+        status = options.auth and options.auth:hasSession() and "已登录" or "未登录",
+        alive = true, generation = 0 }, WeRead)
+end
+
+function WeRead:page(page)
+    page = math.max(1, math.floor(tonumber(page) or 1))
+    local total = #self.books
+    local page_count = 1 + math.ceil(math.max(0, total - 5) / 12)
+    page = math.min(page, page_count)
+    local first = page == 1 and 1 or 6 + (page - 2) * 12
+    local last = math.min(total, page == 1 and 5 or first + 11)
+    local items = {}
+    for index = first, last do items[#items + 1] = self.books[index] end
+    return { items = items, page = page, page_count = page_count, total = total,
+        mode = page == 1 and "shelf_hero" or "grid" }
+end
+
+function WeRead:sync(callback)
+    callback = callback or function() end
+    if not self.alive or not self.client or not self.auth or not self.auth:session() then
+        self.status = "请先扫码登录微信读书"
+        callback(nil, self.status)
+        return nil
+    end
+    local session = self.auth:session()
+    if self.account_id ~= session.vid then
+        self.account_id, self.books = session.vid, load_books(self.fs, self.path, session.vid)
+    end
+    self.status, self.synced = "正在同步微信书架…", true
+    local generation, delivered = self.generation, false
+    local handle = self.client:shelfSync(function(wire, err)
+        delivered = true
+        if not self.alive or generation ~= self.generation then return end
+        self.request = nil
+        if not wire then
+            self.status = "书架同步失败，显示上次记录"
+            return callback(nil, err)
+        end
+        self.books = Mapper.shelf(wire, self.account_id)
+        if self.fs and self.path then
+            local encoded = Json.encode({ account_id = self.account_id, books = self.books })
+            self.fs:atomicWrite(self.path, encoded)
+        end
+        self.status = "已登录"
+        callback(self.books)
+    end)
+    if not delivered then self.request = handle end
+    return handle
+end
+
+function WeRead:searchStore(keyword, callback)
+    callback = callback or function() end
+    if not self.alive or not self.client then callback(nil, "微信书城不可用"); return nil end
+    self.store_keyword = tostring(keyword or "")
+    self.store_results, self.store_loading, self.store_error = {}, true, nil
+    local generation, delivered = self.generation, false
+    local handle = self.client:search(self.store_keyword, 0, function(wire, err)
+        delivered = true
+        if not self.alive or generation ~= self.generation then return end
+        self.store_request, self.store_loading = nil, false
+        if not wire then self.store_error = err or "书城搜索失败"; callback(nil, self.store_error); return end
+        local books = {}
+        for _, row in ipairs(type(wire.books) == "table" and wire.books or {}) do
+            local book = Mapper.book(row, self.account_id)
+            if book then books[#books + 1] = book end
+        end
+        self.store_results = books
+        callback(books)
+    end)
+    if not delivered then self.store_request = handle end
+    return handle
+end
+
+function WeRead:cancel()
+    self.generation = self.generation + 1
+    if self.request and type(self.request.cancel) == "function" then self.request:cancel() end
+    if self.store_request and type(self.store_request.cancel) == "function" then self.store_request:cancel() end
+    if self.scheduled and self.scheduler and type(self.scheduler.unschedule) == "function" then
+        pcall(self.scheduler.unschedule, self.scheduler, self.scheduled)
+    end
+    self.request, self.store_request, self.scheduled = nil, nil, nil
+    if self.alive and self.status ~= "已登录" then self.status = "已取消" end
+end
+
+function WeRead:close()
+    if not self.alive then return false end
+    self:cancel()
+    self.alive = false
+    return true
+end
+
+function WeRead:start(on_qr, on_done)
+    if not self.alive or not self.auth then
+        self.status = "微信读书尚未初始化"
+        if on_done then on_done(false) end
+        return nil
+    end
+    self:cancel()
+    self.status = "正在获取二维码…"
+    local generation = self.generation
+    local function current() return self.alive and self.generation == generation end
+    local function finish(status)
+        if not current() then return end
+        self.request, self.scheduled = nil, nil
+        self.status = status
+        if on_done then on_done(status == "已登录") end
+    end
+    local poll
+    poll = function(uuid)
+        if not current() then return end
+        local delivered = false
+        local handle = self.auth:pollLogin(uuid, function(code, state, err)
+            delivered = true
+            if not current() then return end
+            self.request = nil
+            if state == "confirmed" then
+                self.status = "正在确认登录…"
+                local confirmed = false
+                local login = self.auth:completeLogin(code, function(session, login_error)
+                    confirmed = true
+                    if session then finish("已登录") else finish(login_error or "登录失败") end
+                end)
+                if not confirmed then self.request = login end
+            elseif state == "waiting" or state == "scanned" then
+                self.status = state == "scanned" and "已扫码，请在微信中确认" or "等待扫码…"
+                if self.scheduler and type(self.scheduler.scheduleIn) == "function" then
+                    local action = function() self.scheduled = nil; poll(uuid) end
+                    self.scheduled = action
+                    self.scheduler:scheduleIn(0.2, action)
+                else finish("扫码轮询不可用") end
+            else finish(err or "二维码已失效，请重新登录") end
+        end)
+        if not delivered then self.request = handle end
+    end
+    local delivered = false
+    local request = self.auth:beginLogin(function(qr, err)
+        delivered = true
+        if not current() then return end
+        self.request = nil
+        if not qr then return finish(err or "获取二维码失败") end
+        self.status = "等待扫码…"
+        if on_qr then on_qr(qr) end
+        poll(qr.uuid)
+    end)
+    if not delivered then self.request = request end
+    return request
+end
+
+return WeRead

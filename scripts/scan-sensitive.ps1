@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
-$python = Join-Path $repositoryRoot ".tools\python\python.exe"
+$python = Join-Path $repositoryRoot ".tools\python\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
     Write-Error "Test runtime is missing. Run scripts/bootstrap-tests.ps1 first."
     exit 1

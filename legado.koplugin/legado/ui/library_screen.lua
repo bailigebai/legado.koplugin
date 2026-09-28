@@ -1,5 +1,7 @@
 local LibraryScreen = {}
 local Safe = require("legado.lib.safe_functions")
+local module_source=debug.getinfo(1,'S').source
+local plugin_root=type(module_source)=='string' and module_source:match('^@?(.*)[/\\]legado[/\\]ui[/\\]library_screen%.lua$')
 
 local function optional(name)
     local ok, value = pcall(require, name)
@@ -52,12 +54,12 @@ function LibraryScreen.new(options)
     local items, cells, layout, handles = options.items or {}, {}, {}, {}
     local mode = options.mode or ((items[1] and items[1].book) and "cards" or "list")
     local compact = options.compact == true
-    local columns = mode == "grid" and (options.grid_columns or (compact and 4 or 3)) or 1
+    local columns = (mode == "grid" or mode == "shelf_hero") and (options.grid_columns or (compact and 4 or 3)) or 1
     local gap, margin = scale(compact and 4 or 6), scale(compact and 8 or 10)
     local content_width = width - margin * 2
     local cell_width = math.floor((content_width - gap * (columns - 1)) / columns)
-    local cover_width = mode == "detail" and scale(150) or mode == "grid" and scale(compact and 96 or 76) or scale(110)
-    local cover_height = mode == "detail" and scale(210) or mode == "grid" and scale(compact and 128 or 102) or scale(154)
+    local cover_width = mode == "detail" and scale(150) or (mode == "grid" or mode == "shelf_hero") and scale(compact and 96 or 76) or scale(110)
+    local cover_height = mode == "detail" and scale(210) or (mode == "grid" or mode == "shelf_hero") and scale(compact and 128 or 102) or scale(154)
     local closed = false
     local detail_intro, empty_widget
 
@@ -93,15 +95,16 @@ function LibraryScreen.new(options)
         end
         return placeholder(box_width, box_height, path and "封面不可用" or "无封面")
     end
-    local function book_cover(path, item)
-        local cover = cover_widget(path, cover_width, cover_height)
+    local function book_cover(path, item, box_width, box_height)
+        box_width, box_height = box_width or cover_width, box_height or cover_height
+        local cover = cover_widget(path, box_width, box_height)
         if item.downloaded ~= true then return cover end
         local badge = deps.frame:new{ padding = scale(2), bordersize = scale(1), radius = scale(2),
-            background = deps.colors.COLOR_WHITE, label("已下载", 12, cover_width - scale(8), true) }
+            background = deps.colors.COLOR_WHITE, label("已下载", 12, box_width - scale(8), true) }
         local size = badge:getSize()
-        badge.overlap_offset = { math.max(0, cover_width - size.w - scale(2)),
-            math.max(0, cover_height - size.h - scale(2)) }
-        return deps.overlap:new{ dimen = deps.geom:new{ w = cover_width, h = cover_height }, cover, badge }
+        badge.overlap_offset = { math.max(0, box_width - size.w - scale(2)),
+            math.max(0, box_height - size.h - scale(2)) }
+        return deps.overlap:new{ dimen = deps.geom:new{ w = box_width, h = box_height }, cover, badge }
     end
     local function invoke(item)
         if item.enabled == false then return false end
@@ -133,10 +136,22 @@ function LibraryScreen.new(options)
     local body_rows = {}
 
     local function make_book_cell(item)
-        local cover = book_cover(nil, item)
+        local hero = mode == "shelf_hero" and item.hero == true
+        local item_cover_width, item_cover_height = hero and scale(130) or cover_width, hero and scale(180) or cover_height
+        local item_cell_width = hero and content_width or cell_width
+        local cover = book_cover(nil, item, item_cover_width, item_cover_height)
         local visual, title, replace_cover
         local intro
-        if mode == "detail" and compact then
+        if hero then
+            local text_width = item_cell_width - 2 * (scale(4) + scale(1)) - item_cover_width - gap
+            title = label(item.title or "未命名", 18, text_width, true)
+            intro = paragraph(present(item.intro, "暂无简介"), 14, text_width, scale(110), 5)
+            visual = deps.horizontal:new{ cover, deps.hspan:new{ width = gap }, deps.vertical:new{
+                title, label(present(item.subtitle, "未知作者"), 13, text_width),
+                deps.vspan:new{ width = scale(6) }, intro,
+            } }
+            replace_cover = function(replacement) visual[1] = replacement end
+        elseif mode == "detail" and compact then
             local inset = 2 * (scale(4) + scale(1))
             local inner_width = cell_width - inset
             local text_width = inner_width - cover_width - gap
@@ -151,7 +166,7 @@ function LibraryScreen.new(options)
             detail_intro = intro
             visual = deps.vertical:new{ top, deps.vspan:new{ width = scale(6) }, intro }
             replace_cover = function(replacement) top[1] = replacement end
-        elseif mode == "grid" and compact then
+        elseif (mode == "grid" or mode == "shelf_hero") and compact then
             local inset = 2 * (scale(4) + scale(1))
             local inner_width = cell_width - inset
             title = paragraph(item.title or item.text or "未命名", 13, inner_width, scale(32), 2)
@@ -179,7 +194,7 @@ function LibraryScreen.new(options)
         end
         local framed = deps.frame:new{ padding = scale(compact and 4 or 5), bordersize = scale(1),
             radius = scale(8),
-            color = compact and (mode == "grid" or mode == "detail") and deps.colors.COLOR_WHITE or nil,
+            color = compact and (mode == "grid" or mode == "shelf_hero" or mode == "detail") and deps.colors.COLOR_WHITE or nil,
             focus_border_size = compact and scale(1) or nil,
             focusable = not (compact and mode == "detail"), visual }
         local Card = deps.input:extend{}
@@ -199,7 +214,7 @@ function LibraryScreen.new(options)
         if options.cover_loader and item.book and (item.cover_url or item.book.is_local) then
             local function loaded(path)
                 if closed then return end
-                local replacement = book_cover(path, item)
+                local replacement = book_cover(path, item, item_cover_width, item_cover_height)
                 local old = cell.cover
                 replace_cover(replacement)
                 cell.cover = replacement
@@ -251,6 +266,25 @@ function LibraryScreen.new(options)
             body_rows[#body_rows + 1] = visual
             layout[#layout + 1] = { button }
         end
+    elseif mode == "shelf_hero" then
+        local hero_card, hero_focus = make_book_cell(items[1])
+        body_rows[#body_rows + 1] = hero_card
+        layout[#layout + 1] = { hero_focus }
+        if options.hero_action then
+            local button = make_button(options.hero_action, content_width, scale(36))
+            body_rows[#body_rows + 1] = button
+            layout[#layout + 1] = { button }
+        end
+        local visual_row, focus_row = {}, {}
+        for index = 2, #items do
+            local visual, button = make_book_cell(items[index])
+            visual_row[#visual_row + 1], focus_row[#focus_row + 1] = visual, button
+            if index < #items then visual_row[#visual_row + 1] = deps.hspan:new{ width = gap } end
+        end
+        if #focus_row > 0 then
+            body_rows[#body_rows + 1] = deps.horizontal:new(visual_row)
+            layout[#layout + 1] = focus_row
+        end
     else
         for offset = 1, #items, columns do
             local visual_row, focus_row = {}, {}
@@ -274,7 +308,18 @@ function LibraryScreen.new(options)
     local header_gap = scale(6)
     local header_action=options.header_action and make_button(options.header_action,scale(96),scale(36))
     local right_width=header_action and header_action:getSize().w or back_size.w
-    local title_width = content_width - back_size.w - right_width - 2*header_gap
+    local logo
+    if options.title=='不亦阅乎' and plugin_root then
+        local path=plugin_root..'/assets/logo.svg'
+        local candidate
+        local ok=pcall(function()
+            candidate=deps.image:new{file=path,width=scale(30),height=scale(30),scale_factor=0}
+            candidate:getSize()
+        end)
+        if ok then logo=candidate elseif candidate and candidate.free then pcall(candidate.free,candidate) end
+    end
+    local logo_width=logo and scale(30)+header_gap or 0
+    local title_width = content_width - back_size.w - right_width - 2*header_gap-logo_width
     local header_text = deps.vertical:new{
         label(options.title or "不亦阅乎", compact and 17 or 24, title_width),
         label(options.subtitle or "", compact and 13 or 14, title_width),
@@ -284,9 +329,15 @@ function LibraryScreen.new(options)
         table.insert(header_text,ProgressWidget:new{width=title_width,height=scale(10),percentage=options.progress})
     end
     local header_height = math.max(back_size.h, header_text:getSize().h)
-    local header = deps.horizontal:new{ back_button, deps.hspan:new{ width = header_gap },
-        fixed(header_text, title_width, header_height),
-        deps.hspan:new{ width = header_gap }, header_action or deps.hspan:new{width=right_width} }
+    local header_parts={back_button,deps.hspan:new{width=header_gap}}
+    if logo then
+        header_parts[#header_parts+1]=fixed(logo,scale(30),scale(30))
+        header_parts[#header_parts+1]=deps.hspan:new{width=header_gap}
+    end
+    header_parts[#header_parts+1]=fixed(header_text,title_width,header_height)
+    header_parts[#header_parts+1]=deps.hspan:new{width=header_gap}
+    header_parts[#header_parts+1]=header_action or deps.hspan:new{width=right_width}
+    local header = deps.horizontal:new(header_parts)
     table.insert(layout, 1, header_action and {back_button,header_action} or { back_button })
 
     local footer_rows, category_rows, category_buttons = {}, {}, {}
