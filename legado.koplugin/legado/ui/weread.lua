@@ -40,7 +40,19 @@ function WeRead.new(options)
         alive = true, generation = 0 }, WeRead)
 end
 
+function WeRead:_refreshAccount()
+    local session = self.auth and type(self.auth.session) == "function" and self.auth:session()
+    local account_id = session and session.vid
+    if self.account_id == account_id then return false end
+    self.account_id = account_id
+    self.books = load_books(self.fs, self.path, account_id)
+    self.synced, self.display_page = false, 1
+    self.status = account_id and "已登录" or "未登录"
+    return true
+end
+
 function WeRead:page(page)
+    self:_refreshAccount()
     page = math.max(1, math.floor(tonumber(page) or 1))
     local total = #self.books
     local page_count = 1 + math.ceil(math.max(0, total - 5) / 12)
@@ -55,15 +67,13 @@ end
 
 function WeRead:sync(callback)
     callback = callback or function() end
+    self:_refreshAccount()
     if not self.alive or not self.client or not self.auth or not self.auth:session() then
         self.status = "请先扫码登录微信读书"
         callback(nil, self.status)
         return nil
     end
     local session = self.auth:session()
-    if self.account_id ~= session.vid then
-        self.account_id, self.books = session.vid, load_books(self.fs, self.path, session.vid)
-    end
     self.status, self.synced = "正在同步微信书架…", true
     self.sync_generation = (self.sync_generation or 0) + 1
     local generation, sync_generation, delivered = self.generation, self.sync_generation, false
@@ -72,7 +82,10 @@ function WeRead:sync(callback)
         if not self.alive or generation ~= self.generation or sync_generation ~= self.sync_generation then return end
         self.request = nil
         local current = self.auth:session()
-        if not current or current.vid ~= session.vid then return callback(nil, "微信读书账号已切换") end
+        if not current or current.vid ~= session.vid then
+            self:_refreshAccount()
+            return callback(nil, "微信读书账号已切换")
+        end
         if not wire then
             self.status = "书架同步失败，显示上次记录"
             return callback(nil, err)
@@ -113,7 +126,8 @@ function WeRead:addToShelf(book, callback)
     local account_id = self.account_id
     local function same_account()
         local session = self.auth and self.auth:session()
-        return session and session.vid == account_id and self.account_id == account_id
+        if not session or session.vid ~= account_id then self:_refreshAccount(); return false end
+        return self.account_id == account_id
     end
     local handle = self.client:addToShelf(book.remote_id, function(result, err)
         delivered = true

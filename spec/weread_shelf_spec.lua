@@ -50,6 +50,47 @@ account="account-3"
 pending_sync({books={{bookId="old-book",title="旧账号书籍"}}})
 eq(0,#switching.books,"a late response cannot show books from a previous account")
 eq("微信读书账号已切换",sync_error,"late shelf response reports the account change")
+local Json = require("legado.lib.json_codec")
+local active_account = "account-1"
+local old_snapshot = Json.encode({account_id="account-1",books={{
+    id="weread-old",remote_id="old-book",source_id="weread",name="旧账号书籍"}}})
+local account_auth = {session=function() return {vid=active_account} end,
+    hasSession=function() return true end}
+local old_sync, sync_calls, switched_error
+local private_view = View.new{auth=account_auth,path="private-shelf.json",
+    fs={readBounded=function() return old_snapshot end,atomicWrite=function() return true end},
+    client={shelfSync=function(_,done) old_sync=done;sync_calls=(sync_calls or 0)+1
+        return {cancel=function() end} end}}
+eq("old-book",private_view:page(1).items[1].remote_id,"the signed-in account sees its own cached shelf")
+private_view:sync(function(_,err) switched_error=err end)
+active_account="account-2"
+eq(0,#private_view:page(1).items,"opening the shelf after an account switch hides old cached covers")
+old_sync({books={{bookId="old-book",title="旧账号书籍"}}})
+eq(0,#private_view:page(1).items,"a late response cannot restore old-account covers")
+eq("微信读书账号已切换",switched_error,"the in-flight sync reports the account change")
+private_view:sync()
+eq(2,sync_calls,"the new account can start its own shelf sync")
+old_sync({books={{bookId="new-book",title="新账号书籍"}}})
+eq("new-book",private_view:page(1).items[1].remote_id,"the new account sees only its own synced shelf")
+active_account=nil
+account_auth.session=function() return nil end
+account_auth.hasSession=function() return false end
+eq(0,#private_view:page(1).items,"signing out clears the former account's covers")
+
+active_account="account-1"
+account_auth.session=function() return {vid=active_account} end
+account_auth.hasSession=function() return true end
+local old_add, add_sync_calls, switched_add_error
+local private_add = View.new{auth=account_auth,path="private-shelf.json",
+    fs={readBounded=function() return old_snapshot end},
+    client={addToShelf=function(_,_,done) old_add=done;return {cancel=function() end} end,
+        shelfSync=function() add_sync_calls=(add_sync_calls or 0)+1 end}}
+private_add:addToShelf({remote_id="another-book",name="另一本书"},function(_,err) switched_add_error=err end)
+active_account="account-2"
+old_add({errCode=0})
+eq("微信读书账号已切换",switched_add_error,"late add-to-shelf result reports the account switch")
+eq(0,#private_add:page(1).items,"a late add-to-shelf result cannot leave old-account covers visible")
+eq(nil,add_sync_calls,"a late add-to-shelf result does not sync the new account implicitly")
 local recent_view = make_view()
 recent_view:sync()
 callback({books={{bookId="older",title="旧书"},{bookId="latest",title="最近读"}},
