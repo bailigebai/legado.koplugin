@@ -505,11 +505,35 @@ function Presenter:_wereadStore(view)
                 intro = book.intro, cover_url = book.cover_url,
                 callback = function() return self:_wereadBook(view, book) end }
         end
-        return self:_library(view, { title = "微信书城 · " .. view.store_keyword, items = items,
-            mode = "grid", grid_columns = 4, grid_rows = 3, page_size = 12,
+        local loaded_pages = math.max(1, math.ceil(#items / 12))
+        local page = math.min(view.store_page or 1, loaded_pages)
+        local visible = {}
+        for i = (page - 1) * 12 + 1, math.min(page * 12, #items) do visible[#visible + 1] = items[i] end
+        local function turn(next_page)
+            view.store_page = next_page
+            return self:_wereadStore(view)
+        end
+        local function next_page()
+            if #items >= (page + 1) * 12 or (page < loaded_pages and not view.store_has_more) then
+                return turn(page + 1)
+            end
+            local previous_count = #items
+            view:loadMoreStore(function()
+                if not view.alive or self.library_view ~= view
+                    or self.library_subpage ~= "weread_store_results" then return end
+                if #(view.store_results or {}) > previous_count then view.store_page = page + 1 end
+                self:_wereadStore(view)
+            end)
+            return self:_wereadStore(view)
+        end
+        return self:_library(view, { title = "微信书城 · " .. view.store_keyword, items = visible,
+            subpage = "weread_store_results", mode = "grid", grid_columns = 4, grid_rows = 3, already_paginated = true,
+            page = page, page_count = loaded_pages + (view.store_has_more and 1 or 0),
+            on_prev = page > 1 and function() return turn(page - 1) end or nil,
+            on_next = not view.store_loading and (page < loaded_pages or view.store_has_more) and next_page or nil,
             subtitle = view.store_loading and "正在搜索…" or view.store_error,
             empty_text = view.store_loading and "正在加载书城书籍…" or "没有找到书籍，可换个关键词。",
-            on_back = function() view.store_keyword, view.store_results = nil, nil; return self:_wereadStore(view) end })
+            on_back = function() view:clearStore(); return self:_wereadStore(view) end })
     end
     local items = {}
     local function search(keyword)
@@ -559,7 +583,10 @@ function Presenter:_wereadBook(view, book)
                 end},
             { text = "阅读评论", callback = function() return self:_wereadReviews(view, book) end },
         },
-        on_back = function() return self:_weread(view) end })
+        on_back = function()
+            if view.store_keyword then return self:_wereadStore(view) end
+            return self:_weread(view)
+        end })
 end
 
 function Presenter:_wereadReviews(view, book)

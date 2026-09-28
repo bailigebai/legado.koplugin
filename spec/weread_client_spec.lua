@@ -55,4 +55,12 @@ eq("https://weread.qq.com/web/shelf/add", requests[7].spec.url, "shelf addition 
 eq("b3", requests[7].spec.body.bookIds[1], "shelf addition sends the selected remote book ID")
 requests[7].callback({ status = 200, body = Json.encode({ errCode = 0 }) })
 eq(0, added.errCode, "successful shelf addition reaches the caller")
+client:search("科幻", 19, function() end, "session-1")
+eq(true, requests[8].spec.url:find("maxIdx=19", 1, true) ~= nil,
+    "later store pages use the last search index")
+eq(true, requests[8].spec.url:find("sid=session%-1") ~= nil,
+    "later store pages preserve the search session")
+client:search("科幻", 1, function() end, "session-1")
+eq(true, requests[9].spec.url:find("maxIdx=1", 1, true) ~= nil,
+    "a valid first search index is not reset to page zero")
 return count

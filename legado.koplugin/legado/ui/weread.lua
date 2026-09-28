@@ -127,24 +127,73 @@ end
 function WeRead:searchStore(keyword, callback)
     callback = callback or function() end
     if not self.alive or not self.client then callback(nil, "微信书城不可用"); return nil end
+    self.store_generation = (self.store_generation or 0) + 1
+    if self.store_request and type(self.store_request.cancel) == "function" then self.store_request:cancel() end
     self.store_keyword = tostring(keyword or "")
     self.store_results, self.store_loading, self.store_error = {}, true, nil
-    local generation, delivered = self.generation, false
+    self.store_cursor, self.store_sid, self.store_has_more, self.store_page = 0, nil, false, 1
+    local generation, store_generation, delivered = self.generation, self.store_generation, false
     local handle = self.client:search(self.store_keyword, 0, function(wire, err)
         delivered = true
-        if not self.alive or generation ~= self.generation then return end
+        if not self.alive or generation ~= self.generation or store_generation ~= self.store_generation then return end
         self.store_request, self.store_loading = nil, false
         if not wire then self.store_error = err or "书城搜索失败"; callback(nil, self.store_error); return end
         local books = {}
-        for _, row in ipairs(type(wire.books) == "table" and wire.books or {}) do
+        local rows = type(wire.books) == "table" and wire.books or {}
+        for _, row in ipairs(rows) do
             local book = Mapper.book(row, self.account_id)
             if book then books[#books + 1] = book end
         end
         self.store_results = books
+        self.store_sid = type(wire.sid) == "string" and wire.sid or nil
+        self.store_cursor = tonumber(rows[#rows] and rows[#rows].searchIdx) or #rows
+        self.store_has_more = (wire.hasMore == 1 or wire.hasMore == true) and #rows > 0
         callback(books)
     end)
     if not delivered then self.store_request = handle end
     return handle
+end
+
+function WeRead:loadMoreStore(callback)
+    callback = callback or function() end
+    if not self.alive or not self.client or not self.store_has_more or self.store_loading then return nil end
+    self.store_loading, self.store_error = true, nil
+    local generation, store_generation, delivered = self.generation, self.store_generation, false
+    local cursor = self.store_cursor
+    local handle = self.client:search(self.store_keyword, cursor, function(wire, err)
+        delivered = true
+        if not self.alive or generation ~= self.generation or store_generation ~= self.store_generation then return end
+        self.store_request, self.store_loading = nil, false
+        if not wire then self.store_error = err or "书城加载失败"; callback(nil, self.store_error); return end
+        local rows = type(wire.books) == "table" and wire.books or {}
+        local seen = {}
+        for _, book in ipairs(self.store_results) do seen[book.remote_id] = true end
+        local added = 0
+        for _, row in ipairs(rows) do
+            local book = Mapper.book(row, self.account_id)
+            if book and not seen[book.remote_id] then
+                seen[book.remote_id] = true
+                self.store_results[#self.store_results + 1] = book
+                added = added + 1
+            end
+        end
+        local next_cursor = tonumber(rows[#rows] and rows[#rows].searchIdx) or cursor + #rows
+        self.store_cursor = next_cursor
+        if type(wire.sid) == "string" and wire.sid ~= "" then self.store_sid = wire.sid end
+        self.store_has_more = (wire.hasMore == 1 or wire.hasMore == true)
+            and #rows > 0 and next_cursor > cursor and added > 0
+        callback(self.store_results)
+    end, self.store_sid)
+    if not delivered then self.store_request = handle end
+    return handle
+end
+
+function WeRead:clearStore()
+    self.store_generation = (self.store_generation or 0) + 1
+    if self.store_request and type(self.store_request.cancel) == "function" then self.store_request:cancel() end
+    self.store_request, self.store_keyword, self.store_results = nil, nil, nil
+    self.store_loading, self.store_error, self.store_has_more = false, nil, false
+    self.store_cursor, self.store_sid, self.store_page = nil, nil, nil
 end
 
 function WeRead:cancel()

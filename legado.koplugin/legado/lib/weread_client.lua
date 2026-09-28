@@ -163,13 +163,13 @@ function Client:addToShelf(book_id, callback)
     return self:_call("POST", "/web/shelf/add", { bookIds = { book_id } }, false, callback)
 end
 
-function Client:search(keyword, cursor, callback)
+function Client:search(keyword, cursor, callback, sid)
     keyword = tostring(keyword or "")
     if keyword == "" then callback({ books = {} }); return nil end
     local max_idx = tonumber(cursor) or 0
-    if max_idx <= 1 then max_idx = 0 end
+    if max_idx < 0 then max_idx = 0 end
     return self:_call("GET", "/web/search/global?keyword=" .. Url(keyword)
-        .. "&maxIdx=" .. tostring(math.floor(max_idx)) .. "&fragmentSize=120&count=20&sid=", nil, false, callback)
+        .. "&maxIdx=" .. tostring(math.floor(max_idx)) .. "&fragmentSize=120&count=20&sid=" .. Url(tostring(sid or "")), nil, false, callback)
 end
 
 function Client:bookInfo(book_id, callback)
