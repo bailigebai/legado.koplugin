@@ -12,6 +12,21 @@ local function construct(class, options)
     return options
 end
 
+local function weread_qr_size(screen)
+    local size = 400
+    if screen and type(screen.scaleBySize) == "function" then
+        local scaled = tonumber(screen:scaleBySize(size))
+        if scaled and scaled > 0 then size = scaled end
+    end
+    if screen and type(screen.getWidth) == "function" and type(screen.getHeight) == "function" then
+        local width, height = tonumber(screen:getWidth()), tonumber(screen:getHeight())
+        if width and height and width > 0 and height > 0 then
+            size = math.min(size, math.floor(math.min(width, height) * 0.8))
+        end
+    end
+    return math.max(1, math.floor(size))
+end
+
 local function safe_token(value, fallback)
     local token = tostring(value or ""):gsub("[^%w_%-%.]", "")
     return token ~= "" and token or fallback
@@ -92,6 +107,7 @@ function Presenter.new(options)
         info_message = options.info_message or optional("ui/widget/infomessage"),
         input_dialog = options.input_dialog or optional("ui/widget/inputdialog"),
         qr_message = options.qr_message or optional("ui/widget/qrmessage"),
+        screen = options.screen,
         detail_factory = options.detail_factory,
         app = options.app, cover_loader = options.cover_loader,
         library_screen_factory = options.library_screen_factory or function(opts) return require("legado.ui.library_screen").new(opts) end,
@@ -486,7 +502,9 @@ function Presenter:_weread(view)
     actions[#actions + 1] = { text = "微信扫码登录", enabled = view.auth ~= nil, callback = function()
         return view:start(function(qr)
             local widget
-            widget = construct(self.qr_message, { text = qr.payload, timeout = 300,
+            local screen = self.screen or (optional("device") or {}).screen
+            local size = weread_qr_size(screen)
+            widget = construct(self.qr_message, { text = qr.payload, width = size, height = size, timeout = 300,
                 dismiss_callback = function()
                     if view.qr_widget ~= widget then return end
                     view.qr_widget = nil

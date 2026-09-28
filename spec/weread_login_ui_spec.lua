@@ -21,6 +21,8 @@ local auth = {
     completeLogin = function(_, _, callback) complete_callback = callback; return { cancel = function() cancelled = true end } end,
 }
 local presenter = Presenter.new{ui_manager = ui,
+    screen = { scaleBySize = function() return 600 end,
+        getWidth = function() return 600 end, getHeight = function() return 800 end },
     qr_message = { new = function(_, options) options.kind = "qr"; return options end }}
 local app = App.new{weread_auth = auth, scheduler = ui, show = function(view) return presenter:show(view) end}
 presenter.app = app
@@ -32,6 +34,8 @@ eq("function", type(login and login.callback), "login is reachable from the WeRe
 login.callback()
 begin_callback({ uuid = "uuid", payload = "https://open.weixin.qq.com/connect/confirm?uuid=uuid" })
 eq("qr", shown[#shown].kind, "login displays a native QR widget")
+eq(480, shown[#shown].width, "QR width stays within eighty percent of the short screen side")
+eq(480, shown[#shown].height, "QR height matches the width")
 eq(true, type(poll_callback) == "function", "scan polling starts while QR is visible")
 poll_callback(nil, "waiting")
 eq(0.2, delays[1], "normal QR waiting restarts polling promptly")
@@ -46,6 +50,8 @@ eq("已登录", view.status, "confirmed login updates the page")
 eq(false, cancelled == true, "successful login does not cancel the session")
 
 app.storage = {listShelf = function() return {} end, getProgress = function() return nil end}
+presenter.screen = { scaleBySize = function() return 600 end,
+    getWidth = function() return 1200 end, getHeight = function() return 1600 end }
 cancelled = false
 local pending_view = app:openWeRead()
 local pending_login
@@ -55,6 +61,8 @@ end
 pending_login.callback()
 begin_callback({uuid = "pending", payload = "https://open.weixin.qq.com/connect/confirm?uuid=pending"})
 local pending_qr = shown[#shown]
+eq(600, pending_qr.width, "QR width follows device scaling when the screen has room")
+eq(600, pending_qr.height, "scaled QR remains square")
 app:openBookshelf()
 eq(true, closed_widgets[pending_qr] == true, "leaving WeRead closes the pending QR widget")
 eq(true, cancelled == true, "leaving WeRead cancels the pending login request")
