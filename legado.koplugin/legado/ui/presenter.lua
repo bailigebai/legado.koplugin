@@ -770,7 +770,7 @@ function Presenter:_search_results(view)
         end}
     end
     if not view.loading then actions[#actions+1]={text="重试",callback=function() return self:_runSearch(view,view.keyword,view.source_ids,view.page or 1) end} end
-    if self.app then actions[#actions+1]={text="搜索书名",callback=function() return self.app:openSearch() end} end
+    if self.app then actions[#actions+1]={text="搜索书名",callback=function() return self:_search(view,true) end} end
     local empty = view.loading and "正在各书源查找，找到后会自动显示封面和简介。" or "未找到匹配书籍，可换个书名或检查已启用的书源。"
     if view.error then empty=diagnostic_text(view.error) end
     return self:_library(view,{title=view.explore_source and (view.title or "分类图书") or ("搜索 · "..tostring(view.keyword or "")),
@@ -799,12 +799,13 @@ function Presenter:_runSearch(view, keyword, ids, page)
     return self:_search_results(view)
 end
 
-function Presenter:_search(view)
+function Presenter:_search(view, from_results)
     if view.initial_keyword then
         local keyword = view.initial_keyword
         view.initial_keyword = nil
         return self:_runSearch(view, keyword, nil, 1)
     end
+    if from_results and view.loading then view:cancel() end
     local dialog
     local function submit(value)
         local keyword=value
@@ -814,7 +815,14 @@ function Presenter:_search(view)
         return self:_runSearch(view,keyword,nil,1)
     end
     dialog=construct(self.input_dialog,{title="搜索全部启用书源",input_hint="搜索书名",input_type="string",
-        buttons={{{text="取消",callback=function() if not self:_closeWidget(dialog) then return false end; close_view(view); if self.app then return self.app:openHome() end end},
+        buttons={{{text="取消",callback=function()
+                if not self:_closeWidget(dialog) then return false end
+                if from_results then return self:_search_results(view) end
+                local back=view._back
+                close_view(view)
+                if back then return back() end
+                if self.app then return self.app:openHome() end
+            end},
             {text="搜索",is_enter_default=true,callback=submit}}}})
     return self:_showInput(dialog)
 end

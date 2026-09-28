@@ -203,7 +203,9 @@ function App:openSearch(keyword, back)
 end
 function App:openSources(back)
     if self.source_manager then
-        self.source_manager.on_search = function() return self:openSearch() end
+        self.source_manager.on_search = function()
+            return self:openSearch(nil, function() return self:openSources(back) end)
+        end
     end
     if self.source_manager and type(self.source_manager.reopen) == "function" then self.source_manager:reopen() end
     local view = self.source_manager or { title = "书源管理", empty_text = "暂无书源" }
