@@ -244,11 +244,13 @@ do
         {id="batch-1", name="批量一", author="作者一"},
         {id="batch-2", name="批量二", author="作者二"},
     }
-    local saved_batches, batch_settings = {}, { shelf_categories = {"待读"} }
+    local saved_batches, batch_fail = {}, true
+    local batch_settings = { shelf_categories = {"待读"} }
     local batch_storage = {
         listShelf=function() return batch_books end,
         getProgress=function() end,
         updateBooks=function(_, values)
+            if batch_fail then return nil, {code="STORAGE_ERROR"} end
             saved_batches = values
             for _, value in ipairs(values) do
                 for _, book in ipairs(batch_books) do if book.id == value.id then for key, field in pairs(value) do book[key] = field end end end
@@ -282,10 +284,17 @@ do
     eq(true, batch_last().selected_books["batch-2"], "second book is selected")
     batch_action("整理书架")
     batch_action("批量分类", "items")
-    batch_action("待读", "item_table")
+    eq("□ 待读", batch_last().item_table[2].text, "batch category shows unchecked state")
+    local category_action = batch_last().item_table[2].callback
+    category_action()
+    eq(nil, batch_books[1].custom_categories, "failed batch save keeps first book unchanged")
+    eq(nil, batch_books[2].custom_categories, "failed batch save keeps second book unchanged")
+    batch_fail = false
+    category_action()
     eq(2, #saved_batches, "batch category writes both selected books once")
     eq("待读", saved_batches[1].custom_categories[1], "first selected book receives category")
     eq("待读", saved_batches[2].custom_categories[1], "second selected book receives category")
+    eq("✓ 待读", batch_last().item_table[2].text, "saved batch category shows checked state")
 end
 local receive
 local updating={kind="book_detail",book={id="late",name="更新中的书",intro="旧简介"},alternatives={},alive=true,

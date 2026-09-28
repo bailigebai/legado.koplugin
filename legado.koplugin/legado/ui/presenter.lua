@@ -1437,7 +1437,7 @@ function Presenter:_editCategories(back,book,books)
         else
             for _,value in ipairs(book and book.custom_categories or {}) do if value==name then selected=true end end
         end
-        items[#items+1]={text=(book and (selected and '✓ ' or '□ ') or '')..name,callback=function()
+        items[#items+1]={text=((book or books) and (selected and '✓ ' or '□ ') or '')..name,callback=function()
             if books then
                 local updated={}
                 for _, candidate in ipairs(books) do
@@ -1446,11 +1446,14 @@ function Presenter:_editCategories(back,book,books)
                         if value == name then found = true else categories_for_book[#categories_for_book + 1] = value end
                     end
                     if not selected then categories_for_book[#categories_for_book + 1] = name end
-                    candidate.custom_categories = categories_for_book
-                    updated[#updated + 1] = candidate
+                    local replacement={}
+                    for key,value in pairs(candidate) do replacement[key]=value end
+                    replacement.custom_categories=categories_for_book
+                    updated[#updated + 1]=replacement
                 end
                 local saved,e=self.app.storage:updateBooks(updated)
                 if not saved then return self:_info(diagnostic_text(e)) end
+                for index,candidate in ipairs(books) do candidate.custom_categories=updated[index].custom_categories end
                 return refresh()
             elseif book then
                 local updated={}
