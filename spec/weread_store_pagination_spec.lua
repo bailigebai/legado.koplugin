@@ -90,4 +90,65 @@ shown[#shown].on_next()
 eq(40, calls[11].cursor, "the next request continues after the duplicate batch")
 calls[11].callback({books = batch(41, 45), hasMore = 0})
 eq("book-45", view.store_results[25].remote_id, "books after a duplicate batch can still load")
+
+local account, account_requests = "account-a", {}
+local switching_auth = {hasSession = function() return true end,
+    session = function() return {vid = account} end}
+local switching_client = {search = function(_, keyword, cursor, callback)
+    local request = {keyword = keyword, cursor = cursor, callback = callback, cancelled = false}
+    account_requests[#account_requests + 1] = request
+    return {cancel = function() request.cancelled = true end}
+end}
+local switching_view = View.new{auth = switching_auth, client = switching_client}
+switching_view:searchStore("旧结果")
+account_requests[1].callback({books = batch(1, 1), hasMore = 0})
+eq(1, #switching_view.store_results, "first account receives its store result")
+account = "account-b"
+switching_view:page(1)
+eq(nil, switching_view.store_keyword, "switching accounts clears the old search keyword")
+eq(nil, switching_view.store_results, "switching accounts clears loaded store books")
+
+account = "account-a"
+switching_view:page(1)
+local switch_error
+switching_view:searchStore("待返回", function(_, err) switch_error = err end)
+account = "account-b"
+account_requests[2].callback({books = batch(2, 2), hasMore = 0})
+eq("account-b", switching_view.account_id, "a late first page refreshes the current account")
+eq(true, account_requests[2].cancelled, "account switch cancels the old first-page request")
+eq(nil, switching_view.store_results, "late first-page books do not enter the new account")
+eq("微信读书账号已切换", switch_error, "the page can rerender after a switched-account reply")
+
+switching_view:searchStore("新结果")
+account_requests[3].callback({books = batch(3, 3), hasMore = 1})
+eq(1, #switching_view.store_results, "the new account can search normally")
+switching_view:loadMoreStore(function(_, err) switch_error = err end)
+account = "account-c"
+account_requests[4].callback({books = batch(4, 4), hasMore = 0})
+eq(true, account_requests[4].cancelled, "account switch cancels the old next-page request")
+eq(nil, switching_view.store_results, "late next-page books do not enter another account")
+eq("微信读书账号已切换", switch_error, "next-page reply reports the account change")
+switching_view:searchStore("第三个账号")
+account_requests[5].callback({books = batch(5, 5), hasMore = 0})
+eq("account-c", switching_view.account_id, "new searches use the current account")
+eq("book-5", switching_view.store_results[1].remote_id,
+    "new account results still load after the old requests are discarded")
+local switching_shown = {}
+local switching_presenter = Presenter.new{ui_manager = {
+    show = function(_, widget) switching_shown[#switching_shown + 1] = widget end}}
+switching_view.synced = true
+switching_presenter:show(switching_view)
+for _, action in ipairs(switching_shown[#switching_shown].actions or {}) do
+    if action.text == "书城发现" then action.callback(); break end
+end
+for _, item in ipairs(switching_shown[#switching_shown].items or {}) do
+    if item.text == "科幻" then item.callback(); break end
+end
+eq("微信书城 · 科幻", switching_shown[#switching_shown].title,
+    "a pending search displays the current account's store page")
+account = "account-d"
+account_requests[6].callback({books = batch(6, 6), hasMore = 0})
+eq("微信书城", switching_shown[#switching_shown].title,
+    "a late old-account reply returns to empty store discovery")
+eq(nil, switching_view.store_results, "the old response leaves no books on the new store page")
 return count

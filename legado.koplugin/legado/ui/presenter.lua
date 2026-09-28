@@ -477,7 +477,11 @@ local function weread_page_active(presenter, view, page)
     return view.alive and presenter.library_view == view and presenter.library_subpage == page
 end
 
-function Presenter:_startWeReadReading(view,book)
+function Presenter:_startWeReadReading(view,book,expected_account_id)
+    local changed = view:_refreshAccount()
+    if changed or expected_account_id and view.account_id ~= expected_account_id then
+        return self:_weread(view)
+    end
     if not self.app or not self.app.startWeReadReading then return self:_info('微信读书阅读服务不可用') end
     view:cancelReading()
     local generation=view.reading_generation
@@ -500,6 +504,7 @@ end
 
 function Presenter:_weread(view)
     local model = view:page(view.display_page)
+    local account_id = view.account_id
     local subtitle = view.status
     if model.progress_error then subtitle = tostring(subtitle or '') .. ' · 本地阅读记录不可用' end
     local items = {}
@@ -507,7 +512,7 @@ function Presenter:_weread(view)
         items[#items + 1] = { book = book, title = book.name, subtitle = book.author,
             intro = index == 1 and model.page == 1 and book.intro or nil,
             hero = index == 1 and model.page == 1, cover_url = book.cover_url,
-            callback = function() return self:_wereadBook(view, book) end }
+            callback = function() return self:_wereadBook(view, book, account_id) end }
     end
     if #items == 0 then items[1] = { text = view.status, enabled = false } end
     local actions = {}
@@ -544,7 +549,7 @@ function Presenter:_weread(view)
     local widget = self:_library(view, { title = "微信读书", subpage = "weread_shelf", subtitle = subtitle,
         items = items, mode = has_books and model.mode or "list", grouped_actions = true,
         hero_action = has_books and model.page == 1 and { text = "继续阅读", callback = function()
-            return self:_startWeReadReading(view,model.items[1])
+            return self:_startWeReadReading(view,model.items[1],account_id)
         end } or nil,
         grid_columns = 4, grid_rows = 3, already_paginated = true,
         page = model.page, page_count = model.page_count, actions = actions, navigation = {},
@@ -561,12 +566,14 @@ function Presenter:_weread(view)
 end
 
 function Presenter:_wereadStore(view)
+    view:_refreshAccount()
     if view.store_keyword then
+        local account_id = view.account_id
         local items = {}
         for _, book in ipairs(view.store_results or {}) do
             items[#items + 1] = { book = book, title = book.name, subtitle = book.author,
                 intro = book.intro, cover_url = book.cover_url,
-                callback = function() return self:_wereadBook(view, book) end }
+                callback = function() return self:_wereadBook(view, book, account_id) end }
         end
         local loaded_pages = math.max(1, math.ceil(#items / 12))
         local page = math.min(view.store_page or 1, loaded_pages)
@@ -635,7 +642,19 @@ function Presenter:_wereadStore(view)
         on_back = function() return self:_weread(view) end })
 end
 
-function Presenter:_wereadBook(view, book)
+function Presenter:_wereadBook(view, book, expected_account_id)
+    local changed = view:_refreshAccount()
+    if changed or expected_account_id and view.account_id ~= expected_account_id then
+        return self:_weread(view)
+    end
+    local account_id = view.account_id
+    local function same_account()
+        if view:_refreshAccount() or view.account_id ~= account_id then
+            self:_weread(view)
+            return false
+        end
+        return true
+    end
     local item = { book = book, title = book.name, subtitle = book.author,
         intro = book.intro, cover_url = book.cover_url }
     local detail_page = "weread_book_detail:" .. book.remote_id
@@ -643,19 +662,27 @@ function Presenter:_wereadBook(view, book)
         items = { item }, mode = "detail",grouped_actions=true,
         subtitle = "阅读进度：" .. tostring(math.floor(tonumber(book.progress_percent) or 0)) .. "%",
         actions = {
-            {text='开始阅读',callback=function() return self:_startWeReadReading(view,book) end},
+            {text='开始阅读',callback=function()
+                if not same_account() then return false end
+                return self:_startWeReadReading(view,book,account_id)
+            end},
             view:hasBook(book) and {text='已在微信书架',enabled=false}
                 or {text='加入微信书架',callback=function()
+                    if not same_account() then return false end
                     return view:addToShelf(book,function(added,err)
                         if not weread_page_active(self, view, detail_page) then return end
                         if not added then return self:_info(err or '加入微信书架失败','微信读书') end
-                        self:_wereadBook(view,book)
+                        self:_wereadBook(view,book,account_id)
                         if err then return self:_info(err, '微信读书') end
                     end)
                 end},
-            { text = "阅读评论", callback = function() return self:_wereadReviews(view, book) end },
+            { text = "阅读评论", callback = function()
+                if not same_account() then return false end
+                return self:_wereadReviews(view, book)
+            end },
         },
         on_back = function()
+            if not same_account() then return false end
             if view.store_keyword then return self:_wereadStore(view) end
             return self:_weread(view)
         end })
@@ -705,7 +732,7 @@ function Presenter:_wereadReviews(view, book, page)
     end
     local function back()
         cancel_request()
-        return self:_wereadBook(view, book)
+        return self:_wereadBook(view, book, account_id)
     end
     if view.review_pages[page] then
         local items = {}

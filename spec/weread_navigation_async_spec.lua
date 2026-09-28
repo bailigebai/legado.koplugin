@@ -93,4 +93,73 @@ eq(before_late_error, #shown, "late detail error cannot cover the shelf")
 shown[#shown].hero_action.callback()
 reading_reply(nil, {message = "current reading error"})
 eq("current reading error", shown[#shown].text, "current reading failure remains visible")
+
+local current_account, switched_reads = "account-a", 0
+local switched_auth = {hasSession = function() return true end,
+    session = function() return {vid = current_account} end}
+local switched_client = {shelfSync = function(_, callback)
+    callback({books = {}})
+    return {cancel = function() end}
+end}
+local function switched_view()
+    local next_view = View.new{auth = switched_auth, client = switched_client}
+    next_view.synced = true
+    next_view.books = {Mapper.book({bookId = "old-book", title = "旧账号书"}, "account-a")}
+    return next_view
+end
+presenter.app = {startWeReadReading = function()
+    switched_reads = switched_reads + 1
+end}
+local stale_shelf = switched_view()
+presenter:show(stale_shelf)
+local stale_hero = shown[#shown].hero_action.callback
+current_account = "account-b"
+stale_hero()
+eq(0, switched_reads, "a stale hero cannot open the old account book under a new login")
+eq("微信读书", shown[#shown].title, "stale hero returns to the new account shelf")
+
+current_account = "account-a"
+local refreshed_shelf = switched_view()
+presenter:show(refreshed_shelf)
+local old_hero = shown[#shown].hero_action.callback
+current_account = "account-b"
+refreshed_shelf:page(1)
+old_hero()
+eq(0, switched_reads, "a stale hero remains blocked after another operation refreshes the account")
+
+current_account = "account-a"
+local old_store = switched_view()
+old_store.store_keyword = "旧搜索"
+old_store.store_results = {Mapper.book({bookId = "store-book", title = "旧书城书"}, "account-a")}
+presenter:_wereadStore(old_store)
+local old_store_book = shown[#shown].items[1].callback
+current_account = "account-b"
+old_store:page(1)
+old_store_book()
+eq("微信读书", shown[#shown].title,
+    "a stale store cover cannot open old account detail after account refresh")
+
+current_account = "account-a"
+local stale_detail = switched_view()
+presenter:show(stale_detail)
+shown[#shown].items[1].callback()
+eq("微信读书 · 旧账号书", shown[#shown].title, "old account book detail is open")
+current_account = "account-b"
+action("开始阅读").callback()
+eq(0, switched_reads, "a stale book detail cannot start reading after account switch")
+eq("微信读书", shown[#shown].title, "stale book detail returns to the new account shelf")
+
+current_account = "account-a"
+local switched_cancellations = 0
+presenter.app = {startWeReadReading = function()
+    switched_reads = switched_reads + 1
+    return {cancel = function() switched_cancellations = switched_cancellations + 1 end}
+end}
+local pending_account_read = switched_view()
+presenter:show(pending_account_read)
+shown[#shown].hero_action.callback()
+eq(1, switched_reads, "the old account may begin reading before the login changes")
+current_account = "account-b"
+pending_account_read:page(1)
+eq(1, switched_cancellations, "switching accounts cancels an in-flight old-account read")
 return count

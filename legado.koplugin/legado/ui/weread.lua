@@ -51,6 +51,8 @@ function WeRead:_refreshAccount()
     local session = self.auth and type(self.auth.session) == "function" and self.auth:session()
     local account_id = session and session.vid
     if self.account_id == account_id then return false end
+    self:clearStore()
+    self:cancelReading()
     self.account_id = account_id
     self.books = load_books(self.fs, self.path, account_id)
     self.synced, self.display_page = false, 1
@@ -204,18 +206,29 @@ function WeRead:_fetchStore(cursor, callback)
     return self.client:search(self.store_keyword, cursor, callback, self.store_sid)
 end
 
+local function store_account_changed(view, account_id, callback)
+    local session = view.auth and type(view.auth.session) == "function" and view.auth:session()
+    if (session and session.vid) == account_id then return false end
+    view:_refreshAccount()
+    callback(nil, "微信读书账号已切换")
+    return true
+end
+
 function WeRead:_startStore(label, category_id, callback)
     callback = callback or function() end
     if not self.alive or not self.client then callback(nil, "微信书城不可用"); return nil end
+    self:_refreshAccount()
     self.store_generation = (self.store_generation or 0) + 1
     if self.store_request and type(self.store_request.cancel) == "function" then self.store_request:cancel() end
     self.store_keyword, self.store_category_id = tostring(label or ""), category_id
     self.store_results, self.store_loading, self.store_error, self.store_notice = {}, true, nil, nil
     self.store_cursor, self.store_sid, self.store_has_more, self.store_page = 0, nil, false, 1
-    local generation, store_generation, delivered = self.generation, self.store_generation, false
+    local generation, store_generation, account_id, delivered =
+        self.generation, self.store_generation, self.account_id, false
     local handle = self:_fetchStore(0, function(wire, err)
         delivered = true
         if not self.alive or generation ~= self.generation or store_generation ~= self.store_generation then return end
+        if store_account_changed(self, account_id, callback) then return end
         self.store_request, self.store_loading = nil, false
         if not wire then self.store_error = err or "书城搜索失败"; callback(nil, self.store_error); return end
         local books = {}
@@ -253,13 +266,16 @@ end
 
 function WeRead:loadMoreStore(callback)
     callback = callback or function() end
+    self:_refreshAccount()
     if not self.alive or not self.client or not self.store_has_more or self.store_loading then return nil end
     self.store_loading, self.store_error, self.store_notice = true, nil, nil
-    local generation, store_generation, delivered = self.generation, self.store_generation, false
+    local generation, store_generation, account_id, delivered =
+        self.generation, self.store_generation, self.account_id, false
     local cursor = self.store_cursor
     local handle = self:_fetchStore(cursor, function(wire, err)
         delivered = true
         if not self.alive or generation ~= self.generation or store_generation ~= self.store_generation then return end
+        if store_account_changed(self, account_id, callback) then return end
         self.store_request, self.store_loading = nil, false
         if not wire then self.store_error = err or "书城加载失败"; callback(nil, self.store_error); return end
         local rows = type(wire.books) == "table" and wire.books or {}
