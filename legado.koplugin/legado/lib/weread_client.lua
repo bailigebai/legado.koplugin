@@ -102,21 +102,32 @@ function Client:chapterContent(book_id, chapter_uid, callback)
                 delivered=true
                 active=nil
                 if cancelled then return end
-                if not raw or raw=='{}' then return done(nil,err or '章节接口返回空内容') end
+                if not raw or raw=='{}' then return done(nil,err or '章节接口返回空内容',raw=='{}') end
                 done(raw)
             end,{raw=true,timeout=90,max_bytes=8*1024*1024,
                 headers={Referer=reader_url,Accept='application/json, text/plain, */*'}})
         if not delivered then active=handle end
     end
-    local reader_delivered=false
-    local reader=self:_call('GET',reader_url:sub(#WEB+1),nil,false,function(html,reader_err)
-        reader_delivered=true
-        active=nil
-        if not html then return finish(nil,reader_err) end
-        local psvts=html:match('"psvts"%s*:%s*"([%w_-]+)"')
-        if not psvts or #psvts>256 then return finish(nil,'微信读书阅读页缺少章节验证参数') end
+    local fetch_shards
+    local function fetch_reader_state()
+        local delivered=false
+        local handle=self:_call('GET',reader_url:sub(#WEB+1),nil,false,function(html,reader_err)
+            delivered=true
+            active=nil
+            if not html then return finish(nil,reader_err) end
+            local psvts=html:match('"psvts"%s*:%s*"([%w_-]+)"')
+            if not psvts or #psvts>256 then return finish(nil,'微信读书阅读页缺少章节验证参数') end
+            fetch_shards(psvts,false)
+        end,{raw=true,timeout=90,max_bytes=8*1024*1024,
+            headers={Accept='text/html,application/xhtml+xml'}})
+        if not delivered then active=handle end
+    end
+    fetch_shards=function(psvts,allow_fallback)
         shard('e_0',psvts,function(first,err)
-            if not first then return finish(nil,err) end
+            if not first then
+                if allow_fallback and err=='章节接口返回空内容' then return fetch_reader_state() end
+                return finish(nil,err)
+            end
             local text_chapter=first:sub(1,1)=='{' and first:find('"bookId"',1,true)~=nil
             local second,third=text_chapter and 't_0' or 'e_1',text_chapter and 't_1' or 'e_3'
             shard(second,psvts,function(part,part_err)
@@ -132,9 +143,8 @@ function Client:chapterContent(book_id, chapter_uid, callback)
                 end)
             end)
         end)
-    end,{raw=true,timeout=90,max_bytes=2*1024*1024,
-        headers={Accept='text/html,application/xhtml+xml'}})
-    if not reader_delivered then active=reader end
+    end
+    fetch_shards(Protocol.encode(os.time()-1),true)
     return {cancel=function()
         if cancelled or finished then return false end
         cancelled=true

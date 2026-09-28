@@ -23,9 +23,7 @@ local calls={}
 local session={vid='v',access_token='a'}
 local requests={execute=function(_,spec,callback)
     calls[#calls+1]=spec
-    if spec.url:find('/web/reader/',1,true) then
-        callback({status=200,body='<script>window.__INITIAL_STATE__={"reader":{"psvts":"server-psvts"}};</script>'})
-    elseif spec.url:find('/e_0',1,true) then callback({status=200,body='{"bookId":"remote-1"}'})
+    if spec.url:find('/e_0',1,true) then callback({status=200,body='{"bookId":"remote-1"}'})
     elseif spec.url:find('/t_0',1,true) then callback({status=200,body=shard})
     elseif spec.url:find('/t_1',1,true) then callback({status=200,body=''}) end
     return {cancel=function() end}
@@ -37,15 +35,34 @@ Service.new(client):getContent({id='weread'},book,chapters[1],function(value,err
 end)
 eq(nil,error_value,'content request succeeds')
 eq('Hi',content and content.content,'decoded chapter reaches reader service')
-eq(4,#calls,'reader state is fetched before three text shard calls')
-eq('server-psvts',calls[2].body.ps,'chapter request uses server reader state')
-eq(true,calls[2].headers.Referer:find('/web/reader/',1,true)~=nil,'content request carries reader referer')
+eq(3,#calls,'normal chapter load only fetches three text shards')
+eq(true,calls[1].url:find('/e_0',1,true)~=nil,'chapter starts with the content endpoint')
+eq(true,type(calls[1].body.ps)=='string' and #calls[1].body.ps>0,'chapter request signs generated reader state')
+eq(true,calls[1].headers.Referer:find('/web/reader/',1,true)~=nil,'content request carries reader referer')
+local fallback_calls,fallback_first={},true
+local fallback_content,fallback_error
+Client.new{auth={session=function() return session end},requests={execute=function(_,spec,callback)
+    fallback_calls[#fallback_calls+1]=spec
+    if spec.url:find('/e_0',1,true) then
+        if fallback_first then fallback_first=false; callback({status=200,body='{}'})
+        else callback({status=200,body='{"bookId":"remote-1"}'}) end
+    elseif spec.url:find('/web/reader/',1,true) then
+        callback({status=200,body='<script>{"psvts":"server-psvts"}</script>'})
+    elseif spec.url:find('/t_0',1,true) then callback({status=200,body=shard})
+    elseif spec.url:find('/t_1',1,true) then callback({status=200,body=''}) end
+    return {cancel=function() end}
+end}}:chapterContent('remote-1','11',function(value,err) fallback_content,fallback_error=value,err end)
+eq(nil,fallback_error,'empty fast response recovers with server reader state')
+eq('Hi',fallback_content,'fallback still returns decoded content')
+eq(5,#fallback_calls,'reader page is requested only after an empty fast response')
+eq(true,fallback_calls[2].url:find('/web/reader/',1,true)~=nil,'fallback loads reader state')
+eq('server-psvts',fallback_calls[3].body.ps,'fallback retries with server reader state')
 local missing_calls,missing_error=0,nil
 Client.new{auth={session=function() return session end},requests={execute=function(_,spec,callback)
     missing_calls=missing_calls+1
-    callback({status=200,body='<html>reader unavailable</html>'})
+    callback({status=200,body=spec.url:find('/e_0',1,true) and '{}' or '<html>reader unavailable</html>'})
     return {cancel=function() end}
 end}}:chapterContent('remote-1','11',function(_,err) missing_error=err end)
-eq(1,missing_calls,'missing reader state does not send invalid shard requests')
+eq(2,missing_calls,'missing fallback reader state does not send more shard requests')
 eq('微信读书阅读页缺少章节验证参数',missing_error,'missing server state has a clear error')
 return count
