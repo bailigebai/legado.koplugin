@@ -1,5 +1,12 @@
 local WeRead = {}
 WeRead.__index = WeRead
+WeRead.RANKINGS = {
+    {id = "rising", label = "飙升榜"},
+    {id = "hot_search", label = "热搜榜"},
+    {id = "newbook", label = "新书榜"},
+    {id = "general_novel_rising", label = "小说榜"},
+    {id = "all", label = "总榜"},
+}
 local Json = require("legado.lib.json_codec")
 local Mapper = require("legado.lib.weread_mapper")
 
@@ -124,16 +131,23 @@ function WeRead:addToShelf(book, callback)
     return handle
 end
 
-function WeRead:searchStore(keyword, callback)
+function WeRead:_fetchStore(cursor, callback)
+    if self.store_category_id then
+        return self.client:category(self.store_category_id, cursor, callback)
+    end
+    return self.client:search(self.store_keyword, cursor, callback, self.store_sid)
+end
+
+function WeRead:_startStore(label, category_id, callback)
     callback = callback or function() end
     if not self.alive or not self.client then callback(nil, "微信书城不可用"); return nil end
     self.store_generation = (self.store_generation or 0) + 1
     if self.store_request and type(self.store_request.cancel) == "function" then self.store_request:cancel() end
-    self.store_keyword = tostring(keyword or "")
+    self.store_keyword, self.store_category_id = tostring(label or ""), category_id
     self.store_results, self.store_loading, self.store_error = {}, true, nil
     self.store_cursor, self.store_sid, self.store_has_more, self.store_page = 0, nil, false, 1
     local generation, store_generation, delivered = self.generation, self.store_generation, false
-    local handle = self.client:search(self.store_keyword, 0, function(wire, err)
+    local handle = self:_fetchStore(0, function(wire, err)
         delivered = true
         if not self.alive or generation ~= self.generation or store_generation ~= self.store_generation then return end
         self.store_request, self.store_loading = nil, false
@@ -154,13 +168,30 @@ function WeRead:searchStore(keyword, callback)
     return handle
 end
 
+function WeRead:searchStore(keyword, callback)
+    return self:_startStore(keyword, nil, callback)
+end
+
+function WeRead:categoryStore(category_id, label, callback)
+    callback = callback or function() end
+    local valid = false
+    for _, ranking in ipairs(self.RANKINGS) do
+        if ranking.id == category_id and ranking.label == label then valid = true; break end
+    end
+    if not valid or not self.client or type(self.client.category) ~= "function" then
+        callback(nil, "微信书城榜单不可用")
+        return nil
+    end
+    return self:_startStore(label, category_id, callback)
+end
+
 function WeRead:loadMoreStore(callback)
     callback = callback or function() end
     if not self.alive or not self.client or not self.store_has_more or self.store_loading then return nil end
     self.store_loading, self.store_error = true, nil
     local generation, store_generation, delivered = self.generation, self.store_generation, false
     local cursor = self.store_cursor
-    local handle = self.client:search(self.store_keyword, cursor, function(wire, err)
+    local handle = self:_fetchStore(cursor, function(wire, err)
         delivered = true
         if not self.alive or generation ~= self.generation or store_generation ~= self.store_generation then return end
         self.store_request, self.store_loading = nil, false
@@ -183,7 +214,7 @@ function WeRead:loadMoreStore(callback)
         self.store_has_more = (wire.hasMore == 1 or wire.hasMore == true)
             and #rows > 0 and next_cursor > cursor and added > 0
         callback(self.store_results)
-    end, self.store_sid)
+    end)
     if not delivered then self.store_request = handle end
     return handle
 end
@@ -191,7 +222,7 @@ end
 function WeRead:clearStore()
     self.store_generation = (self.store_generation or 0) + 1
     if self.store_request and type(self.store_request.cancel) == "function" then self.store_request:cancel() end
-    self.store_request, self.store_keyword, self.store_results = nil, nil, nil
+    self.store_request, self.store_keyword, self.store_category_id, self.store_results = nil, nil, nil, nil
     self.store_loading, self.store_error, self.store_has_more = false, nil, false
     self.store_cursor, self.store_sid, self.store_page = nil, nil, nil
 end

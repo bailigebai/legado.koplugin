@@ -172,6 +172,17 @@ function Client:search(keyword, cursor, callback, sid)
         .. "&maxIdx=" .. tostring(math.floor(max_idx)) .. "&fragmentSize=120&count=20&sid=" .. Url(tostring(sid or "")), nil, false, callback)
 end
 
+function Client:category(category_id, cursor, callback)
+    category_id = tostring(category_id or "")
+    if #category_id > 64 or not category_id:match("^[a-z_]+$") then
+        callback(nil, "榜单标识无效")
+        return nil
+    end
+    local max_index = math.floor(math.max(0, tonumber(cursor) or 0))
+    return self:_call("GET", "/web/bookListInCategory/" .. category_id
+        .. "?rank=1&maxIndex=" .. tostring(max_index), nil, false, callback)
+end
+
 function Client:bookInfo(book_id, callback)
     return self:_call("GET", "/web/book/info?bookId=" .. Url(tostring(book_id or "")), nil, false, callback)
 end

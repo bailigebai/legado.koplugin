@@ -461,7 +461,7 @@ function Presenter:_weread(view)
         end)
     end }
     actions[#actions + 1] = { text = "书城发现", enabled = view.client ~= nil, callback = function()
-        view.store_keyword, view.store_results = nil, nil
+        view:clearStore()
         return self:_wereadStore(view)
     end }
     actions[#actions + 1] = { text = "微信扫码登录", enabled = view.auth ~= nil, callback = function()
@@ -550,6 +550,15 @@ function Presenter:_wereadStore(view)
         end)
         return self:_wereadStore(view)
     end
+    for _, ranking in ipairs(view.RANKINGS or {}) do
+        items[#items + 1] = {text = ranking.label, enabled = view.client and type(view.client.category) == "function",
+            callback = function()
+                view:categoryStore(ranking.id, ranking.label, function()
+                    if weread_page_active(self, view, "weread_store_results") then self:_wereadStore(view) end
+                end)
+                return self:_wereadStore(view)
+            end}
+    end
     for _, label in ipairs({ "科幻", "文学", "历史", "悬疑", "言情" }) do
         items[#items + 1] = { text = label, callback = function() return search(label) end }
     end
@@ -566,7 +575,8 @@ function Presenter:_wereadStore(view)
                 { text = "确定", is_enter_default = true, callback = accepted } } } })
         return self:_showInput(dialog)
     end } }
-    return self:_library(view, { title = "微信书城", subpage = "weread_store_home", items = items, actions = actions,
+    return self:_library(view, { title = "微信书城", subpage = "weread_store_home",
+        items = items, page_size = 10, actions = actions,
         on_back = function() return self:_weread(view) end })
 end
 

@@ -63,4 +63,14 @@ eq(true, requests[8].spec.url:find("sid=session%-1") ~= nil,
 client:search("科幻", 1, function() end, "session-1")
 eq(true, requests[9].spec.url:find("maxIdx=1", 1, true) ~= nil,
     "a valid first search index is not reset to page zero")
+local ranked
+client:category("rising", 20, function(value) ranked = value end)
+eq("https://weread.qq.com/web/bookListInCategory/rising?rank=1&maxIndex=20",
+    requests[10].spec.url, "store ranking uses the live category JSON endpoint and cursor")
+requests[10].callback({status = 200, body = Json.encode({books = {{searchIdx = 21,
+    bookInfo = {bookId = "ranked-1", title = "榜单书"}}}, hasMore = 1})})
+eq("ranked-1", ranked.books[1].bookInfo.bookId, "ranked books retain the nested bookInfo data")
+client:category("../shelf", 0, function(value, err) ranked = value; eq("榜单标识无效", err,
+    "invalid category IDs are rejected before creating a request") end)
+eq(10, #requests, "invalid category ID cannot change the request path")
 return count
