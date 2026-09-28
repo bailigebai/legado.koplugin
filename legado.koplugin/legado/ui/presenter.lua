@@ -1866,19 +1866,22 @@ function Presenter:_cacheSettings(view)
     return widget
 end
 
-function Presenter:explainSelection(service, selected_text)
+function Presenter:explainSelection(service, selected_text, document)
     if type(selected_text) ~= 'string' or selected_text == '' or #selected_text > 4000 then
         return self:_info('请选择不超过 4000 字节的阅读内容。', 'AI 解释')
     end
     local dialog
     local default_extra = service.settings and service.settings:get('ai_prompt_extra') or ''
+    local function current() return not document or document.closed ~= true end
     local function accepted(extra)
         if extra == nil and dialog and type(dialog.getInputText) == 'function' then extra=dialog:getInputText() end
         if type(extra) ~= 'string' or #extra > 2000 then
             return self:_info('补充提示词不能超过 2000 字节。', 'AI 解释')
         end
         if not self:_closeWidget(dialog) then return false end
+        if not current() then return false end
         return service:explain(selected_text, extra, function(answer, err)
+            if not current() then return end
             if not answer then return self:_info(err or 'AI 解释失败', 'AI 解释') end
             local TextViewer=optional('ui/widget/textviewer')
             return self:_show(construct(TextViewer or self.info_message, { title='AI 解释', text=answer }))
