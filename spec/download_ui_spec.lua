@@ -4,6 +4,7 @@ local App = require("legado.ui.app")
 local Downloads = require("legado.ui.downloads")
 local Presenter = require("legado.ui.presenter")
 local BookDetail = require("legado.ui.book_detail")
+local Catalog = require("legado.ui.catalog")
 
 local count = 0
 local function equal(expected, actual, message) count = count + 1; assertx.equal(expected, actual, message) end
@@ -183,6 +184,43 @@ do
     equal(3, catalog_menu.page, "jump opens the requested chapter page")
     catalog_menu.items[7].callback()
     equal(37, selected, "selected chapter is passed as the inclusive range end")
+end
+
+do
+    local shown, selected = {}, nil
+    local chapters = {}
+    for index = 1, 45 do chapters[index] = { uid = "c" .. index, index = index, title = "第" .. index .. "章" } end
+    local catalog = Catalog.new(chapters)
+    catalog.cache_selection = true
+    catalog._detail = { alive = true, startCache = function(_, ending)
+        selected = ending
+        return { id = "direct-range", end_index = ending }
+    end }
+    catalog.on_cache_selected = function(task) return task end
+    catalog:setOrder(true)
+    local presenter = Presenter.new({ ui_manager = { show = function(_, widget) shown[#shown + 1] = widget end },
+        input_dialog = { new = function(_, options) return options end } })
+    local menu = presenter:show(catalog)
+    local direct
+    for _, action in ipairs(menu.actions or {}) do
+        if action.text == "输入截至章节" then direct = action; break end
+    end
+    truthy(direct, "partial cache selector offers direct ending chapter input")
+    direct.callback()
+    local dialog = shown[#shown]
+    equal("输入截至章节", dialog.title, "direct range input explains its purpose")
+    dialog.buttons[1][1].callback()
+    equal(nil, selected, "cancelled input never queues a range")
+    direct.callback()
+    dialog = shown[#shown]
+    dialog.buttons[1][2].callback("0")
+    equal(nil, selected, "chapter zero never queues a range")
+    dialog.buttons[1][2].callback("46")
+    equal(nil, selected, "chapter beyond the catalog never queues a range")
+    dialog.buttons[1][2].callback("2.5")
+    equal(nil, selected, "fractional chapter never queues a range")
+    dialog.buttons[1][2].callback("37")
+    equal(37, selected, "direct input uses the inclusive chapter number even in reverse order")
 end
 
 do

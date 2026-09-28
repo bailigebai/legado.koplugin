@@ -1971,20 +1971,21 @@ function Presenter:_catalog(view)
     local page_count = math.max(1, math.ceil(#(view.items or {}) / page_size))
     local page_items = {}
     for offset = (page - 1) * page_size + 1, math.min(page * page_size, #(view.items or {})) do page_items[#page_items + 1] = view.items[offset] end
+    local function start_cache(ending)
+        local detail = view._detail
+        if not detail or detail.alive == false or self.library_view ~= view then return false end
+        local task, err = detail:startCache(ending)
+        if type(view.on_cache_selected) == "function" then
+            return view.on_cache_selected(task, err, ending)
+        end
+        detail._notice = type(task) == "table" and ("已加入第 1 至 " .. tostring(ending) .. " 章缓存队列")
+            or ("缓存失败 · " .. safe_token(type(err) == "table" and err.code, "DOWNLOAD_ERROR"))
+        return self:_detail(detail)
+    end
     local items = {}
     for _, item in ipairs(page_items) do
         items[#items + 1] = { title = tostring(item.index) .. ". " .. item.title .. (item.cached and " ✓" or ""), callback = function()
-            if view.cache_selection then
-                local detail = view._detail
-                if not detail or detail.alive == false or self.library_view ~= view then return false end
-                local task, err = detail:startCache(item.position)
-                if type(view.on_cache_selected) == "function" then
-                    return view.on_cache_selected(task, err, item.position)
-                end
-                detail._notice = type(task) == "table" and ("已加入第 1 至 " .. tostring(item.position) .. " 章缓存队列")
-                    or ("缓存失败 · " .. safe_token(type(err) == "table" and err.code, "DOWNLOAD_ERROR"))
-                return self:_detail(detail)
-            end
+            if view.cache_selection then return start_cache(item.position) end
             self:_hideLibrary(); self.library_view = nil
             return self:_startReading(function(complete) return view:select(item.position, complete) end, view._detail)
         end }
@@ -1996,23 +1997,31 @@ function Presenter:_catalog(view)
         { text = view.reverse and "顺序" or "倒叙", callback = function() view:setOrder(not view.reverse); view.display_page = 1; return self:_catalog(view) end },
         { text = "下20页", enabled = page < page_count, callback = function() view.display_page = math.min(page_count, page + 20); return self:_catalog(view) end },
     }
-    if view.cache_selection then actions[#actions + 1] = { text = "跳转章节", callback = function()
+    local function chapter_number_input(title, on_valid)
         local dialog
         local function accepted(value)
             if value == nil and dialog and type(dialog.getInputText) == "function" then value = dialog:getInputText() end
-            local target = tonumber(value)
-            if not target or target % 1 ~= 0 or target < 1 or target > #view.items then
-                return self:_info("请输入 1 至 " .. tostring(#view.items) .. " 的章节序号。", "跳转章节")
+            local position = tonumber(value)
+            if not position or position % 1 ~= 0 or position < 1 or position > #view.items then
+                return self:_info("请输入 1 至 " .. tostring(#view.items) .. " 的章节序号。", title)
             end
             if not self:_closeWidget(dialog) then return false end
-            view.display_page = math.ceil(view:displayPosition(target) / page_size)
-            return self:_catalog(view)
+            return on_valid(position)
         end
-        dialog = construct(self.input_dialog, { title = "跳转章节", input_type = "number", buttons = {
+        dialog = construct(self.input_dialog, { title = title, input_type = "number", buttons = {
             { { text = "取消", callback = function() return self:_closeWidget(dialog) end },
                 { text = "确定", is_enter_default = true, callback = accepted } },
         } })
         return self:_showInput(dialog)
+    end
+    if view.cache_selection then actions[#actions + 1] = { text = "输入截至章节", callback = function()
+        return chapter_number_input("输入截至章节", start_cache)
+    end } end
+    if view.cache_selection then actions[#actions + 1] = { text = "跳转章节", callback = function()
+        return chapter_number_input("跳转章节", function(target)
+            view.display_page = math.ceil(view:displayPosition(target) / page_size)
+            return self:_catalog(view)
+        end)
     end } end
     return self:_library(view, { title = view.cache_selection and "选择缓存截至章节" or "目录", subtitle = view.error or view.status, items = items, mode = "list", grid_columns = 2, page = page,
         page_count = page_count, page_size = page_size, already_paginated = true, actions = actions,
