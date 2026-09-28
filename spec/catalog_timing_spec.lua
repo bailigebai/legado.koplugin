@@ -30,11 +30,13 @@ A.equal('native',wait_metric.backend,'wait timing identifies reader backend')
 A.equal(1,wait_metric.chapters,'wait timing reports known chapter count')
 A.equal(nil,wait_metric.url,'wait timing never retains a source URL')
 
+state.transition={id=99,started=0} -- A background save must not inherit an old turn.
 assert(session:_updateCatalog(state,chapters,false,true))
 A.equal(1,writes,'persisted catalog still updates chapter storage')
 local save_metric=metrics[#metrics]
 A.equal('catalog_persist',save_metric.stage,'catalog persistence has a distinct timing stage')
 A.equal(2,save_metric.chapters,'persistence timing reports written chapter count')
+A.equal(nil,save_metric.attempt,'background persistence cannot claim an older chapter transition')
 A.equal(nil,save_metric.url,'persistence timing never retains a source URL')
 
 session.cache.writeCatalog=function() return nil,{code='STORAGE_ERROR'} end
@@ -44,4 +46,4 @@ A.equal('STORAGE_ERROR',err.code,'catalog persistence retains the storage error'
 A.equal('catalog_persist',metrics[#metrics].stage,'failed persistence is also timed')
 A.equal(1,writes,'failed file write never reaches chapter database')
 
-return 14
+return 15

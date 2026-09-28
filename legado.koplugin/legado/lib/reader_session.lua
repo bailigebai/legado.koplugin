@@ -775,7 +775,7 @@ function ReaderSession:_updateCatalog(state,chapters,complete,persist)
     if persist then
         local persist_started=clock()
         local function record_persist()
-            self:_timing('catalog_persist',persist_started,state.backend,state,{chapters=#snapshot})
+            self:_timing('catalog_persist',persist_started,state.backend,nil,{chapters=#snapshot})
         end
         local path,err=self.cache:writeCatalog(state.book.source_id,state.book.id,{chapters=snapshot,complete=complete})
         if not path then record_persist(); return nil,err or Errors.new(Errors.STORAGE_ERROR,'目录缓存保存失败') end
