@@ -54,11 +54,21 @@ do
     eq(1,scans(),'only unknown initial usage scans synchronously during a write burst')
     eq(1,#scheduler.queue,'body and html writes share one idle cleanup')
     scheduler:runAll()
-    eq(2,scans(),'idle callback performs one coalesced full scan')
+    eq(1,scans(),'idle callback skips a full scan below the cleanup threshold')
     local usage=assert(store:usage())
     eq(18,usage.bytes,'replacement subtracts the old payload size')
     local path=assert(store:writeBody('s','b',{uid='c'},'chapter'))
     eq(18+#disk[path],store.known_bytes,'envelope bytes, not only body bytes, count toward the hard cap')
+end
+
+do
+    local store,scheduler,_,_,scans=fixture()
+    for index=1,40 do
+        assert(store:writeHtml('s','b',{uid='chapter'..index},'chapter'))
+        scheduler:runAll()
+    end
+    eq(1,scans(),'forty chapter writes below the threshold do not rescan the cache tree')
+    eq(nil,next(store.pending_keep),'idle maintenance releases temporary book protection')
 end
 
 do
@@ -94,7 +104,7 @@ end
 do
     local store,scheduler,io_fs=fixture(100,60,20)
     store:setActive{source_id='s',book_id='b'}
-    assert(store:writeHtml('s','b',{uid='a'},string.rep('n',50)))
+    assert(store:writeHtml('s','b',{uid='a'},string.rep('n',70)))
     io_fs:atomicWrite('/cache/s/old/html/old.html',string.rep('o',30))
     local expected={code='STORAGE_ERROR',message='remove failed'}
     function io_fs:removeFile()return nil,expected end

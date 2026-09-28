@@ -5,6 +5,28 @@ local App = require("legado.ui.app")
 local Presenter = require("legado.ui.presenter")
 local count = 0
 local function eq(a,b,message) count=count+1; A.equal(a,b,message) end
+do
+    local ordered_books = {}
+    for index = 1, 14 do ordered_books[index] = { id = "recent" .. index, name = "书" .. index } end
+    local progress = {
+        recent2 = { updated_at = 200 },
+        recent13 = { updated_at = 100 },
+        recent14 = { fraction = 0.5 },
+    }
+    local recent_shelf = Shelf.new{storage = {
+        listShelf = function() return ordered_books end,
+        getProgress = function(_, id) return progress[id] end,
+    }}
+    eq("recent2", recent_shelf:page(1, "cover").items[1].book.id, "most recently read book leads the cover shelf")
+    eq("recent13", recent_shelf:page(1, "text").items[2].book.id, "text shelf uses the same reading order")
+    eq("recent14", recent_shelf:page(2, "cover").items[2].book.id, "reading order is applied before pagination")
+    progress.recent13.updated_at = 300
+    eq("recent13", recent_shelf:page(1, "cover").items[1].book.id, "returning to the shelf reflects the latest reading time")
+    recent_shelf:setFilter("unread")
+    eq("recent1", recent_shelf:page(1, "cover").items[1].book.id, "unread books retain their existing order")
+    recent_shelf:setFilter("reading")
+    eq("recent13", recent_shelf:page(1, "cover").items[1].book.id, "reading filter keeps the most recent book first")
+end
 local books = {}
 for i=1,27 do books[i]={id="b"..i,name="书"..i,kind=i%2==1 and "玄幻" or "科幻",intro="完整简介"..i} end
 local storage = {listShelf=function() return books end,

@@ -72,11 +72,12 @@ function Shelf:page(page, mode, page_size_override)
     self.generation = self.generation + 1
     local generation = self.generation
     local books, category_counts = {}, {}
+    local read_at, original_order = {}, {}
     local counts = { all = 0, reading = 0, unread = 0 }
     local all_books = {}
     if self.source_mode ~= "local" then for _, book in ipairs(self.storage:listShelf() or {}) do if not book.is_local then all_books[#all_books + 1] = book end end end
     if self.source_mode == "local" or self.source_mode == "mixed" then for _, book in ipairs(self:_localBooks()) do all_books[#all_books + 1] = book end end
-    for _, book in ipairs(all_books) do
+    for index, book in ipairs(all_books) do
         local included = self.category == nil
         for _, name in ipairs(book_categories(book, self.settings == nil)) do
             category_counts[name] = (category_counts[name] or 0) + 1
@@ -86,9 +87,17 @@ function Shelf:page(page, mode, page_size_override)
             local progress = type(self.storage.getProgress) == "function" and self.storage:getProgress(book.id)
             local state = type(progress) == "table" and "reading" or "unread"
             counts.all, counts[state] = counts.all + 1, counts[state] + 1
-            if self.reading_state == "all" or self.reading_state == state then books[#books+1] = book end
+            if self.reading_state == "all" or self.reading_state == state then
+                books[#books+1] = book
+                read_at[book] = type(progress) == "table" and (tonumber(progress.updated_at or progress.updatedAt or progress.timestamp) or 0) or 0
+                original_order[book] = index
+            end
         end
     end
+    table.sort(books, function(a, b)
+        if read_at[a] == read_at[b] then return original_order[a] < original_order[b] end
+        return read_at[a] > read_at[b]
+    end)
     local categories = {}
     for _, name in ipairs(self.settings and self.settings:get("shelf_categories") or {}) do
         if trim(name) ~= "" and category_counts[name] == nil then category_counts[name] = 0 end

@@ -154,7 +154,8 @@ function CacheStore:_afterWrite(path,size)
     if not self.settings then self.pending_keep={};return end
     local function cleanup()
         self.cleanup_scheduled=nil
-        self:_cleanup()
+        local ok,_,threshold=pcall(self._limits,self)
+        if not ok or not self.known_bytes or self.known_bytes>threshold then self:_cleanup() end
         self.pending_keep={}
     end
     if self.scheduler and type(self.scheduler.scheduleIn)=='function' then
