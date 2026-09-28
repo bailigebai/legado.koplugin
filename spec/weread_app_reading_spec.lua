@@ -35,4 +35,16 @@ values.saved=nil
 app:startWeReadReading(book,function(document) opened=document end)
 eq(nil,values.saved,'empty cloud progress is not stored as a fabricated reading record')
 eq('native',opened.backend,'a book without cloud history still opens from the beginning')
+
+values.resume=nil
+local delayed_chapters
+local pending=App.new{storage=storage,reader_session=session,weread_client=client,
+    weread_service={getChapters=function(_,_,_,callback)
+        delayed_chapters=callback
+        return {cancel=function() end}
+    end}}
+local cancelled=pending:startWeReadReading(book,function() end)
+eq(true,cancelled:cancel(),'a pending WeRead reading request can be cancelled')
+delayed_chapters({chapter})
+eq(nil,values.resume,'cancelled chapter loading cannot open the reader later')
 return count

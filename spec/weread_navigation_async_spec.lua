@@ -64,4 +64,33 @@ shown[#shown].on_back()
 shown_before_add = #shown
 add_reply(nil, "network offline")
 eq(shown_before_add, #shown, "late addition failure does not open a message over the shelf")
+
+local reading_reply, reading_cancellations = nil, 0
+presenter.app = {startWeReadReading = function(_, _, callback)
+    reading_reply = callback
+    return {cancel = function() reading_cancellations = reading_cancellations + 1 end}
+end}
+local reading_view = View.new{auth = auth, client = {}}
+reading_view.synced = true
+reading_view.books = {{id = "local-1", remote_id = "remote-1", source_id = "weread", name = "阅读中"}}
+presenter:show(reading_view)
+shown[#shown].hero_action.callback()
+action("书城发现").callback()
+eq(1, reading_cancellations, "leaving the shelf cancels its pending reading request")
+local before_late_error = #shown
+reading_reply(nil, {message = "late reading error"})
+eq(before_late_error, #shown, "late reading error cannot cover the store")
+
+shown[#shown].on_back()
+shown[#shown].items[1].callback()
+action("开始阅读").callback()
+shown[#shown].on_back()
+eq(2, reading_cancellations, "leaving book detail cancels its pending reading request")
+before_late_error = #shown
+reading_reply(nil, {message = "late detail error"})
+eq(before_late_error, #shown, "late detail error cannot cover the shelf")
+
+shown[#shown].hero_action.callback()
+reading_reply(nil, {message = "current reading error"})
+eq("current reading error", shown[#shown].text, "current reading failure remains visible")
 return count

@@ -400,6 +400,10 @@ function Presenter:_library(view, options)
     local size = options.page_size or (options.mode == "detail" and 1 or options.mode == "grid" and 12 or options.mode == "cards" and 3 or 8)
     local pages = options.already_paginated and math.max(1, options.page_count or 1) or math.max(1, math.ceil(#all / size))
     page = math.min(page, pages)
+    if view.kind == "weread" and view.reading_location
+        and view.reading_location ~= tostring(options.subpage or "") .. ":" .. tostring(page) then
+        view:cancelReading()
+    end
     local slice = {}
     if options.already_paginated then slice = all
     else for i=(page-1)*size+1, math.min(page*size,#all) do slice[#slice+1]=all[i] end end
@@ -473,11 +477,25 @@ local function weread_page_active(presenter, view, page)
     return view.alive and presenter.library_view == view and presenter.library_subpage == page
 end
 
-function Presenter:_startWeReadReading(book)
+function Presenter:_startWeReadReading(view,book)
     if not self.app or not self.app.startWeReadReading then return self:_info('微信读书阅读服务不可用') end
-    return self.app:startWeReadReading(book,function(document,err)
-        if err then self:_info(err.message or '微信读书章节打开失败','微信读书') end
+    view:cancelReading()
+    local generation=view.reading_generation
+    local page=self.library_widget and self.library_widget.page or 1
+    local subpage=self.library_subpage
+    view.reading_location=tostring(subpage or '')..':'..tostring(page)
+    local finished=false
+    local request=self.app:startWeReadReading(book,function(document,err)
+        if generation~=view.reading_generation then return end
+        finished=true
+        view.reading_request,view.reading_location=nil,nil
+        if err and weread_page_active(self,view,subpage)
+            and self.library_widget and self.library_widget.page==page then
+            self:_info(err.message or '微信读书章节打开失败','微信读书')
+        end
     end)
+    if not finished then view.reading_request=request end
+    return request
 end
 
 function Presenter:_weread(view)
@@ -526,7 +544,7 @@ function Presenter:_weread(view)
     local widget = self:_library(view, { title = "微信读书", subpage = "weread_shelf", subtitle = subtitle,
         items = items, mode = has_books and model.mode or "list", grouped_actions = true,
         hero_action = has_books and model.page == 1 and { text = "继续阅读", callback = function()
-            return self:_startWeReadReading(model.items[1])
+            return self:_startWeReadReading(view,model.items[1])
         end } or nil,
         grid_columns = 4, grid_rows = 3, already_paginated = true,
         page = model.page, page_count = model.page_count, actions = actions, navigation = {},
@@ -625,7 +643,7 @@ function Presenter:_wereadBook(view, book)
         items = { item }, mode = "detail",grouped_actions=true,
         subtitle = "阅读进度：" .. tostring(math.floor(tonumber(book.progress_percent) or 0)) .. "%",
         actions = {
-            {text='开始阅读',callback=function() return self:_startWeReadReading(book) end},
+            {text='开始阅读',callback=function() return self:_startWeReadReading(view,book) end},
             view:hasBook(book) and {text='已在微信书架',enabled=false}
                 or {text='加入微信书架',callback=function()
                     return view:addToShelf(book,function(added,err)

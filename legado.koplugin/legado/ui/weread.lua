@@ -296,8 +296,16 @@ function WeRead:clearStore()
     self.store_cursor, self.store_sid, self.store_page = nil, nil, nil
 end
 
+function WeRead:cancelReading()
+    self.reading_generation = (self.reading_generation or 0) + 1
+    local request = self.reading_request
+    self.reading_request, self.reading_location = nil, nil
+    if request and type(request.cancel) == "function" then request:cancel() end
+end
+
 function WeRead:cancel()
     self.generation = self.generation + 1
+    self:cancelReading()
     if self.request and type(self.request.cancel) == "function" then self.request:cancel() end
     if self.store_request and type(self.store_request.cancel) == "function" then self.store_request:cancel() end
     if self.add_request and type(self.add_request.cancel) == "function" then self.add_request:cancel() end
