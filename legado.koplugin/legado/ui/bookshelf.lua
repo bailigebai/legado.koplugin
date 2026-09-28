@@ -75,7 +75,16 @@ function Shelf:page(page, mode, page_size_override)
     local read_at, read_state, original_order = {}, {}, {}
     local counts = { all = 0, reading = 0, unread = 0 }
     local all_books = {}
-    if self.source_mode ~= "local" then for _, book in ipairs(self.storage:listShelf() or {}) do if not book.is_local then all_books[#all_books + 1] = book end end end
+    local load_error
+    if self.source_mode ~= "local" then
+        local saved, err = self.storage:listShelf()
+        if type(saved) ~= "table" then load_error = err or { code = "STORAGE_ERROR" }
+        else
+            for _, book in ipairs(saved) do
+                if not book.is_local then all_books[#all_books + 1] = book end
+            end
+        end
+    end
     if self.source_mode == "local" or self.source_mode == "mixed" then for _, book in ipairs(self:_localBooks()) do all_books[#all_books + 1] = book end end
     for index, book in ipairs(all_books) do
         local included = self.category == nil
@@ -145,9 +154,9 @@ function Shelf:page(page, mode, page_size_override)
     return {
         items = items, page = page, page_count = page_count, mode = mode, total = #books,
         categories = categories, counts = counts, category = self.category, reading_state = self.reading_state,
-        source_mode = self.source_mode, warning = self.local_warning,
-        empty_text = #books == 0 and "暂无收藏" or nil,
-        empty_actions = #books == 0 and {
+        source_mode = self.source_mode, warning = self.local_warning, load_error = load_error,
+        empty_text = #books == 0 and (load_error and "书架读取失败" or "暂无收藏") or nil,
+        empty_actions = #books == 0 and not load_error and {
             { text = "搜索添加", callback = self.on_search },
             { text = "书源管理", callback = self.on_sources },
         } or nil,

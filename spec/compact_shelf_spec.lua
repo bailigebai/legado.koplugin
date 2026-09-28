@@ -27,6 +27,37 @@ do
     recent_shelf:setFilter("reading")
     eq("recent13", recent_shelf:page(1, "cover").items[1].book.id, "reading filter keeps the most recent book first")
 end
+do
+    local failed, displayed = true, {}
+    local unreliable_storage = {
+        listShelf = function()
+            if failed then return nil, { code = "STORAGE_ERROR" } end
+            return { { id = "restored", name = "恢复的书" } }
+        end,
+        getProgress = function() return nil end,
+    }
+    local failed_page = Shelf.new({ storage = unreliable_storage }):page(1, "hero")
+    eq("STORAGE_ERROR", failed_page.load_error.code,
+        "shelf read failure remains distinguishable from an empty shelf")
+    eq("书架读取失败", failed_page.empty_text,
+        "shelf model does not call a failed read an empty collection")
+    local presenter = Presenter.new({ ui_manager = {
+        show = function(_, widget) displayed[#displayed + 1] = widget end,
+        close = function() end,
+    } })
+    local app = App.new({ storage = unreliable_storage,
+        show = function(view) return presenter:show(view) end })
+    presenter.app = app
+    app:openHome()
+    eq(true, displayed[#displayed].subtitle:find("书架读取失败", 1, true) ~= nil,
+        "shelf screen reports the storage failure")
+    eq("重新读取", displayed[#displayed].header_action.text,
+        "failed shelf offers a direct retry without changing the four action groups")
+    failed = false
+    displayed[#displayed].header_action.callback()
+    eq("restored", displayed[#displayed].items[1].book.id,
+        "retry reads the recovered shelf without reopening the plugin")
+end
 local books = {}
 for i=1,27 do books[i]={id="b"..i,name="书"..i,kind=i%2==1 and "玄幻" or "科幻",intro="完整简介"..i} end
 local storage = {listShelf=function() return books end,

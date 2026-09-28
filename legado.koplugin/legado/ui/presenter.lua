@@ -731,7 +731,8 @@ function Presenter:_shelf(view, page)
         items[#items+1]=book_item
     end
     local local_mode=view.source_mode=='local'
-    local subtitle = model.warning or (tostring(model.total or #items)..' 本'..(local_mode and '本地书籍' or '收藏'))
+    local subtitle = model.load_error and ('书架读取失败 · '..safe_token(type(model.load_error)=='table' and model.load_error.code,'STORAGE_ERROR'))
+        or model.warning or (tostring(model.total or #items)..' 本'..(local_mode and '本地书籍' or '收藏'))
     if view.batch_select then
         local selected_count = 0
         for _, enabled in pairs(view.selected_books or {}) do if enabled then selected_count = selected_count + 1 end end
@@ -744,19 +745,26 @@ function Presenter:_shelf(view, page)
             return self:_startReading(function(complete,progress) return detail:startReading(complete,progress) end,detail)
         end}
     end
-    return self:_library(view,{title=local_mode and '本地书架' or '书架',subtitle=subtitle,items=items,
-        mode=model.mode=="hero" and model.page==1 and "shelf_hero" or "grid",hero_action=hero_action,
-        header_action={text=local_mode and '书源书架' or '本地书架',callback=function()
+    local header_action = model.load_error and {text='重新读取',callback=function() return self:_shelf(view,model.page) end}
+        or {text=local_mode and '书源书架' or '本地书架',callback=function()
             view.source_mode=local_mode and 'sources' or 'local'; view:setFilter('all',nil)
             return self:_shelf(view,1)
-        end},
+        end}
+    local empty_text
+    if model.load_error then empty_text='书架读取失败。请点击右上角“重新读取”重试；收藏数据未被更改。'
+    elseif local_mode then empty_text='还没有本地书籍，可在“更多 → 设置”添加书籍目录。'
+    elseif model.category or (model.reading_state and model.reading_state~='all') then
+        empty_text='这个分类还没有书，可在“整理书架”切换分类或去“找书”。'
+    else empty_text='书架还是空的，点击“找书”收藏第一本书。' end
+    return self:_library(view,{title=local_mode and '本地书架' or '书架',subtitle=subtitle,items=items,
+        mode=model.mode=="hero" and model.page==1 and "shelf_hero" or "grid",hero_action=hero_action,
+        header_action=header_action,
         grid_columns=4,grid_rows=3,categories={},already_paginated=true,page=model.page,page_count=model.page_count,
         batch_select=view.batch_select, selected_books=view.selected_books, storage=view.storage,
         actions=ShelfMenu.groups(self,view,model.page),grouped_actions=true,navigation={},
         on_prev=model.page>1 and function() return self:_shelf(view,model.page-1) end or nil,
         on_next=model.page<model.page_count and function() return self:_shelf(view,model.page+1) end or nil,
-        empty_text=local_mode and '还没有本地书籍，可在“更多 → 设置”添加书籍目录。' or (model.category or (model.reading_state and model.reading_state~="all"))
-            and "这个分类还没有书，可在“整理书架”切换分类或去“找书”。" or "书架还是空的，点击“找书”收藏第一本书。"})
+        empty_text=empty_text})
 end
 
 function Presenter:_search_results(view)
