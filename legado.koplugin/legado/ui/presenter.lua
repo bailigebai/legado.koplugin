@@ -2259,7 +2259,7 @@ function Presenter:_detail(view)
                 catalog._detail=view
                 catalog._back=function() return self:_detail(view) end
                 return self:_catalog(catalog)
-            end)
+            end,{background_catalog=true})
         end},
         {text="导出 EPUB",callback=function()
             local task,err=view:startDownload()
@@ -2409,7 +2409,7 @@ function Presenter:_downloadCacheOptions(view, detail)
                     return task
                 end
                 return self:_catalog(catalog)
-            end)
+            end,{background_catalog=true})
             if not delivered and not handle and not detail.loading_catalog then
                 self:_hideLibrary(); self.library_view, self.library_subpage = nil, nil; self.controllers[detail] = nil
                 detail:close(); self:_downloadBookPicker(view)

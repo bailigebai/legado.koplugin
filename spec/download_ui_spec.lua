@@ -3,6 +3,7 @@ local assertx = require("assertions")
 local App = require("legado.ui.app")
 local Downloads = require("legado.ui.downloads")
 local Presenter = require("legado.ui.presenter")
+local BookDetail = require("legado.ui.book_detail")
 
 local count = 0
 local function equal(expected, actual, message) count = count + 1; assertx.equal(expected, actual, message) end
@@ -125,6 +126,20 @@ do
 end
 
 do
+    local received_options
+    local detail = BookDetail.new({ book = { id = "long-book", source_id = "source-ui" },
+        source_lookup = function() return { id = "source-ui" } end,
+        service = { getChapters = function(_, _, _, callback, options)
+            received_options = options
+            callback({ { uid = "chapter-1", index = 1, title = "第一章" } })
+            return true
+        end } })
+    detail:loadCatalog(function() end, { background_catalog = true })
+    equal(true, received_options and received_options.background_catalog,
+        "book detail forwards long-catalog options to the book service")
+end
+
+do
     local shown, selected = {}, nil
     local ui = { show = function(_, widget) shown[#shown + 1] = widget end }
     local range_manager = { enqueueCache = function(_, _, _, ending)
@@ -135,6 +150,12 @@ do
     local chapters = {}
     for index = 1, 45 do chapters[index] = { uid = "c" .. index, index = index, title = "第" .. index .. "章" } end
     detail.catalog_lookup = function() return chapters end
+    local catalog_options
+    local original_load_catalog = detail.loadCatalog
+    detail.loadCatalog = function(self, callback, options)
+        catalog_options = options
+        return original_load_catalog(self, callback, options)
+    end
     local presenter = Presenter.new({ app = app, ui_manager = ui,
         input_dialog = { new = function(_, options) return options end } })
     local detail_menu = presenter:show(detail)
@@ -147,6 +168,8 @@ do
     end
     truthy(partial, "detail offers a partial chapter cache action")
     partial.callback()
+    equal(true, catalog_options and catalog_options.background_catalog,
+        "book detail uses the complete catalog for partial cache selection")
     local catalog_menu = shown[#shown]
     equal("选择缓存截至章节", catalog_menu.title, "partial cache opens chapter selector")
     local jump

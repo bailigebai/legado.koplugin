@@ -13,7 +13,7 @@ local function item(items, label)
 end
 
 local source_book = { id = "source-book", source_id = "source-1", name = "在线书" }
-local tasks, calls, shown, scheduled = {}, {}, {}, {}
+local tasks, calls, shown, scheduled, catalog_options = {}, {}, {}, {}, {}
 local scheduler = {scheduleIn = function(_, _, callback) scheduled[#scheduled + 1] = callback end}
 local detail
 local app = {
@@ -31,7 +31,8 @@ local app = {
                 return task
             end,
             startDownload = function() return { id = "export", status = "queued" } end,
-            loadCatalog = function(_, callback)
+            loadCatalog = function(_, callback, options)
+                catalog_options[#catalog_options + 1] = options
                 local chapters = {}
                 for index = 1, 45 do chapters[index] = { index = index, title = "第" .. index .. "章" } end
                 callback(Catalog.new(chapters), nil)
@@ -69,6 +70,8 @@ eq(true, view.items[1].text:find("1/3", 1, true) ~= nil,
 item(shown[#shown].item_table, "新建缓存任务").callback()
 shown[#shown].item_table[1].callback()
 item(shown[#shown].item_table, "缓存部分章节").callback()
+eq(true, catalog_options[1] and catalog_options[1].background_catalog,
+    "download picker loads the complete long-book catalog before selecting a range")
 eq("选择缓存截至章节", shown[#shown].title, "partial cache opens the existing chapter selector")
 local jump = item(shown[#shown].actions, "跳转章节")
 truthy(jump, "partial cache can jump directly to an ending chapter")

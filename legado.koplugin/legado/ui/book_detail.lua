@@ -132,7 +132,7 @@ function BookDetail:loadInfo(callback)
     if completed then self.info_request = nil else self.info_request = request end
     return self.info_request
 end
-function BookDetail:loadCatalog(callback)
+function BookDetail:loadCatalog(callback, options)
     callback = callback or function() end
     if not self.alive then return nil end
     cancel_handle(self.catalog_request)
@@ -167,7 +167,7 @@ function BookDetail:loadCatalog(callback)
         if chapters then self.catalog = make_catalog(chapters) end
         callback(self.catalog, err)
     end
-    local ok, request = pcall(self.service.getChapters, self.service, source, book, done)
+    local ok, request = pcall(self.service.getChapters, self.service, source, book, done, options)
     if not ok then
         self.loading_catalog, self.catalog_error, self.catalog_request = false, { code = "REQUEST_ERROR", message = "目录请求启动失败" }, nil
         callback(nil, self.catalog_error)

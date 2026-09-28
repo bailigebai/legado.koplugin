@@ -386,4 +386,29 @@ do
     equal('PARSE_ERROR', failure and failure.code, 'pagination limit remains a structured failure')
 end
 
+do
+    local book = Models.book(sources.a, { name = 'Long', url = '/long-book', toc_url = '/toc/page1' }, sources.a.bookSourceUrl)
+    local function read_catalog(options)
+        local request = controlled_engine()
+        local service = new_service(request, 2)
+        local chapters, failure
+        service:getChapters(sources.a, book, function(value, err) chapters, failure = value, err end, options)
+        for page = 1, 65 do
+            if not request.pending[page] then break end
+            request:respond(page, { status = 200, final_url = 'https://a.test/toc/page' .. page,
+                body = Json.encode({ chapters = { { title = 'Chapter ' .. page, url = '/chapter-' .. page } },
+                    next = page < 65 and 'page' .. (page + 1) or nil }) })
+        end
+        return chapters, failure, #request.requests
+    end
+    local short, short_error, short_requests = read_catalog(nil)
+    equal(nil, short, 'normal catalog cannot claim a 65-page directory is complete')
+    equal('PARSE_ERROR', short_error and short_error.code, 'normal 64-page limit reports an error')
+    equal(64, short_requests, 'normal catalog stops at its bounded page limit')
+    local extended, extended_error, extended_requests = read_catalog({ background_catalog = true })
+    equal(nil, extended_error, 'cache-selection catalog may use the existing background limit')
+    equal(65, extended and #extended, 'cache-selection catalog reaches chapters after page 64')
+    equal(65, extended_requests, 'cache-selection catalog requests the final page')
+end
+
 return count
