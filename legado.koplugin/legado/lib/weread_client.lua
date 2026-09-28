@@ -206,20 +206,48 @@ function Client:getProgress(book_id, callback)
     return self:_call("GET", "/web/book/getProgress?bookId=" .. Url(tostring(book_id or "")), nil, false, callback)
 end
 
-function Client:bookReviews(book_id, callback)
+local function review_cursor_number(value)
+    local number = tonumber(value)
+    if not number or number ~= number or number < 0 or number > 1000000000000 then return nil end
+    return math.floor(number)
+end
+
+local function wrong_review_book(candidate, book_id)
+    if type(candidate) ~= "table" then return false end
+    if candidate.bookId ~= nil and tostring(candidate.bookId) ~= book_id then return true end
+    local nested = candidate.book
+    return type(nested) == "table" and nested.bookId ~= nil and tostring(nested.bookId) ~= book_id
+end
+
+function Client:bookReviews(book_id, callback, cursor)
     book_id = tostring(book_id or "")
+    if book_id == "" then callback(nil, "书籍标识无效"); return nil end
+    local max_idx = review_cursor_number(cursor and cursor.max_idx) or 0
+    local synckey = review_cursor_number(cursor and cursor.synckey) or 0
     return self:_call("GET", "/review/list?bookId=" .. Url(book_id)
-        .. "&listType=0&listMode=0&synckey=0&count=20", nil, true, function(data, err)
+        .. "&reviewListType=0&listMode=0&synckey=" .. synckey
+        .. "&maxIdx=" .. max_idx .. "&count=20", nil, true, function(data, err)
         if not data then return callback(nil, err) end
+        local wire_rows = type(data.reviews) == "table" and data.reviews or {}
         local selected = {}
-        for _, row in ipairs(type(data.reviews) == "table" and data.reviews or {}) do
+        for _, row in ipairs(wire_rows) do
             local outer = type(row) == "table" and (row.review or row) or nil
             local review = type(outer) == "table" and (outer.review or outer) or nil
-            if type(review) == "table" and (review.bookId == nil or tostring(review.bookId) == book_id) then
+            if type(review) == "table" and not wrong_review_book(row, book_id)
+                and not wrong_review_book(outer, book_id)
+                and not wrong_review_book(review, book_id) then
                 selected[#selected + 1] = row
             end
         end
         data.reviews = selected
+        local last = wire_rows[#wire_rows]
+        local next_idx = type(last) == "table" and review_cursor_number(last.idx)
+        local next_key = review_cursor_number(data.synckey)
+        if (data.reviewsHasMore == 1 or data.reviewsHasMore == true)
+            and next_idx and next_idx > max_idx and next_key then
+            data.next_cursor = {max_idx = next_idx, synckey = next_key}
+        end
+        data.has_more = data.next_cursor ~= nil
         callback(data)
     end)
 end

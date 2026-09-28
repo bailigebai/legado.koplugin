@@ -609,45 +609,89 @@ function Presenter:_wereadBook(view, book)
         end })
 end
 
-function Presenter:_wereadReviews(view, book)
+function Presenter:_wereadReviews(view, book, page)
     local review_page = "weread_reviews:" .. book.remote_id
-    local function back()
+    local account_id = view.account_id
+    local function cancel_request()
         view.review_generation = (view.review_generation or 0) + 1
         if view.review_request and type(view.review_request.cancel) == "function" then
             view.review_request:cancel()
         end
-        view.review_request = nil
+        view.review_request, view.review_loading = nil, false
+    end
+    if view.review_book_id ~= book.remote_id or view.review_account_id ~= account_id then
+        cancel_request()
+        view.review_book_id, view.review_account_id = book.remote_id, account_id
+        view.review_pages, view.review_next_cursor = {}, nil
+        view.review_has_more, view.review_error = false, nil
+    end
+    page = math.max(1, math.floor(tonumber(page) or 1))
+    local loaded = #(view.review_pages or {})
+    if page > loaded + 1 or (page > loaded and loaded > 0 and not view.review_has_more) then
+        page = math.max(1, loaded)
+    end
+    local function back()
+        cancel_request()
         return self:_wereadBook(view, book)
     end
-    if view.review_book_id == book.remote_id and view.review_rows then
+    if view.review_pages[page] then
         local items = {}
-        for _, row in ipairs(view.review_rows) do
+        for _, row in ipairs(view.review_pages[page]) do
             local outer = type(row) == "table" and (row.review or row) or nil
             local review = type(outer) == "table" and (outer.review or outer) or nil
-            if type(review) == "table" and (review.bookId == nil or tostring(review.bookId) == book.remote_id) then
+            local owner = type(review) == "table" and (review.bookId
+                or type(review.book) == "table" and review.book.bookId)
+            if type(review) == "table" and (owner == nil or tostring(owner) == book.remote_id) then
                 local content = tostring(review.content or review.reviewContent or "")
                 items[#items + 1] = { text = content ~= "" and content or "无文字评论",
                     callback = function() return self:_info(content, "微信读书评论") end }
             end
         end
+        local page_count = loaded + (view.review_has_more and 1 or 0)
         return self:_library(view, { title = "阅读评论 · " .. book.name, subpage = review_page,
-            items = items, empty_text = "这本书还没有评论。", on_back = back })
+            items = items, empty_text = "这页没有可显示的评论。", on_back = back,
+            already_paginated = true, page = page, page_count = page_count,
+            on_prev = page > 1 and function() return self:_wereadReviews(view, book, page - 1) end or nil,
+            on_next = page < page_count and function()
+                return self:_wereadReviews(view, book, page + 1)
+            end or nil })
+    end
+    local previous = page > 1 and function()
+        cancel_request()
+        return self:_wereadReviews(view, book, page - 1)
+    end or nil
+    if view.review_error then
+        return self:_library(view, { title = "阅读评论 · " .. book.name, subpage = review_page,
+            items = {{text = "加载失败，点击重试", callback = function()
+                view.review_error = nil
+                return self:_wereadReviews(view, book, page)
+            end}}, subtitle = view.review_error, already_paginated = true,
+            page = page, page_count = page, on_prev = previous, on_back = back })
     end
     local widget = self:_library(view, { title = "阅读评论 · " .. book.name, subpage = review_page,
         items = { { text = "正在加载评论…", enabled = false } },
-        on_back = back })
+        already_paginated = true, page = page, page_count = page,
+        on_prev = previous, on_back = back })
+    if view.review_loading then return widget end
     if not view.client then return widget end
-    view.review_book_id = book.remote_id
+    view.review_loading = true
     view.review_generation = (view.review_generation or 0) + 1
     local generation, delivered = view.review_generation, false
+    local cursor = page > 1 and view.review_next_cursor or nil
     local handle = view.client:bookReviews(book.remote_id, function(data, err)
         delivered = true
         if not weread_page_active(self, view, review_page)
-            or view.review_generation ~= generation or view.review_book_id ~= book.remote_id then return end
-        view.review_request = nil
-        if data then view.review_rows = data.reviews or {}; self:_wereadReviews(view, book)
-        else self:_info(err or "评论加载失败", "微信读书评论") end
-    end)
+            or view.review_generation ~= generation or view.review_book_id ~= book.remote_id
+            or view.review_account_id ~= account_id then return end
+        local session = view.auth and view.auth:session()
+        if not session or session.vid ~= account_id then return end
+        view.review_request, view.review_loading = nil, false
+        if data then
+            view.review_pages[page] = data.reviews or {}
+            view.review_next_cursor, view.review_has_more = data.next_cursor, data.has_more == true
+        else view.review_error = err or "评论加载失败" end
+        self:_wereadReviews(view, book, page)
+    end, cursor)
     if not delivered then view.review_request = handle end
     return self.library_widget or widget
 end

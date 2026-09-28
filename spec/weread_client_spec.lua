@@ -29,7 +29,7 @@ eq("b2", found.books[1].bookId, "search results reach the caller")
 local reviews
 client:bookReviews("b1", function(value) reviews = value end)
 eq(true, requests[3].spec.url:find("/review/list", 1, true) ~= nil, "review list uses the Eink endpoint")
-eq(true, requests[3].spec.url:find("listType=0", 1, true) ~= nil, "book reviews include public comments")
+eq(true, requests[3].spec.url:find("reviewListType=0", 1, true) ~= nil, "book reviews include public comments")
 requests[3].callback({ status = 200, body = Json.encode({ reviews = {
     { review = { review = { bookId = "b1", content = "公开评论" } } },
     { review = { bookId = "b2", content = "其他书评论" } },
@@ -96,4 +96,24 @@ requests[12].callback({ status = 200, body = '{"errCode":-2012}' })
 eq(2, renews, "raw authentication errors still refresh the WeRead session")
 requests[13].callback({ status = 200, body = "<html>reader</html>" })
 eq("<html>reader</html>", raw_auth_result, "refreshed raw request returns the reader page")
+local review_page
+client:bookReviews("b1", function(value) review_page = value end)
+requests[14].callback({status = 200, body = Json.encode({reviewsHasMore = 1, synckey = 123,
+    reviews = {
+        {idx = 20, review = {review = {book = {bookId = "b1"}, content = "本书评论"}}},
+        {idx = 21, review = {review = {book = {bookId = "b2"}, content = "其他书评论"}}},
+        {idx = 22, review = {review = {book = {bookId = "b1"}, content = "本书另一条"}}},
+    }})})
+eq(2, #review_page.reviews, "nested book identity filters reviews for other books")
+eq(true, review_page.has_more, "review response keeps the server's next-page state")
+eq(22, review_page.next_cursor.max_idx, "next review cursor uses the last wire row")
+eq(123, review_page.next_cursor.synckey, "next review cursor carries the server sync key")
+client:bookReviews("b1", function(value) review_page = value end, review_page.next_cursor)
+eq(true, requests[15].spec.url:find("maxIdx=22", 1, true) ~= nil,
+    "later review pages use the last review index")
+eq(true, requests[15].spec.url:find("synckey=123", 1, true) ~= nil,
+    "later review pages preserve the sync key")
+requests[15].callback({status = 200, body = Json.encode({reviewsHasMore = 1, synckey = 123,
+    reviews = {{idx = 22, review = {review = {book = {bookId = "b1"}, content = "重复页"}}}}})})
+eq(false, review_page.has_more, "a repeated review cursor stops further requests")
 return count
