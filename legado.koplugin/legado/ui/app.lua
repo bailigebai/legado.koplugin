@@ -384,7 +384,19 @@ function App:openSettings(document, chrome_only, back, section)
     end
     local cache = self.reader_session and self.reader_session.cache
     local function no_active_downloads()
-        for _,task in ipairs(self.storage and self.storage.listDownloadTasks and self.storage:listDownloadTasks() or {}) do
+        local tasks = {}
+        if self.storage and type(self.storage.listDownloadTasks) == 'function' then
+            local ok, listed, list_error = pcall(self.storage.listDownloadTasks, self.storage)
+            if not ok or type(listed) ~= 'table' then
+                return nil,type(list_error) == 'table' and list_error
+                    or {code='STORAGE_ERROR',message='下载任务读取失败'}
+            end
+            tasks = listed
+        end
+        for _,task in ipairs(tasks) do
+            if type(task) ~= 'table' then
+                return nil,{code='STORAGE_ERROR',message='下载任务记录无效'}
+            end
             if task.status=='running' or task.status=='queued' or task.status=='cancelling' then
                 return nil,{code='DOWNLOAD_ACTIVE',message='请等待下载结束或取消完成'}
             end
@@ -406,6 +418,7 @@ function App:openSettings(document, chrome_only, back, section)
         chrome_only = chrome_only,document=document,
         cache_usage = cache and function() return cache:usage() end or nil,
         cache_cleanup = cache and function()
+            local ready,err=no_active_downloads();if not ready then return nil,err end
             local state=self.reader_session and self.reader_session.active
             local keep=state and state.book and {source_id=state.book.source_id,book_id=state.book.id} or nil
             return cache:enforceLimit(self.settings:get('cache_limit_mb'),self.settings:get('cache_cleanup_threshold_mb'),self.settings:get('cache_retain_mb'),keep)
