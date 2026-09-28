@@ -599,6 +599,7 @@ function Presenter:_wereadBook(view, book)
                     return view:addToShelf(book,function(added,err)
                         if not added then return self:_info(err or '加入微信书架失败','微信读书') end
                         if weread_page_active(self, view, detail_page) then self:_wereadBook(view,book) end
+                        if err then return self:_info(err, '微信读书') end
                     end)
                 end},
             { text = "阅读评论", callback = function() return self:_wereadReviews(view, book) end },

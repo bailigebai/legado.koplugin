@@ -45,4 +45,24 @@ add_action.callback()
 eq("store-1", added, "the selected book is sent to the remote shelf")
 eq(1, synced, "successful addition refreshes the WeRead shelf")
 eq("已在微信书架", shown[#shown].actions[2].text, "added book cannot be added twice")
+local failed_view = View.new{auth = auth, client = client, path = "weread-shelf.json",
+    fs = {readBounded = function() return nil end, atomicWrite = function() return nil end}}
+failed_view.synced = true
+presenter:show(failed_view)
+local failed_store
+for _, action in ipairs(shown[#shown].actions) do
+    if action.text == "书城发现" then failed_store = action end
+end
+failed_store.callback()
+for _, item in ipairs(shown[#shown].items) do
+    if item.text == "科幻" then item.callback(); break end
+end
+shown[#shown].items[1].callback()
+local failed_add
+for _, action in ipairs(shown[#shown].actions) do
+    if action.text == "加入微信书架" then failed_add = action end
+end
+failed_add.callback()
+eq("微信书架已更新，但本地保存失败；重启后可能恢复上次书架", shown[#shown].text,
+    "the book detail shows a warning when a successful remote addition cannot be saved locally")
 return count

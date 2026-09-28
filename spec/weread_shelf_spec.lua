@@ -1,5 +1,6 @@
 local A = require("assertions")
 local View = require("legado.ui.weread")
+local Mapper = require("legado.lib.weread_mapper")
 local count = 0
 local function eq(expected, actual, message) count = count + 1; A.equal(expected, actual, message) end
 local saved, callback = nil, nil
@@ -72,4 +73,41 @@ failed_view:sync()
 callback({books = {{bookId = "unsaved", title = "本次同步"}}})
 eq("已登录", failed_view.status, "a successful manual retry clears the storage warning")
 eq("unsaved", make_view().books[1].remote_id, "a successful retry persists the new shelf")
+local pending_add, pending_shelf, added_result, added_warning
+local add_client = {addToShelf = function(_, _, done) pending_add = done; return {cancel = function() end} end,
+    shelfSync = function(_, done) pending_shelf = done; return {cancel = function() end} end}
+local unsaved_add = View.new{auth = auth, client = add_client, fs = failed_fs, path = "weread-shelf.json"}
+failed_fs.atomicWrite = function() return nil, {code = "STORAGE_ERROR"} end
+unsaved_add:addToShelf({remote_id = "new-book", name = "新书"}, function(result, warning)
+    added_result, added_warning = result, warning
+end)
+pending_add({errCode = 0})
+pending_shelf(nil, "network offline")
+eq(true, added_result, "remote addition remains successful when the local fallback cannot be saved")
+eq("微信书架已更新，但本地保存失败；重启后可能恢复上次书架", added_warning,
+    "an unsaved addition reports the restart risk")
+eq(added_warning, unsaved_add.status, "an unsaved addition sets the shelf warning")
+local synced_add = View.new{auth = auth, client = add_client, fs = failed_fs, path = "weread-shelf.json"}
+synced_add:addToShelf({remote_id = "another-book", name = "另一本新书"}, function(result, warning)
+    added_result, added_warning = result, warning
+end)
+pending_add({errCode = 0})
+pending_shelf({books = {{bookId = "another-book", title = "另一本新书"}}})
+eq(true, added_result, "remote addition succeeds even when sync persistence fails")
+eq("微信书架已更新，但本地保存失败；重启后可能恢复上次书架", added_warning,
+    "sync persistence failure is passed through the addition action")
+local fallback_fs = {readBounded = function() return saved end,
+    atomicWrite = function(_, _, value) saved = value; return true end}
+local fallback_add = View.new{auth = auth, client = add_client, fs = fallback_fs, path = "weread-shelf.json"}
+fallback_add:addToShelf(Mapper.book({bookId = "local-book", title = "离线回退"}, "account-1"), function(result, warning)
+    added_result, added_warning = result, warning
+end)
+pending_add({errCode = 0})
+pending_shelf(nil, "network offline")
+eq(true, added_result, "remote addition remains successful when shelf refresh is temporarily offline")
+eq("已加入微信书架，但完整书架同步失败；显示本地记录", added_warning,
+    "a locally saved fallback reports the incomplete remote shelf refresh")
+local fallback_restarted = make_view()
+eq("local-book", fallback_restarted.books[#fallback_restarted.books].remote_id,
+    "the locally saved addition survives a restart")
 return count

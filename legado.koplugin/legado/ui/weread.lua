@@ -9,6 +9,8 @@ WeRead.RANKINGS = {
 }
 local Json = require("legado.lib.json_codec")
 local Mapper = require("legado.lib.weread_mapper")
+local SAVE_WARNING = "微信书架已更新，但本地保存失败；重启后可能恢复上次书架"
+local SYNC_WARNING = "已加入微信书架，但完整书架同步失败；显示本地记录"
 
 local function load_books(fs, path, account_id)
     if not fs or not path or not account_id then return {} end
@@ -80,7 +82,7 @@ function WeRead:sync(callback)
             local encoded = Json.encode({ account_id = self.account_id, books = self.books })
             local saved = self.fs:atomicWrite(self.path, encoded)
             if not saved then
-                self.status = "微信书架已更新，但本地保存失败；重启后可能恢复上次书架"
+                self.status = SAVE_WARNING
                 return callback(nil, self.status)
             end
         end
@@ -119,16 +121,20 @@ function WeRead:addToShelf(book, callback)
         self.add_request = nil
         if not same_account() then return callback(nil, "微信读书账号已切换") end
         if not result then return callback(nil, err or "加入微信书架失败") end
-        self:sync(function()
+        self:sync(function(_, sync_error)
             if not self.alive or generation ~= self.generation then return end
             if not same_account() then return callback(nil, "微信读书账号已切换") end
+            local warning = sync_error and self.status or nil
             if not self:hasBook(book) then
                 self.books[#self.books + 1] = book
                 if self.fs and self.path then
-                    self.fs:atomicWrite(self.path, Json.encode({ account_id = self.account_id, books = self.books }))
+                    local saved = self.fs:atomicWrite(self.path,
+                        Json.encode({ account_id = self.account_id, books = self.books }))
+                    if not saved then self.status, warning = SAVE_WARNING, SAVE_WARNING end
+                    if saved and sync_error then self.status, warning = SYNC_WARNING, SYNC_WARNING end
                 end
             end
-            callback(true)
+            callback(true, warning)
         end)
     end)
     if not delivered then self.add_request = handle end
