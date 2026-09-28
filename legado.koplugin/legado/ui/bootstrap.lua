@@ -144,13 +144,15 @@ function Bootstrap.build(plugin, options)
                     if logger and logger.dbg then
                         logger.dbg('[LegadoTiming]',metric.stage,metric.ms,metric.backend,
                             'attempt',metric.attempt,'total_ms',metric.total_ms,'over_budget',metric.over_budget,
-                            'chapters',metric.chapters)
+                            'chapters',metric.chapters,'state_index',metric.state_index or 0,
+                            'requested_index',metric.requested_index or 0)
                     end
                     local threshold=slow_timing_threshold_ms[metric.stage]
                     if logger and logger.warn and threshold and metric.ms>=threshold then
                         logger.warn('[LegadoTimingSlow]',metric.stage,metric.ms,metric.backend,
                             'attempt',metric.attempt or 0,'total_ms',metric.total_ms or 0,
-                            'chapters',metric.chapters or 0)
+                            'chapters',metric.chapters or 0,'state_index',metric.state_index or 0,
+                            'requested_index',metric.requested_index or 0)
                     end
                 end,
                 diagnostics = function(stage, err)

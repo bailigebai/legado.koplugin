@@ -52,14 +52,19 @@ assertx.equal(0, #app:openSearch():sourceChoices(), "fresh startup leaves source
 assertx.equal(nil, app.settings:get('default_sources_initialized'), "startup has no default-source initialization setting")
 
 app.reader_session.timing({stage='catalog_wait',ms=1200,backend='native',
-    attempt=3,total_ms=1500,chapters=21,url='https://private.invalid'})
+    attempt=3,total_ms=1500,chapters=21,state_index=20,requested_index=21,
+    url='https://private.invalid'})
 assertx.equal(1,#slow_timings,'slow catalog wait appears in normal warning log')
 assertx.equal('[LegadoTimingSlow]',slow_timings[1][1],'warning has a searchable marker')
 assertx.equal('catalog_wait',slow_timings[1][2],'warning identifies its stage')
+assertx.equal('state_index',slow_timings[1][11],'warning labels the current chapter position')
+assertx.equal(20,slow_timings[1][12],'warning reports the current chapter position')
+assertx.equal('requested_index',slow_timings[1][13],'warning labels the requested chapter position')
+assertx.equal(21,slow_timings[1][14],'warning reports the requested chapter position')
 for _,value in ipairs(slow_timings[1]) do
     assertx.equal(nil,tostring(value):find('private',1,true),'warning never includes source URL')
 end
 app.reader_session.timing({stage='catalog_wait',ms=50,backend='native',chapters=21})
 assertx.equal(1,#slow_timings,'fast catalog waits do not flood normal log')
 
-return 17
+return 21

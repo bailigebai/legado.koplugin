@@ -17,6 +17,11 @@ local function clamp(value, low, high)
     value = tonumber(value) or low
     return math.max(low, math.min(high, value))
 end
+
+local function metric_index(value)
+    return type(value)=='number' and value==value and value>=1 and value<=1000000
+        and value%1==0 and value or nil
+end
 local function normalized_title(value)
     return tostring(value or ""):lower():gsub("[%s%p]", "")
 end
@@ -76,6 +81,8 @@ function ReaderSession:_timing(stage, started, backend, state, details)
     if not self.timing then return end
     local now = clock()
     local metric = { stage=stage, ms=math.max(0,math.floor((now-started)*1000)), backend=backend or 'pending' }
+    metric.state_index=metric_index(details and details.state_index or state and state.index)
+    metric.requested_index=metric_index(details and details.requested_index)
     if state and state.transition then
         metric.attempt = state.transition.id
         metric.total_ms = math.max(0, math.floor((now-state.transition.started)*1000))
@@ -484,14 +491,14 @@ function ReaderSession:_prepareHtml(state, chapter, body)
     local prepared = state.prepared_html[chapter.uid]
     if prepared and prepared.checksum == checksum and prepared.title == chapter.title then
         if not self.cache.readHtml or self.cache:readHtml(source_id(state.source, state.book), state.book.id, chapter) then
-            self:_timing('html_reused',started,'native',state)
+            self:_timing('html_reused',started,'native',state,{requested_index=chapter.index})
             return prepared.path
         end
     end
     local path, err = self.cache:writeHtml(source_id(state.source, state.book), state.book.id, chapter, html_document(chapter.title, body))
     if not path then return nil, staged(err, 'html_write') end
     state.prepared_html[chapter.uid] = { path = path, checksum = checksum, title = chapter.title }
-    self:_timing('html_write',started,'native',state)
+    self:_timing('html_write',started,'native',state,{requested_index=chapter.index})
     return path
 end
 
@@ -501,14 +508,14 @@ function ReaderSession:_open_cached(state, index, restore_fraction)
     local chapter = state.chapters[index]
     local started=clock()
     local body, error_value = read_body(self, source_id(state.source, state.book), state.book.id, chapter)
-    self:_timing(body and 'cache_hit' or 'cache_miss',started,state.backend,state)
+    self:_timing(body and 'cache_hit' or 'cache_miss',started,state.backend,state,{requested_index=index})
     if not body then return nil, staged(error_value, "cache_read") end
     local backend=state.backend or preferred_backend(self)
     local previous=self.active
     if previous and (previous.active or previous.pending_progress) then
         local save_started=clock()
         local saved,err=self:_save(previous,previous.document)
-        self:_timing('progress_save',save_started,backend,state)
+        self:_timing('progress_save',save_started,backend,state,{requested_index=index})
         if not saved then return nil,staged(err,'progress') end
     end
     if state.on_progress then state.on_progress(3,'整理章节') end
@@ -575,7 +582,7 @@ function ReaderSession:_fetch_then_open(state, index, restore_fraction)
     local function callback(content, request_error, cached)
         if completed then return end
         completed = true
-        self:_timing('foreground_content',fetch_started,state.backend,state)
+        self:_timing('foreground_content',fetch_started,state.backend,state,{requested_index=index})
         -- BookService's third callback argument is trace metadata, not a cache flag.
         cached = cached == true
         if not self:_isCurrent(state) then
@@ -649,7 +656,8 @@ function ReaderSession:_end(state, document, started)
             end
             local catalog_started=clock()
             return self:loadCatalog(state,function(_,err)
-                self:_timing('catalog_wait',catalog_started,state.backend,state,{chapters=#state.chapters})
+                self:_timing('catalog_wait',catalog_started,state.backend,state,
+                    {chapters=#state.chapters,requested_index=next_index})
                 state.end_handled=false
                 if err then self.diagnostics('read',err)
                 elseif state.active and (state.index < #state.chapters or state.catalog_complete ~= false) then self:_end(state,document,started)
@@ -715,7 +723,8 @@ function ReaderSession:navigate(index, request)
         local catalog_started=clock()
         return self:loadCatalog(active,function(_,err)
             if not current() then return end
-            self:_timing('catalog_wait',catalog_started,active.backend,nil,{chapters=#active.chapters})
+            self:_timing('catalog_wait',catalog_started,active.backend,nil,
+                {chapters=#active.chapters,state_index=active.index,requested_index=index})
             if err then
                 self.diagnostics('read',err)
                 if request.on_complete then request.on_complete(nil,err) end
@@ -1018,7 +1027,8 @@ function ReaderSession:_prefetchRequest(state, index)
         self.prefetch_requests[chapter.uid] = nil
         local current = request.state
         if self.active ~= current or not current.active then return end
-        self:_timing('prefetch_content', request.started, current.backend)
+        self:_timing('prefetch_content', request.started, current.backend,nil,
+            {state_index=current.index,requested_index=index})
         if content and not err then
             local body, clean_error = Cleaner.normalize(content.content or content, { replaceRegex = current.source.replaceRegex })
             if body then

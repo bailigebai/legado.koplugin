@@ -80,13 +80,18 @@ do
 end
 -- Turning off speculative work cannot cancel a chapter the reader is awaiting.
 do
-    local f=fixture();f.scheduler:runNext()
+    local metrics={}
+    local f=fixture(nil,function(metric)metrics[#metrics+1]=metric end);f.scheduler:runNext()
     f.opened[1].callbacks.end_of_book(f.opened[1].doc)
     f.session.settings.get=function()return 0 end
     f:finish('c3')
     eq(0,f.requests[1].cancelled,'disabling background work retains the foreground subscriber')
     f:finish('c2')
     eq(2,f.session.active.index,'awaited chapter still opens with automatic prefetch disabled')
+    local foreground
+    for _,metric in ipairs(metrics)do if metric.stage=='foreground_content' then foreground=metric end end
+    eq(1,foreground and foreground.state_index,'joined content timing retains the previous chapter')
+    eq(2,foreground and foreground.requested_index,'joined content timing identifies the target chapter')
     eq(nil,f.session.foreground_state,'joined completion releases foreground ownership')
     f.session:close()
 end
@@ -152,6 +157,7 @@ do
     local paint=metrics[#metrics]
     eq('paint_submit',paint.stage,'UI reports actual submit stage')
     eq(2,paint.attempt,'second chapter has its own transition attempt')
+    eq(2,paint.state_index,'reader draw timing identifies the chapter being shown')
     eq(true,paint.total_ms>=paint.ms,'total includes work before reader construction')
     eq(nil,paint.key,'diagnostics do not retain arbitrary or private payload')
     local saved=false
@@ -171,9 +177,11 @@ do
     f.catalog[1].callback(nil,{code='NETWORK_ERROR',message='test outage'})
     local saw_wait=false
     for _,metric in ipairs(metrics) do
-        if metric.stage=='catalog_wait' and metric.chapters==1 then saw_wait=true end
+        if metric.stage=='catalog_wait' and metric.chapters==1 then
+            saw_wait=metric.state_index==1 and metric.requested_index==2
+        end
     end
-    eq(true,saw_wait,'automatic next-chapter path times catalog wait')
+    eq(true,saw_wait,'automatic next-chapter wait identifies the current and requested chapters')
     f.session:close()
 end
 

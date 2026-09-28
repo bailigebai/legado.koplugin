@@ -28,6 +28,8 @@ local wait_metric=metrics[#metrics]
 A.equal('catalog_wait',wait_metric.stage,'catalog wait has a distinct timing stage')
 A.equal('native',wait_metric.backend,'wait timing identifies reader backend')
 A.equal(1,wait_metric.chapters,'wait timing reports known chapter count')
+A.equal(1,wait_metric.state_index,'wait timing reports the chapter already being read')
+A.equal(2,wait_metric.requested_index,'wait timing reports the chapter being opened')
 A.equal(nil,wait_metric.url,'wait timing never retains a source URL')
 
 state.transition={id=99,started=0} -- A background save must not inherit an old turn.
@@ -37,6 +39,8 @@ local save_metric=metrics[#metrics]
 A.equal('catalog_persist',save_metric.stage,'catalog persistence has a distinct timing stage')
 A.equal(2,save_metric.chapters,'persistence timing reports written chapter count')
 A.equal(nil,save_metric.attempt,'background persistence cannot claim an older chapter transition')
+A.equal(nil,save_metric.state_index,'background persistence cannot claim an old reading chapter')
+A.equal(nil,save_metric.requested_index,'background persistence cannot claim a requested chapter')
 A.equal(nil,save_metric.url,'persistence timing never retains a source URL')
 
 session.cache.writeCatalog=function() return nil,{code='STORAGE_ERROR'} end
@@ -46,4 +50,4 @@ A.equal('STORAGE_ERROR',err.code,'catalog persistence retains the storage error'
 A.equal('catalog_persist',metrics[#metrics].stage,'failed persistence is also timed')
 A.equal(1,writes,'failed file write never reaches chapter database')
 
-return 15
+return 19
