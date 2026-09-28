@@ -273,7 +273,7 @@
 
 ### Task 26: 检查更新后返回原书架页
 
-**Files:** `legado.koplugin/legado/ui/shelf_menu.lua`、`legado.koplugin/legado/ui/presenter.lua`、`spec/shelf_action_groups_spec.lua`、交付说明。
+**Files:** `legado.koplugin/legado/ui/app.lua`、`legado.koplugin/legado/ui/shelf_menu.lua`、`legado.koplugin/legado/ui/presenter.lua`、`spec/shelf_action_groups_spec.lua`、交付说明。
 
 **方案比较：**固定回第 1 页会丢失当前位置；把页码写进共享书架视图会增加状态；由“更多”入口把当前页传给检查更新页面，关闭时原样返回，沿用现有分组导航方式。采用第三种。
 
@@ -390,3 +390,14 @@
 - [x] 失败规格复现：已载入旧账号书架时切换账号，旧封面仍留在当前页面；迟到的同步或加入书架响应也不能继续显示旧书。
 - [x] 当前账号的本地快照单独展示，无快照时清空旧书；新账号可重新同步。
 - [x] 微信书架专项 2 项、54 条断言通过；完整 Lua 回归 179 项通过、1 项缺少外部 `sources/yuedu-260114.json` 样本，共 47,569 条断言；LuaJIT 解析 283 个文件、安装包清单 141 项、可重复构建及敏感信息检查通过。
+
+### Task 38: “更多”直达页面按入口返回
+
+**Files:** `legado.koplugin/legado/ui/shelf_menu.lua`、`legado.koplugin/legado/ui/presenter.lua`、`spec/shelf_action_groups_spec.lua`、交付说明。
+
+**方案比较：**继续让直达 AI 和插件缓存先退到完整设置页，会多出没有访问过的一层；一律退回书架会跳过“更多”分组；静态子页面返回“更多”，再返回原书架页，同时从完整设置进入的 AI/缓存仍回设置。采用第三种。检查更新仍按现有验收直接返回原书架页。
+
+- [x] 失败规格复现：从“更多”进入 AI/插件缓存，返回误入完整设置；从“更多”进入设置直接跳回书架。
+- [x] 静态子页面按“更多 → 子页面 → 更多 → 原书架页”返回；从完整设置进入的 AI/缓存仍回设置。
+- [x] 导航、AI 与缓存界面专项 3 项、64 条断言通过；完整 Lua 回归 179 项通过、1 项缺少外部 `sources/yuedu-260114.json` 样本，共 47,585 条断言；LuaJIT 解析和命名空间检查通过。
+- [x] 安装包清单 141 项、重现性及敏感信息检查通过；源码、规格与安装包同步到交接目录，两份源码树和四份 ZIP 的 SHA256 均核对一致。

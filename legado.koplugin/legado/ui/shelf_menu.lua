@@ -103,12 +103,20 @@ function ShelfMenu.open(presenter, view, page, group)
             {text = "下载管理", callback = function() return app:openDownloads(back) end},
         }
     elseif group == "more" then
+        local function back_to_more()
+            local shelf = view.alive and view or app:createBookshelf(view.source_mode, {
+                page = page, reading_state = view.reading_state, category = view.category,
+                batch_select = view.batch_select, selected_books = view.selected_books,
+            })
+            if shelf.kind == "bookshelf" then return ShelfMenu.open(presenter, shelf, page, "more") end
+            return back()
+        end
         items = {
-            {text = "阅读回顾", callback = function() return app:openReadingReview(nil, nil, back) end},
-            {text = "AI 服务", callback = function() return app:openSettings(nil,nil,back,'ai') end},
-            {text = "插件缓存", callback = function() return app:openSettings(nil,nil,back,'cache') end},
-            {text = "设置", callback = function() return app:openSettings(nil, nil, back) end},
-            {text = "关于", callback = function() return app:openAbout(back) end},
+            {text = "阅读回顾", callback = function() return app:openReadingReview(nil, nil, back_to_more) end},
+            {text = "AI 服务", callback = function() return app:openSettings(nil,nil,back_to_more,'ai') end},
+            {text = "插件缓存", callback = function() return app:openSettings(nil,nil,back_to_more,'cache') end},
+            {text = "设置", callback = function() return app:openSettings(nil, nil, back_to_more) end},
+            {text = "关于", callback = function() return app:openAbout(back_to_more) end},
             {text = "检查更新", callback = function() return presenter:_checkUpdates(view,page) end},
         }
     else

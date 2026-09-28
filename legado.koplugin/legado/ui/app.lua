@@ -175,8 +175,8 @@ function App:openCurrentReceipt(document)
     if book then return self:_present({kind='reading_receipt',book=book,document=document}) end
 end
 
-function App:openBookshelf(mode, restore)
-    if not self.storage then return self:_present({ title = "书架", empty_text = "书架尚未初始化" }) end
+function App:createBookshelf(mode, restore)
+    if not self.storage then return { title = "书架", empty_text = "书架尚未初始化" } end
     local page_size = self.settings and self.settings:get("shelf_page") or 20
     local covers_enabled = not self.settings or self.settings:get("covers_enabled") ~= false
     local view = Shelf.new({ storage = self.storage, settings = self.settings, page_size = page_size, covers_enabled = covers_enabled, cover_loader = self.cover_loader,
@@ -189,7 +189,10 @@ function App:openBookshelf(mode, restore)
         view.batch_select = restore.batch_select
         view.selected_books = restore.selected_books
     end
-    return self:_present(view)
+    return view
+end
+function App:openBookshelf(mode, restore)
+    return self:_present(self:createBookshelf(mode, restore))
 end
 function App:openSearch(keyword, back)
     if not self.service then return self:_present({ title = "搜索", error = "搜索服务尚未初始化", _back = back }) end

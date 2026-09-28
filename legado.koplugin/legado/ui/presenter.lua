@@ -1722,6 +1722,7 @@ function Presenter:_aiSettings(view)
     widget = self:_modelMenu(view, { title = "AI 服务", item_table = items,
         close_callback = function()
             if not self:_closeWidget(widget) then return false end
+            if view.section == 'ai' and view.on_close then return view.on_close(view.local_directories_changed) end
             return self:_settings(view)
         end })
     return widget
@@ -1755,6 +1756,7 @@ function Presenter:_cacheSettings(view)
     local widget
     widget=self:_modelMenu(view,{title='插件缓存',item_table=items,close_callback=function()
         if not self:_closeWidget(widget) then return false end
+        if view.section == 'cache' and view.on_close then return view.on_close(view.local_directories_changed) end
         return self:_settings(view)
     end})
     return widget
@@ -2526,6 +2528,8 @@ function Presenter:show(view)
         return widget
     end
     if view.kind == "home" then return self:_home(view) end
+    if view.kind == "about" and view._back then return self:_library(view, {title=view.title,items={},
+        empty_text=view.text,on_back=view._back,secondary=true,navigation={}}) end
     if view.kind == "weread" then return self:_weread(view) end
     if view.kind == "bookshelf" then return self:_shelf(view, view.start_page or 1) end
     if view.kind == "search" then return self:_search(view) end
