@@ -127,4 +127,102 @@ client:shelfSync(function(_, err) invalid_session_error = err end)
 eq(16, #requests, "unsafe cookie token never reaches the network layer")
 eq("微信读书会话无效，请重新扫码登录", invalid_session_error,
     "invalid session reports a clear login action")
+
+local function auth_expiry_case(refresh_error)
+    local sent, token_value, refreshes = {}, "expired", 0
+    local local_client = Client.new{
+        requests = { execute = function(_, spec, callback)
+            sent[#sent + 1] = { spec = spec, callback = callback }
+            return { cancel = function() end }
+        end },
+        auth = {
+            session = function() return { vid = "123", access_token = token_value } end,
+            refresh = function(_, callback)
+                refreshes = refreshes + 1
+                if refresh_error then return callback(nil, refresh_error) end
+                token_value = "renewed"
+                callback({ vid = "123", access_token = token_value })
+            end,
+        },
+    }
+    return local_client, sent, function() return refreshes end
+end
+
+for _, expired in ipairs({
+    { status = 401, body = "{}" },
+    { status = 200, body = Json.encode({ errCode = -2012 }) },
+}) do
+    local local_client, sent, refresh_count = auth_expiry_case()
+    local value, error_message
+    local_client:addToShelf("b3", function(result, err) value, error_message = result, err end)
+    sent[1].callback(expired)
+    eq(1, refresh_count(), "expired shelf write refreshes the login once")
+    eq(1, #sent, "expired shelf write is not sent twice")
+    eq(nil, value, "unknown shelf write result is not reported as success")
+    eq("微信读书登录已续期，请同步书架确认写入结果", error_message,
+        "unknown shelf write result gives a safe next step")
+end
+
+do
+    local local_client, sent = auth_expiry_case()
+    local chapters
+    local_client:chapterInfos("b3", function(value) chapters = value end)
+    sent[1].callback({ status = 200, body = Json.encode({ errCode = -2012 }) })
+    eq(2, #sent, "read-only chapter catalog POST retries after login renewal")
+    eq("renewed", sent[2].spec.headers["X-Skey"], "catalog retry uses the renewed token")
+    sent[2].callback({ status = 200, body = Json.encode({ chapterInfos = {} }) })
+    eq(true, type(chapters) == "table", "catalog retry reaches the caller")
+end
+
+do
+    local local_client, sent = auth_expiry_case("续期失败")
+    local result, error_message
+    local_client:addToShelf("b3", function(value, err) result, error_message = value, err end)
+    sent[1].callback({ status = 401, body = "{}" })
+    eq(1, #sent, "failed login renewal cannot replay a shelf write")
+    eq(nil, result, "failed login renewal cannot report a successful shelf write")
+    eq("续期失败", error_message, "failed login renewal reaches the caller")
+end
+
+do
+    local local_client, sent = auth_expiry_case()
+    local error_message
+    local_client:chapterInfos("b3", function(_, err) error_message = err end)
+    sent[1].callback({ status = 401, body = "{}" })
+    sent[2].callback({ status = 401, body = "{}" })
+    eq(2, #sent, "a second catalog authentication failure is not retried again")
+    eq("微信读书请求失败", error_message, "a second catalog authentication failure reaches the caller")
+end
+
+do
+    local local_client, sent = auth_expiry_case()
+    local handle = local_client:chapterContent("b3", "c1", function() end)
+    sent[1].callback({ status = 401, body = "{}" })
+    eq(2, #sent, "read-only chapter shard POST retries after login renewal")
+    eq("renewed", sent[2].spec.headers["X-Skey"], "shard retry uses the renewed token")
+    handle:cancel()
+end
+
+do
+    local sent, finish_refresh, outcome = {}, nil, nil
+    local local_client = Client.new{
+        requests = { execute = function(_, spec, callback)
+            sent[#sent + 1] = { spec = spec, callback = callback }
+            return { cancel = function() end }
+        end },
+        auth = {
+            session = function() return { vid = "123", access_token = "expired" } end,
+            refresh = function(_, callback)
+                finish_refresh = callback
+                return { cancel = function() end }
+            end,
+        },
+    }
+    local handle = local_client:addToShelf("b3", function(value, err) outcome = value or err end)
+    sent[1].callback({ status = 401, body = "{}" })
+    handle:cancel()
+    finish_refresh({ vid = "123", access_token = "renewed" })
+    eq(1, #sent, "cancelled shelf write is never replayed")
+    eq(nil, outcome, "cancelled shelf write does not update a closed page")
+end
 return count

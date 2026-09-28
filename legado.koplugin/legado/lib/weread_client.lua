@@ -50,6 +50,7 @@ end
 
 function Client:_call(method, path, body, eink, callback, options)
     options=options or {}
+    local replayable = method == "GET" or options.idempotent == true
     local cancelled, active = false, nil
     local function attempt(number)
         if cancelled then return end
@@ -79,7 +80,8 @@ function Client:_call(method, path, body, eink, callback, options)
                 local refresh_handle = self.auth:refresh(function(new_session, refresh_error)
                     refreshed = true
                     if cancelled then return end
-                    if new_session then attempt(2)
+                    if new_session and replayable then attempt(2)
+                    elseif new_session then callback(nil, "微信读书登录已续期，请同步书架确认写入结果")
                     else callback(nil, refresh_error or "微信读书登录已失效") end
                 end)
                 if not refreshed then active = refresh_handle end
@@ -124,7 +126,7 @@ function Client:chapterContent(book_id, chapter_uid, callback)
                 if cancelled then return end
                 if not raw or raw=='{}' then return done(nil,err or '章节接口返回空内容',raw=='{}') end
                 done(raw)
-            end,{raw=true,timeout=90,max_bytes=8*1024*1024,
+            end,{raw=true,idempotent=true,timeout=90,max_bytes=8*1024*1024,
                 headers={Referer=reader_url,Accept='application/json, text/plain, */*'}})
         if not delivered then active=handle end
     end
@@ -208,7 +210,8 @@ function Client:bookInfo(book_id, callback)
 end
 
 function Client:chapterInfos(book_id, callback)
-    return self:_call("POST", "/web/book/chapterInfos", { bookIds = { tostring(book_id or "") } }, false, callback)
+    return self:_call("POST", "/web/book/chapterInfos", { bookIds = { tostring(book_id or "") } }, false, callback,
+        { idempotent = true })
 end
 
 function Client:getProgress(book_id, callback)
