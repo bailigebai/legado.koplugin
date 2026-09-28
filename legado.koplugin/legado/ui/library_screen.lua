@@ -26,6 +26,7 @@ local function dependencies(injected)
         device = injected.device or optional("device"),
         colors = injected.colors or require("ffi/blitbuffer"),
         geom = injected.geom or require("ui/geometry"),
+        overlap = injected.overlap or require("ui/widget/overlapgroup"),
         input = injected.input or require("ui/widget/container/inputcontainer"),
         gesture = injected.gesture or require("ui/gesturerange"),
     }
@@ -92,6 +93,16 @@ function LibraryScreen.new(options)
         end
         return placeholder(box_width, box_height, path and "封面不可用" or "无封面")
     end
+    local function book_cover(path, item)
+        local cover = cover_widget(path, cover_width, cover_height)
+        if item.downloaded ~= true then return cover end
+        local badge = deps.frame:new{ padding = scale(2), bordersize = scale(1), radius = scale(2),
+            background = deps.colors.COLOR_WHITE, label("已下载", 12, cover_width - scale(8), true) }
+        local size = badge:getSize()
+        badge.overlap_offset = { math.max(0, cover_width - size.w - scale(2)),
+            math.max(0, cover_height - size.h - scale(2)) }
+        return deps.overlap:new{ dimen = deps.geom:new{ w = cover_width, h = cover_height }, cover, badge }
+    end
     local function invoke(item)
         if item.enabled == false then return false end
         local ok, result = pcall(item.callback or options.on_select or function() return true end, item.book or item)
@@ -122,7 +133,7 @@ function LibraryScreen.new(options)
     local body_rows = {}
 
     local function make_book_cell(item)
-        local cover = cover_widget(nil, cover_width, cover_height)
+        local cover = book_cover(nil, item)
         local visual, title, replace_cover
         local intro
         if mode == "detail" and compact then
@@ -188,7 +199,7 @@ function LibraryScreen.new(options)
         if options.cover_loader and item.book and (item.cover_url or item.book.is_local) then
             local function loaded(path)
                 if closed then return end
-                local replacement = cover_widget(path, cover_width, cover_height)
+                local replacement = book_cover(path, item)
                 local old = cell.cover
                 replace_cover(replacement)
                 cell.cover = replacement
@@ -265,7 +276,7 @@ function LibraryScreen.new(options)
     local right_width=header_action and header_action:getSize().w or back_size.w
     local title_width = content_width - back_size.w - right_width - 2*header_gap
     local header_text = deps.vertical:new{
-        label(options.title or "书源阅读", compact and 17 or 24, title_width),
+        label(options.title or "不亦阅乎", compact and 17 or 24, title_width),
         label(options.subtitle or "", compact and 13 or 14, title_width),
     }
     if options.progress then

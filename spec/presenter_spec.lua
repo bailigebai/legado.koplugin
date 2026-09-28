@@ -119,7 +119,7 @@ local actions={}
 loaded_detail.actions[2].callback()
 for _,action in ipairs(shown[#shown].items) do actions[action.text]=action end
 assertx.truthy(actions["查看目录"],"detail exposes catalog")
-assertx.truthy(actions["下载整本"],"detail exposes download")
+assertx.truthy(actions["导出 EPUB"],"detail exposes EPUB export")
 presenter.app={openReaderSourceSites=function(_,_,_,detail)
     assertx.equal(detail_view,detail,'site switch targets the current detail book')
     detail:switchSource(2);detail._presenter_info_started=nil

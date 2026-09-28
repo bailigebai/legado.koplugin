@@ -61,7 +61,7 @@ equal("bookshelf", instance:openBookshelf().kind, "native launch opens the books
 local items = {}
 instance:addToMainMenu(items)
 equal("tools", items.legado.sorting_hint, "entry belongs directly to the tools tab")
-equal("书源阅读", items.legado.text, "entry keeps its Chinese label")
+equal("不亦阅乎", items.legado.text, "entry uses the requested display name")
 
 local upstream = os.getenv("LEGADO_KOREADER_SOURCE")
 if upstream then

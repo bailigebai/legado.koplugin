@@ -23,6 +23,7 @@ RUNTIME_FILES = frozenset({
     "legado/lib/diagnostic_sanitizer.lua",
     "legado/lib/diagnostics.lua",
     "legado/lib/download_manager.lua",
+    "legado/lib/download_cache_path.lua",
     "legado/lib/epub_builder.lua",
     "legado/lib/errors.lua",
     "legado/lib/fs.lua",
@@ -148,7 +149,7 @@ RUNTIME_DIRECTORIES = frozenset(
     for parent in PurePosixPath(relative).parents
     if parent.as_posix() != "."
 )
-MAX_ENTRIES = 129
+MAX_ENTRIES = len(ARCHIVE_FILES)
 MAX_ENTRY_BYTES = 8 * 1024 * 1024
 MAX_TOTAL_BYTES = 32 * 1024 * 1024
 MAX_COMPRESSION_RATIO = 200

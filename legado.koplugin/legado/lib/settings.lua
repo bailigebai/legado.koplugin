@@ -41,6 +41,7 @@ Settings.DEFAULTS = {
     reader_corner_tl = "time", reader_corner_tc = "title", reader_corner_tr = "chapter_page",
     reader_corner_bl = "chapter", reader_corner_br = "progress",
     local_dir = "",
+    download_cache_dir = "",
     log_level = "info",
     cache_limit_mb = 500,
     cache_cleanup_threshold_mb = 300,
@@ -111,7 +112,7 @@ local function normalized(key, value)
         local allowed = { time=true, title=true, chapter_page=true, chapter=true, progress=true, off=true }
         return allowed[value] and value or Settings.DEFAULTS[key]
     elseif key == "license_receipt" or key == "license_installation_id"
-        or key == "local_dir" or key == 'receipt_background' or key=='reader_background' then
+        or key == "local_dir" or key == "download_cache_dir" or key == 'receipt_background' or key=='reader_background' then
         return type(value) == "string" and value:sub(1, 4096) or ""
     end
     return value

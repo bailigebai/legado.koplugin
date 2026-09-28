@@ -65,7 +65,7 @@ end
 
 local function cache_fake(initial, behavior)
     behavior = behavior or {}
-    local state = { bodies = initial or {}, writes = {}, reads = {} }
+    local state = { bodies = initial or {}, writes = {}, reads = {}, catalogs = {} }
     local cache = {}
     local function key(s, b, c) return s .. "/" .. b .. "/" .. c.uid end
     function cache:readBody(s, b, c)
@@ -80,7 +80,10 @@ local function cache_fake(initial, behavior)
         state.bodies[key(s, b, c)] = body; state.writes[#state.writes + 1] = c.uid; return "cache/" .. c.uid
     end
     function cache:readCover() return nil end
-    function cache:writeCatalog() return true end
+    function cache:writeCatalog(s, b, catalog)
+        state.catalogs[s .. "/" .. b] = copy(catalog); return true
+    end
+    function cache:readCatalog(s, b) return copy(state.catalogs[s .. "/" .. b]) end
     return cache, state, key
 end
 
@@ -95,8 +98,8 @@ local function service_fake()
             request.cancelled = true; state.cancellations = state.cancellations + 1; return true
         end }
     end
-    function service:getChapters(_, book, callback)
-        local request = { book = book, callback = callback, cancelled = false }
+    function service:getChapters(_, book, callback, options)
+        local request = { book = book, callback = callback, options = options, cancelled = false }
         state.catalog_pending[#state.catalog_pending + 1] = request
         return { cancel = function() request.cancelled = true; return true end }
     end
@@ -134,14 +137,18 @@ local function manager_fixture(options)
         storage, stored = storage_fake(options.initial)
     end
     local cache, cached, key = cache_fake(options.cached, options.cache_behavior)
+    local offline_cache, offline_state = cache_fake(options.offline_bodies)
     local service, served = service_fake()
     local standby, awake = standby_fake()
     local builder, built = builder_fake(options.builder)
     local opened = {}
-    local manager = DownloadManager.new({ storage = storage, cache = cache, book_service = service,
-        builder = builder, standby = standby, output_root = "downloads", now = function() return 1788134400 end,
+    local manager = DownloadManager.new({ storage = storage, cache = cache,
+        offline_cache = options.offline and offline_cache or nil, book_service = service,
+        builder = builder, standby = standby, scheduler = options.scheduler,
+        output_root = "downloads", now = function() return 1788134400 end,
         open_final = function(path) opened[#opened + 1] = path; return "opened:" .. path end })
-    return manager, { storage = stored, storage_adapter = storage, cache = cached, key = key,
+    return manager, { storage = stored, storage_adapter = storage, cache = cached,
+        offline_cache = offline_state, key = key,
         service = served, standby = awake, builder = built, opened = opened }
 end
 
@@ -302,6 +309,82 @@ do
     equal(1, restarted:get(task.id).completed, "retry rebuilds restart-safe completed count")
     equal(0, restarted:get(task.id).failed, "retry rebuilds restart-safe failed count")
     equal(1, #restart_state.builder.calls, "retry publishes exactly one EPUB")
+end
+
+do
+    local manager, state = manager_fixture({ offline = true })
+    local task = assert(manager:enqueueCache(book_two))
+    equal("cache", task.kind, "chapter cache has an explicit task kind")
+    truthy(state.service.catalog_pending[1].options.background_catalog,
+        "cache task requests the complete book catalog")
+    state.service.catalog_pending[1].callback(chapters_two, nil, { catalog_complete = true })
+    equal(1, manager:get(task.id).total, "complete catalog sets progress total")
+    state.service.pending[1].callback({ content = "<p>offline</p>" }, nil)
+    equal("completed", manager:get(task.id).status, "all cached chapters complete the task")
+    equal(0, #state.builder.calls, "cache task does not build an EPUB")
+    equal("<p>offline</p>", state.offline_cache.bodies[state.key(book_two.source_id, book_two.id, chapters_two[1])],
+        "body is written to the dedicated offline cache")
+    truthy(state.offline_cache.catalogs[book_two.source_id .. "/" .. book_two.id].complete,
+        "completed cache stores a complete catalog marker")
+    equal(true, manager:isCached(book_two), "shelf may mark a fully cached source book")
+    state.storage.chapters[book_two.id] = { chapter(book_two, 2) }
+    equal(false, manager:isCached(book_two), "changed chapter identity invalidates the cover marker")
+    state.storage.chapters[book_two.id] = chapters_two
+    equal(false, manager:isCached(book_one), "another book cannot reuse the marker")
+    equal(nil, manager:open(task.id), "cache task is not misopened as an EPUB")
+end
+
+do
+    local many = {}
+    local cached = {}
+    for index = 1, 1200 do
+        local entry = chapter(book_two, index)
+        many[index] = entry
+        cached[book_two.source_id .. "/" .. book_two.id .. "/" .. entry.uid] = "<p>ready</p>"
+    end
+    local manager, state = manager_fixture({ offline = true, offline_bodies = cached })
+    local task = assert(manager:enqueueCache(book_two))
+    state.service.catalog_pending[1].callback(many, nil, { catalog_complete = true })
+    equal("completed", manager:get(task.id).status, "a long previously cached book completes without network requests")
+    equal(1200, manager:get(task.id).completed, "every cached chapter contributes to progress")
+    equal(0, #state.service.pending, "cached chapters do not request the network")
+end
+
+do
+    local scheduled = {}
+    local scheduler = { scheduleIn = function(_, _, action) scheduled[#scheduled + 1] = action end }
+    local entries, cached = {}, {}
+    for index = 1, 45 do
+        local entry = chapter(book_two, index)
+        entries[index] = entry
+        cached[book_two.source_id .. "/" .. book_two.id .. "/" .. entry.uid] = "<p>ready</p>"
+    end
+    local manager, state = manager_fixture({ offline = true, offline_bodies = cached, scheduler = scheduler })
+    local task = assert(manager:enqueueCache(book_two))
+    scheduled[1]()
+    state.service.catalog_pending[1].callback(entries, nil, { catalog_complete = true })
+    equal("running", manager:get(task.id).status, "cache reuse yields to the host UI during a long book")
+    truthy(#scheduled > 1, "the remaining cached chapters are scheduled")
+    local next_action = 2
+    while next_action <= #scheduled do scheduled[next_action](); next_action = next_action + 1 end
+    equal("completed", manager:get(task.id).status, "scheduled batches finish the chapter cache")
+end
+
+do
+    local manager, state = manager_fixture({ offline = true })
+    local task = assert(manager:enqueueCache(book_two))
+    state.service.catalog_pending[1].callback(chapters_two, nil, { catalog_complete = false })
+    equal("failed", manager:get(task.id).status, "partial catalog never completes a cache task")
+    equal(0, #state.service.pending, "partial catalog starts no chapter requests")
+    equal(false, manager:isCached(book_two), "partial catalog does not mark the cover")
+end
+
+do
+    local manager, state = manager_fixture({ offline = true })
+    local task = assert(manager:enqueueCache(book_one))
+    state.service.catalog_pending[1].callback(chapters_one, nil, { catalog_complete = true })
+    equal("failed", manager:get(task.id).status, "VIP chapter prevents a false full-book cache completion")
+    equal(false, manager:isCached(book_one), "unavailable chapter leaves the cover unmarked")
 end
 
 return count

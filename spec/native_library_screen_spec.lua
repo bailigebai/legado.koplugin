@@ -160,6 +160,12 @@ local grid = LibraryScreen.new{title="书架",subtitle="第 1/2 页",items=books
     actions={{text="搜索添加",callback=noop},{text="更多",callback=noop}},
     page=1,page_count=2,on_prev=noop,on_next=noop,navigation={{text="书架",callback=noop},{text="搜索",callback=noop},{text="发现",callback=noop}}}
 equal(12, #grid.cells, "compact grid keeps the presenter's complete 12-book page")
+local downloaded_items=books(1)
+downloaded_items[1].downloaded=true
+local downloaded_grid=LibraryScreen.new{title="书架",items=downloaded_items,mode="grid",compact=true}
+equal("已下载",downloaded_grid.cells[1].cover[2][1].text,"completed book has a badge on its cover")
+local marker=downloaded_grid.cells[1].cover[2]
+truthy(marker.overlap_offset[1] > 0 and marker.overlap_offset[2] > 0,"badge is placed at the cover's lower right")
 truthy(grid:getSize().h <= 800, "twelve-cover compact grid fits 600x800")
 truthy(grid.body:getSize().w <= 584, "four framed grid cells fit the compact content row")
 equal(grid.content_height, grid.content:getSize().h, "measured spacer anchors header top and footer bottom")

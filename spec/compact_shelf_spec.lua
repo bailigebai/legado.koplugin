@@ -12,6 +12,10 @@ local storage = {listShelf=function() return books end,
 local shelf = Shelf.new{storage=storage}
 local first = shelf:page(1,"cover")
 eq(12,#first.items,"cover shelf holds twelve books")
+local marked_shelf=Shelf.new{storage=storage,is_cached=function(book) return book.id=="b1" end}
+local marked=marked_shelf:page(1,"cover")
+eq(true,marked.items[1].downloaded,"completed offline book is marked on the shelf")
+eq(false,marked.items[2].downloaded,"other source books do not inherit the marker")
 eq(3,first.page_count,"all 27 books remain reachable")
 eq("b13",shelf:page(2,"cover").items[1].book.id,"page two starts at book13")
 eq(3,#shelf:page(3,"cover").items,"last page holds the remainder")

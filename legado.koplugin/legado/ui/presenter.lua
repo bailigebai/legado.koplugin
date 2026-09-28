@@ -288,7 +288,7 @@ function Presenter:_ensureBackdrop()
     local chooser=FileManager and FileManager.instance and FileManager.instance.file_chooser
     self.return_path=chooser and chooser.path or self.return_path
         or (G_reader_settings and G_reader_settings:readSetting('home_dir')) or '/mnt/us/documents'
-    self.backdrop=self.library_screen_factory{title='Legado · 书源阅读',compact=true,items={},navigation={},
+    self.backdrop=self.library_screen_factory{title='不亦阅乎',compact=true,items={},navigation={},
         ui_manager=self.ui_manager,secondary=true,empty_text='正在切换页面，请稍候…',
         actions={{text='回到书架',callback=function() return self.app:openBookshelf() end}},
         on_request_close=function() self:_confirmExit();return true end}
@@ -301,7 +301,7 @@ function Presenter:_confirmExit()
     local Confirm=optional('ui/widget/confirmbox')
     if not Confirm then return self:_info('无法打开退出确认，请先留在书架。') end
     local dialog
-    dialog=Confirm:new{text='退出 Legado 书源阅读，返回 KOReader？',ok_text='退出',cancel_text='留在书架',
+    dialog=Confirm:new{text='退出不亦阅乎，返回 KOReader？',ok_text='退出',cancel_text='留在书架',
         ok_callback=function()
             if self.app.reader_session then
                 local saved,err=self.app.reader_session:close()
@@ -491,7 +491,7 @@ function Presenter:_home(view)
         if action.text == "搜索" then actions[#actions+1]={text="搜索添加",callback=action.callback}
         elseif action.text == "下载管理" or action.text == "设置" then actions[#actions+1]=action end
     end
-    return self:_library(view, {title="书源阅读", subtitle="最近阅读 · 独立图书库", items=items, mode="cards",
+    return self:_library(view, {title="不亦阅乎", subtitle="最近阅读 · 独立图书库", items=items, mode="cards",
         actions=actions, navigation=self.app and self:_navigation() or model.actions,
         empty_text="还没有最近阅读的书，搜索书名即可从各书源找书。"})
 end
@@ -1254,6 +1254,26 @@ function Presenter:_settings(view)
         if ok and type(result) == "table" then cache_usage = result end
     end
     items[#items + 1] = { text = string.format("缓存：%.1f MiB（%d 个文件）", (cache_usage and cache_usage.bytes or 0) / 1048576, cache_usage and cache_usage.files or 0), enabled = false }
+    if view.default_download_cache_dir then
+        local selected = values.download_cache_dir ~= "" and values.download_cache_dir or view.default_download_cache_dir
+        items[#items + 1] = { text = "离线缓存目录：" .. tostring(selected), callback = function()
+            local dialog
+            local function accept(value)
+                if value == nil and dialog and type(dialog.getInputText) == "function" then value = dialog:getInputText() end
+                if not self:_closeWidget(dialog) then return false end
+                local saved, err = view:set("download_cache_dir", value or "")
+                if saved == nil then return self:_info("缓存目录不可用（" .. safe_token(err and err.code, "STORAGE_ERROR") .. "）", "设置") end
+                return self:_info("已保存缓存目录。完全重启 KOReader 后生效；旧目录内容不会移动。", "设置")
+            end
+            dialog = construct(self.input_dialog, { title = "修改离线缓存目录",
+                input = values.download_cache_dir or "", input_type = "string",
+                input_hint = "设备绝对路径；留空使用默认目录", buttons = {
+                    { { text = "取消", callback = function() return self:_closeWidget(dialog) end },
+                        { text = "确定", is_enter_default = true, callback = accept } },
+                } })
+            return self:_showInput(dialog)
+        end }
+    end
     editable("缓存上限：" .. tostring(values.cache_limit_mb or 500) .. " MiB", "cache_limit_mb", "50–8192 MiB，且不小于清理阈值")
     editable("自动清理阈值：" .. tostring(values.cache_cleanup_threshold_mb or 300) .. " MiB", "cache_cleanup_threshold_mb", "50–缓存上限 MiB")
     editable("清理后保留：" .. tostring(values.cache_retain_mb or 200) .. " MiB", "cache_retain_mb", "50–清理阈值 MiB")
@@ -1765,6 +1785,16 @@ function Presenter:_detail(view)
                 end
             end)
         end},
+        {text="缓存整本（离线阅读）",callback=function()
+            local task,err=view:startCache()
+            view._notice=type(task)=="table" and "已加入章节缓存队列" or ("缓存失败 · "..safe_token(type(err)=="table" and err.code,"DOWNLOAD_ERROR"))
+            return self:_detail(view)
+        end},
+        {text="导出 EPUB",callback=function()
+            local task,err=view:startDownload()
+            view._notice=type(task)=="table" and "已加入下载队列" or ("下载失败 · "..safe_token(type(err)=="table" and err.code,"DOWNLOAD_ERROR"))
+            return self:_detail(view)
+        end},
         {text="阅读回顾",callback=function() return self:_readingReview(view) end},
         {text="阅读小票",callback=function() return self:_readingReceipt(view) end},
         {text="切换站点书源",enabled=self.app~=nil,callback=function()
@@ -1772,11 +1802,6 @@ function Presenter:_detail(view)
         end},
         {text="编辑分类",callback=function()
             return self:_editCategories(function() view.book.custom_categories=book.custom_categories;return self:_detail(view) end,book)
-        end},
-        {text="下载整本",callback=function()
-            local task,err=view:startDownload()
-            view._notice=type(task)=="table" and "已加入下载队列" or ("下载失败 · "..safe_token(type(err)=="table" and err.code,"DOWNLOAD_ERROR"))
-            return self:_detail(view)
         end},
         {text=view.info_error and "详情诊断" or "完整简介",callback=function()
             if view.info_error then
@@ -1787,7 +1812,16 @@ function Presenter:_detail(view)
             return self:_show(construct(TextViewer or self.info_message,{text=book.intro or "暂无简介",title=book.name or "简介"}))
         end},
     }
-    if book.is_local then actions={actions[1],actions[5],actions[6],actions[#actions]} end
+    if book.is_local then
+        local local_actions = { actions[1] }
+        for _, action in ipairs(actions) do
+            if action.text == "阅读回顾" or action.text == "阅读小票" then
+                local_actions[#local_actions + 1] = action
+            end
+        end
+        local_actions[#local_actions + 1] = actions[#actions]
+        actions = local_actions
+    end
     if view.info_error then table.insert(actions,2,table.remove(actions)) end
     if view._reading_error then
         table.insert(actions,2,{text="阅读诊断",callback=function()
@@ -1836,6 +1870,10 @@ local function download_items(self, view)
                 actions[#actions + 1] = { text = "重试", callback = function() return view:retry(task.id) end }
             elseif task.status == "interrupted" then
                 actions[#actions + 1] = { text = "继续下载", callback = function() return view:resume(task.id) end }
+            elseif task.status == "completed" and task.kind == "cache" then
+                actions[#actions + 1] = { text = "返回书架阅读", callback = function()
+                    return self.app and self.app:openBookshelf() or false
+                end }
             elseif task.status == "completed" then
                 actions[#actions + 1] = { text = "打开 EPUB", callback = function() return view:open(task.id) end }
             end

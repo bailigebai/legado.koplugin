@@ -39,7 +39,10 @@ assertx.equal(true, settings.actions[1].callback(), "native appearance action is
 assertx.equal("ShowConfigMenu", events[1].name, "appearance action uses KOReader reader-config event API")
 assertx.truthy(app.cover_loader, "bootstrap injects nonblocking cover loader")
 assertx.truthy(app.download_manager, "bootstrap composes EPUB download manager from KOReader services")
+assertx.truthy(app.download_manager.offline_cache, "bootstrap composes dedicated chapter download cache")
+assertx.equal(app.download_manager.offline_cache, app.reader_session.offline_cache,
+    "downloaded chapters are read by the same reader session")
 assertx.equal(0, #app:openSearch():sourceChoices(), "fresh startup leaves sources empty until the user imports them")
 assertx.equal(nil, app.settings:get('default_sources_initialized'), "startup has no default-source initialization setting")
 
-return 10
+return 12

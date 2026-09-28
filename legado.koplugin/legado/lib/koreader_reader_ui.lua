@@ -204,7 +204,7 @@ function Adapter:_attachMenu(reader, proxy, callbacks)
         end end
     elseif menu.registerToMainMenu then
         menu:registerToMainMenu({addToMainMenu=function(_,entries)
-            entries.legado_reader={text='书源阅读', sorting_hint='main', sub_item_table=items()}
+            entries.legado_reader={text='不亦阅乎', sorting_hint='main', sub_item_table=items()}
         end})
     end
 end

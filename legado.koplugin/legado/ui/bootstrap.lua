@@ -42,11 +42,14 @@ function Bootstrap.build(plugin, options)
     local LicenseStore = require("legado.lib.license_store")
     local license = License.new({ store = LicenseStore.new(settings) })
     local storage, service, source_manager, cover_loader, reader_session, download_manager, root, local_library
+    local offline_cache
     local presenter
     local DataStorage = optional("datastorage")
     local fs = options.fs or Fs.new()
+    local default_download_cache_dir
     if DataStorage and type(DataStorage.getDataDir) == "function" then
         root = DataStorage:getDataDir() .. "/legado"
+        default_download_cache_dir = root .. "/offline-cache"
         fs:ensureDirectory(root)
         local Storage = require("legado.lib.storage")
         storage = Storage.new({ path = root .. "/legado.sqlite", fs = fs, license = license })
@@ -95,12 +98,18 @@ function Bootstrap.build(plugin, options)
             local ReaderSession = require("legado.lib.reader_session")
             local ReaderUIAdapter = require("legado.lib.koreader_reader_ui")
             local cache = CacheStore.new({ fs = fs, root = root .. "/cache", settings = settings, scheduler = UIManager })
+            local offline_root = require("legado.lib.download_cache_path").resolve(
+                settings:get("download_cache_dir"), default_download_cache_dir)
+            if offline_root then
+                offline_cache = CacheStore.new({ fs = fs, root = offline_root, quarantine = false })
+                if offline_cache.init_error then offline_cache = nil end
+            end
             local reader_ui = ReaderUIAdapter.new({settings=settings,ui_manager=UIManager})
             local Statistics=optional('legado.lib.koreader_statistics')
             local native=plugin.ui and plugin.ui.statistics
             local statistics=Statistics and Statistics.new{settings=native and native.settings or {is_enabled=false}}
             local statistics_warned=false
-            reader_session = ReaderSession.new({ cache = cache, storage = storage,
+            reader_session = ReaderSession.new({ cache = cache, offline_cache = offline_cache, storage = storage,
                 service = service, ui = reader_ui, settings = settings, scheduler = UIManager,statistics=statistics,
                 timing=function(metric)
                     local logger=optional('logger')
@@ -138,7 +147,8 @@ function Bootstrap.build(plugin, options)
                 local EpubBuilder = require("legado.lib.epub_builder")
                 local DownloadManager = require("legado.lib.download_manager")
                 local StandbyGuard = require("legado.lib.standby_guard")
-                download_manager = DownloadManager.new({ storage = storage, cache = cache, book_service = service,
+                download_manager = DownloadManager.new({ storage = storage, cache = cache, offline_cache = offline_cache,
+                    book_service = service,
                     builder = EpubBuilder.new({ fs = fs }), standby = StandbyGuard.new({ ui_manager = UIManager }),
                     scheduler = UIManager, output_root = download_root,
                     open_final = function(path) return reader_ui:openDocument(path) end })
@@ -159,6 +169,13 @@ function Bootstrap.build(plugin, options)
         reader_session = reader_session,
         download_manager = download_manager,
         fs = fs,
+        default_download_cache_dir = default_download_cache_dir,
+        validate_download_cache_dir = default_download_cache_dir and function(path)
+            local CacheStore = require("legado.lib.cache_store")
+            local store = CacheStore.new({ fs = fs, root = path, quarantine = false })
+            if store.init_error then return nil, store.init_error end
+            return true
+        end or nil,
         local_library = local_library,
         native_statistics = plugin.ui and plugin.ui.statistics,
         scheduler = UIManager,

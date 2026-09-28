@@ -20,6 +20,8 @@ function App.new(options)
         reading_hook = options.reading_hook, download_hook = options.download_hook,
         reader_session = options.reader_session,
         download_manager = options.download_manager,
+        default_download_cache_dir = options.default_download_cache_dir,
+        validate_download_cache_dir = options.validate_download_cache_dir,
         scheduler = options.scheduler,
         cover_loader = options.cover_loader,
         fs = options.fs,
@@ -167,6 +169,7 @@ function App:openBookshelf(mode)
     local page_size = self.settings and self.settings:get("shelf_page") or 20
     local covers_enabled = not self.settings or self.settings:get("covers_enabled") ~= false
     return self:_present(Shelf.new({ storage = self.storage, settings = self.settings, page_size = page_size, covers_enabled = covers_enabled, cover_loader = self.cover_loader,
+        is_cached = self.download_manager and function(book) return self.download_manager:isCached(book) end or nil,
         source_mode = mode or (self.settings and self.settings:get("shelf_source")) or "sources", local_library = self.local_library,
         on_search = function() return self:openSearch() end, on_sources = function() return self:openSources() end }))
 end
@@ -278,6 +281,8 @@ function App:openSettings(document, chrome_only)
     end
     local cache = self.reader_session and self.reader_session.cache
     return self:_present(SettingsView.new({ settings = self.settings, settings_error = self.settings_error,
+        default_download_cache_dir = self.default_download_cache_dir,
+        validate_download_cache_dir = self.validate_download_cache_dir,
         temporary_reader_mode=self.reader_mode_temporary,
         chrome_only = chrome_only,document=document,
         cache_usage = cache and function() return cache:usage() end or nil,
@@ -404,7 +409,11 @@ function App:startReading(book, chapters, index, callback, intent)
         return self.reader_session:resume(source, book, chapters, callback, { is_current = current,on_progress=on_progress,backend='immersive' })
     end
     local cache=self.reader_session.cache
-    local catalog=cache and cache.readCatalog and cache:readCatalog(book.source_id,book.id)
+    local offline_cache=self.reader_session.offline_cache
+    local catalog=offline_cache and offline_cache:readCatalog(book.source_id,book.id)
+    if not (catalog and catalog.complete == true) then
+        catalog=cache and cache.readCatalog and cache:readCatalog(book.source_id,book.id)
+    end
     local progress=self.storage.getProgress and self.storage:getProgress(book.id)
     local saved_chapters=catalog and (catalog.chapters or catalog)
     if saved_chapters and type(catalog.complete)=='boolean' and #saved_chapters>0 and (not progress or (progress.chapter_index or 1)<=#saved_chapters) then
@@ -436,6 +445,12 @@ function App:startDownload(book)
     if self.download_hook then return self.download_hook(book) end
     if self.download_manager then return self.download_manager:enqueue(book) end
     return "下载功能尚未初始化"
+end
+function App:startCache(book)
+    if self.download_manager and type(self.download_manager.enqueueCache) == "function" then
+        return self.download_manager:enqueueCache(book)
+    end
+    return nil, { code = "STORAGE_ERROR", message = "离线缓存未初始化" }
 end
 local function native_catalog(document)
     local reader=document and document.reader
@@ -558,6 +573,10 @@ function App:createBookDetail(book, alternatives)
     return BookDetail.new({
         book = book, alternatives = alternatives or { book }, shelf = shelf,
         service = self.service,
+        catalog_lookup = self.reader_session and self.reader_session.offline_cache and function(selected)
+            local catalog = self.reader_session.offline_cache:readCatalog(selected.source_id, selected.id)
+            return catalog and catalog.complete == true and catalog.chapters or nil
+        end or nil,
         source_lookup = self.storage and function(opaque_id)
             for _, source in ipairs(self.storage:listSources() or {}) do if Models.sourceId(source) == opaque_id then return source end end
         end or nil,
@@ -571,12 +590,15 @@ function App:createBookDetail(book, alternatives)
             return source and self.source_manager:compatibility(source.id) or nil
         end,
         cache_lookup = self.reader_session and function(chapter, current_book)
+            local offline=self.reader_session.offline_cache
+            if offline and offline:readBody(current_book.source_id,current_book.id,chapter) ~= nil then return true end
             return self.reader_session.cache:readBody(current_book.source_id, current_book.id, chapter) ~= nil
         end or nil,
         reading_hook = function(selected, selected_chapters, selected_index, selected_callback, intent)
             return self:startReading(selected, selected_chapters, selected_index, selected_callback, intent)
         end,
         download_hook = function(selected) return self:startDownload(selected) end,
+        cache_hook = function(selected) return self:startCache(selected) end,
     })
 end
 

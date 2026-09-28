@@ -52,9 +52,12 @@ function Downloads:refresh()
     for _, task in ipairs(self.manager:list() or {}) do
         local completed, total = tonumber(task.completed) or 0, tonumber(task.total) or 0
         local progress = total > 0 and (" · " .. completed .. "/" .. total) or ""
+        if total > 0 then progress = progress .. " · " .. tostring(math.floor(completed * 100 / total)) .. "%" end
+        local kind = task.kind == "cache" and "章节缓存" or "EPUB 导出"
         local failures = (tonumber(task.failed) or 0) > 0 and (" · 失败 " .. tostring(task.failed)) or ""
         local warning = (task.warning or task.published_diagnostic) and " · 警告" or ""
         items[#items + 1] = { task = task, text = tostring(task.book and task.book.name or task.book_id or "未命名")
+            .. " · " .. kind
             .. " · " .. (labels[task.status] or tostring(task.status or "未知")) .. progress .. failures .. warning }
     end
     self.items = items

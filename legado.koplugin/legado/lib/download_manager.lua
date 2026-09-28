@@ -330,6 +330,7 @@ local function validate_download_listing(value)
         local warning = type(task) == "table" and rawget(task, "warning") or nil
         local diagnostic = type(task) == "table" and rawget(task, "published_diagnostic") or nil
         local final_path = type(task) == "table" and rawget(task, "final_path") or nil
+        local kind = type(task) == "table" and rawget(task, "kind") or nil
         local book_id = type(task) == "table" and rawget(task, "book_id") or nil
         local source_id = type(task) == "table" and rawget(task, "source_id") or nil
         local requires_book = status ~= "completed"
@@ -349,7 +350,8 @@ local function validate_download_listing(value)
             or (error_record ~= nil and not valid_restored_diagnostic(error_record))
             or (warning ~= nil and not valid_restored_diagnostic(warning))
             or (diagnostic ~= nil and not valid_restored_diagnostic(diagnostic))
-            or (final_path ~= nil and type(final_path) ~= "string") then
+            or (final_path ~= nil and type(final_path) ~= "string")
+            or (kind ~= nil and kind ~= "cache" and kind ~= "epub") then
             return nil, Errors.new(Errors.STORAGE_ERROR, "invalid persisted download task", { index = index })
         end
         rawset(task, "created_at", created_at)
@@ -424,7 +426,8 @@ function DownloadManager.new(options)
     assert(options.builder, "DownloadManager requires builder")
     assert(options.standby, "DownloadManager requires standby guard")
     local self = setmetatable({
-        storage = options.storage, cache = options.cache, service = options.book_service,
+        storage = options.storage, cache = options.cache, offline_cache = options.offline_cache,
+        service = options.book_service,
         builder = options.builder, standby = options.standby, scheduler = options.scheduler,
         output_root = tostring(options.output_root or "downloads"):gsub("[/\\]+$", ""),
         now = options.now or os.time, open_final = options.open_final,
@@ -597,6 +600,9 @@ function DownloadManager:_build(task, source, chapters)
     local bodies = {}
     for _, chapter in ipairs(chapters) do
         local body, cache_error = self.cache:readBody(task.source_id, task.book_id, chapter)
+        if (type(body) ~= "string" or body == "") and self.offline_cache then
+            body, cache_error = self.offline_cache:readBody(task.source_id, task.book_id, chapter)
+        end
         if type(body) ~= "string" or body == "" then return self:_fail(task, cache_error) end
         bodies[chapter.uid] = body
     end
@@ -616,15 +622,45 @@ end
 function DownloadManager:_download(task, source, chapters, index)
     if self.active ~= task.id or task.status ~= "running" then return end
     if task.cancel_requested then return self:_terminal(task, "cancelled", Errors.new(Errors.CANCELLED, "download cancelled")) end
-    if index > #chapters then return self:_build(task, source, chapters) end
-    local chapter = chapters[index]
-    local current_saved, current_error = self:_transition(task, { current = chapter.uid })
-    if not current_saved then return self:_interrupt_for_persistence(task, current_error) end
-    local cached = self.cache:readBody(task.source_id, task.book_id, chapter)
-    if type(cached) == "string" and cached ~= "" then
+    local chapter, target, cached_since_yield = nil, nil, 0
+    while index <= #chapters do
+        chapter = chapters[index]
+        local current_saved, current_error = self:_transition(task, { current = chapter.uid })
+        if not current_saved then return self:_interrupt_for_persistence(task, current_error) end
+        target = task.kind == "cache" and self.offline_cache or self.cache
+        local cached = target:readBody(task.source_id, task.book_id, chapter)
+        if type(cached) ~= "string" or cached == "" then
+            local alternate = task.kind == "cache" and self.cache or self.offline_cache
+            if alternate then
+                cached = alternate:readBody(task.source_id, task.book_id, chapter)
+                if type(cached) == "string" and cached ~= "" and task.kind == "cache" then
+                    local copied, copy_error = target:writeBody(task.source_id, task.book_id, chapter, cached)
+                    if not copied then return self:_fail(task, copy_error, true) end
+                end
+            end
+        end
+        if type(cached) ~= "string" or cached == "" then break end
         local counter_saved, counter_error = self:_transition(task, { completed = (task.completed or 0) + 1 })
         if not counter_saved then return self:_interrupt_for_persistence(task, counter_error) end
-        return self:_download(task, source, chapters, index + 1)
+        index = index + 1
+        cached_since_yield = cached_since_yield + 1
+        if task.kind == "cache" and index <= #chapters and cached_since_yield >= 20
+            and self.scheduler and type(self.scheduler.scheduleIn) == "function" then
+            local generation = task.generation
+            local scheduled = pcall(self.scheduler.scheduleIn, self.scheduler, .01, function()
+                if self:_valid_callback(task, generation) then self:_download(task, source, chapters, index) end
+            end)
+            if scheduled then return end
+        end
+    end
+    if index > #chapters then
+        if task.kind == "cache" then
+            local saved, save_error = self.offline_cache:writeCatalog(task.source_id, task.book_id,
+                { chapters = chapters, complete = true })
+            if not saved then return self:_fail(task, save_error) end
+            return self:_terminal(task, "completed")
+        end
+        return self:_build(task, source, chapters)
     end
     local generation = task.generation
     return self:_request(task, generation, function(callback)
@@ -633,7 +669,7 @@ function DownloadManager:_download(task, source, chapters, index)
         if err or type(result) ~= "table" or type(result.content) ~= "string" then return self:_fail(task, err, true) end
         local cleaned, clean_error = Cleaner.normalize(result.content)
         if not cleaned then return self:_fail(task, clean_error, true) end
-        local saved, save_error = self.cache:writeBody(task.source_id, task.book_id, chapter, cleaned)
+        local saved, save_error = target:writeBody(task.source_id, task.book_id, chapter, cleaned)
         if not saved then return self:_fail(task, save_error, true) end
         local counter_saved, counter_error = self:_transition(task, { completed = (task.completed or 0) + 1 })
         if not counter_saved then return self:_interrupt_for_persistence(task, counter_error) end
@@ -643,7 +679,14 @@ end
 
 function DownloadManager:_with_chapters(task, source, values)
     local chapters = {}
-    for _, chapter in ipairs(values or {}) do if type(chapter) == "table" and chapter.vip ~= true then chapters[#chapters + 1] = chapter end end
+    for _, chapter in ipairs(values or {}) do
+        if type(chapter) == "table" then
+            if chapter.vip == true and task.kind == "cache" then
+                return self:_fail(task, Errors.new(Errors.INVALID_INPUT, "VIP chapters cannot be fully cached"))
+            end
+            if chapter.vip ~= true then chapters[#chapters + 1] = chapter end
+        end
+    end
     if #chapters == 0 then return self:_fail(task, Errors.new(Errors.INVALID_INPUT, "download catalog has no non-VIP chapters")) end
     local catalog_saved, catalog_error = self:_transition(task, {
         chapters = copy(values), total = #chapters, completed = 0, failed = 0,
@@ -654,16 +697,20 @@ end
 
 function DownloadManager:_catalog(task, source)
     local values = type(task.chapters) == "table" and task.chapters or nil
-    if not values or #values == 0 then
+    if task.kind ~= "cache" and (not values or #values == 0) then
         values = self.storage:listChapters(task.book_id)
         if type(values) == "table" and #values == 0 then values = nil end
     end
-    if values then return self:_with_chapters(task, source, values) end
+    if values and #values > 0 then return self:_with_chapters(task, source, values) end
     local generation = task.generation
     return self:_request(task, generation, function(callback)
-        return self.service:getChapters(source, task.book, callback)
-    end, function(chapters, err)
+        return self.service:getChapters(source, task.book, callback,
+            task.kind == "cache" and { background_catalog = true } or nil)
+    end, function(chapters, err, metadata)
         if err or type(chapters) ~= "table" then return self:_fail(task, err) end
+        if task.kind == "cache" and (not metadata or metadata.catalog_complete ~= true) then
+            return self:_fail(task, Errors.new(Errors.PARSE_ERROR, "download catalog is incomplete"))
+        end
         local persisted, persist_error = self.storage:replaceChapters(task.book_id, chapters)
         if not persisted then return self:_fail(task, persist_error) end
         if self.cache.writeCatalog then
@@ -707,9 +754,12 @@ function DownloadManager:_schedulePump()
     else self:_pump() end
 end
 
-function DownloadManager:enqueue(book, chapters, callback)
+function DownloadManager:enqueue(book, chapters, callback, kind)
     if type(chapters) == "function" then callback, chapters = chapters, nil end
     if self.persistence_blocked then return nil, self.init_error end
+    if kind == "cache" and not self.offline_cache then
+        return nil, Errors.new(Errors.STORAGE_ERROR, "offline cache is unavailable")
+    end
     if type(book) ~= "table" or type(book.id) ~= "string" or type(book.source_id) ~= "string" then
         return nil, Errors.new(Errors.INVALID_INPUT, "download requires a normalized book")
     end
@@ -721,9 +771,10 @@ function DownloadManager:enqueue(book, chapters, callback)
     local next_queue_sequence, sequence_allocation_error = self:_nextQueueSequence()
     if not next_queue_sequence then return self:_blockSequenceAllocation(sequence_allocation_error) end
     local task = { id = id, book_id = book.id, source_id = book.source_id, book = copy(book), chapters = copy(chapters),
+        kind = kind,
         status = "queued", total = 0, completed = 0, failed = 0, current = nil, cancel_requested = false,
         created_at = created, updated_at = created, queue_sequence = next_queue_sequence,
-        final_path = self.output_root .. "/" .. EpubBuilder.exportFilename(book),
+        final_path = kind ~= "cache" and (self.output_root .. "/" .. EpubBuilder.exportFilename(book)) or nil,
     }
     local saved, save_error = self:_persist(task)
     if not saved then return nil, save_error end
@@ -732,6 +783,33 @@ function DownloadManager:enqueue(book, chapters, callback)
     if type(callback) == "function" then self.callbacks[id] = callback end
     self:_schedulePump()
     return copy(task)
+end
+
+function DownloadManager:enqueueCache(book, callback)
+    return self:enqueue(book, nil, callback, "cache")
+end
+
+function DownloadManager:isCached(book)
+    if not self.offline_cache or type(book) ~= "table" then return false end
+    for _, task in pairs(self.tasks) do
+        if task.kind == "cache" and task.status == "completed"
+            and task.book_id == book.id and task.source_id == book.source_id then
+            local catalog = self.offline_cache:readCatalog(book.source_id, book.id)
+            if type(catalog) == "table" and catalog.complete == true
+                and type(catalog.chapters) == "table" and #catalog.chapters == task.total then
+                local current = self.storage:listChapters(book.id)
+                if type(current) ~= "table" then return true end
+                if #current <= #catalog.chapters then
+                    local matching = true
+                    for index, chapter in ipairs(current) do
+                        if chapter.uid ~= catalog.chapters[index].uid then matching = false; break end
+                    end
+                    if matching then return true end
+                end
+            end
+        end
+    end
+    return false
 end
 
 function DownloadManager:get(id)
@@ -833,7 +911,7 @@ DownloadManager.retryPersistence = DownloadManager.recoverPersistence
 
 function DownloadManager:open(id)
     local task = self.tasks[id]
-    if not task or task.status ~= "completed" or type(task.final_path) ~= "string" then
+    if not task or task.kind == "cache" or task.status ~= "completed" or type(task.final_path) ~= "string" then
         return nil, Errors.new(Errors.INVALID_INPUT, "completed EPUB is unavailable")
     end
     if type(self.open_final) ~= "function" then return task.final_path end

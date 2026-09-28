@@ -1,4 +1,4 @@
-# KOReader 书源阅读插件
+# 不亦阅乎：KOReader 书源阅读插件
 
 
 升级无需重新激活：同一 Kindle 已成功激活后，覆盖更新插件代码即可，原短密钥和离线授权继续有效。请保留 KOReader 的用户数据和 settings 目录，不要删除 legado.json 或 legado-license.json；它们不在插件安装包中。GitHub 下载目录和 Releases 仅保留最新安装包。
@@ -6,6 +6,12 @@
 [下载最新安装包](https://github.com/bailigebai/legado.koplugin/releases/latest) · [下载 v0.10.34 ZIP](https://github.com/bailigebai/legado.koplugin/releases/download/v0.10.34/legado.koplugin-v0.10.34-20260926.zip)
 
 应用商店：刷新仓库列表，打开 `bailigebai/legado.koplugin`，选择“下载插件”并安装最新正式版，完成后重启 KOReader。
+
+## 开发中：整书离线缓存
+
+在书源书籍详情的“更多”中选“缓存整本（离线阅读）”，插件会取得完整目录并逐章保存正文。也可以选“导出 EPUB”生成电子书文件；书源原始内容不必是 EPUB。两种任务都在“下载管理”中显示类型、章节进度和百分比。章节缓存完成后，书架封面右下角显示“已下载”；从书架打开即可离线阅读。含有不可下载 VIP 章节、目录不完整或正文获取失败的任务不会显示完成标记，可在下载管理中重试。
+
+默认离线缓存目录是 `${DataStorage:getDataDir()}/legado/offline-cache/`。可在插件“设置 → 离线缓存目录”填入 Kindle 上的绝对路径；留空恢复默认目录，保存后需完全重启 KOReader 才生效。更换目录不会移动或删除旧缓存，切回旧目录可继续使用。此目录与受容量限制的普通阅读缓存分开；EPUB 文件仍在 `${DataStorage:getDataDir()}/legado/downloads/`。本工作区的功能尚未作为正式版本发布，Kindle 上的触控、路径权限和断网阅读仍需实机验收。
 
 2026-09-26 v0.10.34：修复长篇目录受普通规则 1,000 条限制而无法补全的问题，目录选择单独允许最多 10,000 条，搜索等普通规则保持原限制。后台目录在首屏提交后尽快开始，网站分页允许最多 512 页并保留总条目与防循环保护；临时网络失败从当前页有限重试，不重抓前面的目录。跨章继续已有任务，新章继承等待期间更新的完整目录；最终失败在阅读进度位置显示“目录加载失败”，不再一直显示加载中。已验证停留正文、不操作目录时单页 1,407 章及 80 个网页的 1,600 章自动补全。保留已修复的跨章画面与授权。范围及站点限制见 [后台目录补全记录](docs/catalog-background-0.10.34.md)。
 
@@ -132,6 +138,7 @@ Swipe 操作：阅读菜单 → 阅读设置 → 动画效果 → Swipe动画，
 - `${DataStorage:getDataDir()}/settings/legado-license.json`：当 Kindle 文件系统不能替换既有 `legado.json` 时，授权收据和安装标识写入此独立文件；不保存明文密钥。插件会先验证收据签名，再决定是否解锁。
 - `${DataStorage:getDataDir()}/legado/legado.sqlite`：书源、书架、目录、阅读进度和下载任务；SQLite 不可用时同一路径保存 Lua 降级索引。
 - `${DataStorage:getDataDir()}/legado/cache/`：目录与章节正文缓存。
+- `${DataStorage:getDataDir()}/legado/offline-cache/`：整书离线章节缓存（设置中可更改，不参与普通缓存自动清理）。
 - `${DataStorage:getDataDir()}/legado/covers/`：搜索/书架封面缓存。
 - `${DataStorage:getDataDir()}/legado/downloads/`：整本 EPUB、构建中的 `.part` 文件和更新版本。
 

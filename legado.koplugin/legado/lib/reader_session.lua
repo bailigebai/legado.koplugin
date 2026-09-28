@@ -48,11 +48,28 @@ function ReaderSession.new(options)
     assert(options.cache, "ReaderSession requires cache")
     assert(options.storage, "ReaderSession requires storage")
     assert(options.ui, "ReaderSession requires a KOReader UI adapter")
-    return setmetatable({ cache = options.cache, storage = options.storage, ui = options.ui, service = options.service,
+    return setmetatable({ cache = options.cache, offline_cache = options.offline_cache,
+        storage = options.storage, ui = options.ui, service = options.service,
         settings = options.settings, scheduler = options.scheduler, statistics=options.statistics, timing=options.timing,
         diagnostics = options.diagnostics or function() end, active = nil, pending = nil,
         next_token = 0, foreground_generation = 0, prefetch_generation = 0, catalog_background_generation = 0,
         foreground_handles = {}, foreground_state = nil, prefetch_requests = {}, catalog_background_action = nil }, ReaderSession)
+end
+
+local function read_body(self, source, book, chapter)
+    if self.offline_cache then
+        local body = self.offline_cache:readBody(source, book, chapter)
+        if type(body) == "string" and body ~= "" then return body end
+    end
+    return self.cache:readBody(source, book, chapter)
+end
+
+local function read_catalog(self, source, book)
+    if self.offline_cache then
+        local catalog = self.offline_cache:readCatalog(source, book)
+        if type(catalog) == "table" and catalog.complete == true then return catalog end
+    end
+    return self.cache:readCatalog(source, book)
 end
 
 function ReaderSession:_timing(stage, started, backend, state, details)
@@ -482,7 +499,7 @@ function ReaderSession:_open_cached(state, index, restore_fraction)
     if not state.transition then self:_beginTransition(state) end
     local chapter = state.chapters[index]
     local started=clock()
-    local body, error_value = self.cache:readBody(source_id(state.source, state.book), state.book.id, chapter)
+    local body, error_value = read_body(self, source_id(state.source, state.book), state.book.id, chapter)
     self:_timing(body and 'cache_hit' or 'cache_miss',started,state.backend,state)
     if not body then return nil, staged(error_value, "cache_read") end
     local backend=state.backend or preferred_backend(self)
@@ -938,7 +955,7 @@ function ReaderSession:onPageUpdate(state, document, page, total)
     end
     local request = self.prefetch_requests[chapter.uid]
     if request and request.state == state and request.chapter.uid == chapter.uid then return request.handle end
-    local body = self.cache:readBody(source_id(state.source, state.book), state.book.id, chapter)
+    local body = read_body(self, source_id(state.source, state.book), state.book.id, chapter)
     if body then
         if state.backend~='immersive' then return self:_prepareHtml(state,chapter,body) end
         return true
@@ -1062,7 +1079,7 @@ function ReaderSession:_prefetch(state)
             if request then
                 if index == state.index + 1 and request.handle and request.handle.promote then request.handle:promote('next') end
             elseif not state.prefetch_ready[chapter.uid] then
-                local body = self.cache:readBody(source_id(state.source, state.book), state.book.id, chapter)
+                local body = read_body(self, source_id(state.source, state.book), state.book.id, chapter)
                 if body then self:_preparePrefetched(state, index, body)
                 elseif running < 2 and not state.fetching and not self.pending then
                     local failures = state.prefetch_failures[chapter.uid] or 0
@@ -1135,7 +1152,7 @@ function ReaderSession:openOffline(source, book, index, callback, options)
         local ok, current = pcall(options.is_current)
         if not ok or current ~= true then return nil, Errors.new(Errors.CANCELLED, "reading intent is stale") end
     end
-    local catalog, catalog_error = self.cache:readCatalog(source_id(source, book), book.id)
+    local catalog, catalog_error = read_catalog(self, source_id(source, book), book.id)
     if not catalog then
         if type(callback) == "function" then pcall(callback, nil, catalog_error) end
         return nil, catalog_error

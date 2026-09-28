@@ -18,13 +18,13 @@ except ImportError as error:
     )
 
 
-REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
+REPOSITORY_ROOT = Path(__file__).absolute().parent.parent
 PLUGIN_ROOT = REPOSITORY_ROOT / "legado.koplugin"
 SPEC_ROOT = REPOSITORY_ROOT / "spec"
 
 
 def lua_string(value: str) -> str:
-    return json.dumps(value.replace("\\", "/"))
+    return json.dumps(value.replace("\\", "/"), ensure_ascii=False)
 
 
 def run_spec(spec_path: Path) -> int:
@@ -57,7 +57,7 @@ def main() -> int:
     os.environ["LEGADO_PLUGIN_ROOT"] = str(PLUGIN_ROOT)
     specs = (
         [
-            (REPOSITORY_ROOT / item).resolve()
+            (REPOSITORY_ROOT / item).absolute()
             if not Path(item).is_absolute()
             else Path(item)
             for item in arguments.spec

@@ -14,6 +14,7 @@ function Shelf.new(options)
         page_size = math.max(1, tonumber(options.page_size) or 20),
         covers_enabled = options.covers_enabled ~= false,
         cover_loader = options.cover_loader,
+        is_cached = options.is_cached,
         on_search = options.on_search,
         on_sources = options.on_sources,
         settings = options.settings,
@@ -110,6 +111,7 @@ function Shelf:page(page, mode, page_size_override)
             subtitle = trim(book.author), cover_url = cover_url,
             cover_text = cover_url == "" and "无封面" or (type(self.cover_loader) == "function" and "封面加载中" or "封面不可用"),
             cover_pending = mode == "cover" and cover_url ~= "" and type(self.cover_loader) == "function",
+            downloaded = not book.is_local and type(self.is_cached) == "function" and self.is_cached(book) == true or false,
         }
         items[#items + 1] = item
         if item.cover_pending then

@@ -40,7 +40,7 @@ function Legado:_open(method)
         if missing then detail = detail .. "\n缺少模块：" .. missing end
         if location then detail = detail .. "\n位置：" .. location end
     end
-    local text = "书源阅读打开失败（" .. (self.version or "未知版本") .. "）。" .. detail
+    local text = "不亦阅乎打开失败（" .. (self.version or "未知版本") .. "）。" .. detail
         .. "\n请保留此提示和本次启动的 koreader/crash.log 供排查。"
     print("[legado] " .. text)
     require("ui/uimanager"):show(require("ui/widget/infomessage"):new{ text = text })
@@ -58,7 +58,7 @@ function Legado:addToMainMenu(menu_items)
         end
     end
     menu_items.legado = {
-        text = "书源阅读",
+        text = "不亦阅乎",
         sorting_hint = "tools",
         sub_item_table = {
             { text = "首页", callback = action("openHome") },

@@ -17,8 +17,9 @@ function BookDetail.new(options)
     return setmetatable({
         kind = "book_detail",
         book = options.book, alternatives = options.alternatives or {}, shelf = options.shelf,
-        reading_hook = options.reading_hook, download_hook = options.download_hook,
+        reading_hook = options.reading_hook, download_hook = options.download_hook, cache_hook = options.cache_hook,
         service = options.service, source_lookup = options.source_lookup,
+        catalog_lookup = options.catalog_lookup,
         compatibility_provider = options.compatibility,
         cache_lookup = options.cache_lookup,
         alive = true, loading_info = false, loading_catalog = false,
@@ -133,10 +134,27 @@ function BookDetail:loadInfo(callback)
 end
 function BookDetail:loadCatalog(callback)
     callback = callback or function() end
-    if not self.alive or not self.service or type(self.service.getChapters) ~= "function" then return nil end
+    if not self.alive then return nil end
     cancel_handle(self.catalog_request)
     self.catalog_generation = self.catalog_generation + 1
     local generation, request_generation, book = self.generation, self.catalog_generation, self.book
+    local function make_catalog(chapters)
+        return Catalog.new(chapters,
+            self.cache_lookup and function(chapter) return self.cache_lookup(chapter, book) end or nil,
+            function(_, index, selected_callback)
+                return self:_beginReading(chapters, index, selected_callback, book)
+            end)
+    end
+    if self.catalog_lookup then
+        local ok, cached = pcall(self.catalog_lookup, book)
+        if ok and type(cached) == "table" and #cached > 0 then
+            self.loading_catalog, self.catalog_error, self.catalog_request = false, nil, nil
+            self.catalog = make_catalog(cached)
+            callback(self.catalog, nil)
+            return self.catalog
+        end
+    end
+    if not self.service or type(self.service.getChapters) ~= "function" then return nil end
     local source = self.source_lookup and self.source_lookup(book.source_id) or nil
     if not source then return nil end
     self.loading_catalog, self.catalog_error = true, nil
@@ -146,12 +164,7 @@ function BookDetail:loadCatalog(callback)
         if not self.alive or generation ~= self.generation or request_generation ~= self.catalog_generation or self.book.id ~= book.id then return end
         self.loading_catalog, self.catalog_request = false, nil
         self.catalog_error = err
-        if chapters then self.catalog = Catalog.new(chapters,
-            self.cache_lookup and function(chapter) return self.cache_lookup(chapter, book) end or nil,
-            function(_, index, selected_callback)
-                return self:_beginReading(chapters, index, selected_callback, book)
-            end)
-        end
+        if chapters then self.catalog = make_catalog(chapters) end
         callback(self.catalog, err)
     end
     local ok, request = pcall(self.service.getChapters, self.service, source, book, done)
@@ -186,5 +199,6 @@ function BookDetail:startReading(callback, on_progress)
     return self:_beginReading(chapters, nil, callback, self.book, on_progress)
 end
 function BookDetail:startDownload() return self.download_hook and self.download_hook(self.book) or "下载功能将在下一阶段提供" end
+function BookDetail:startCache() return self.cache_hook and self.cache_hook(self.book) or "缓存功能尚未初始化" end
 
 return BookDetail

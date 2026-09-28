@@ -409,4 +409,48 @@ do
         session:close()
     end
 end
+do
+    local online = CacheStore.new({ fs = fs, root = "online-cache-after-download" })
+    local downloaded = CacheStore.new({ fs = fs, root = "downloaded-offline-cache" })
+    local source, book = { id = "s" }, { id = "downloaded-book", source_id = "source-s" }
+    local chapter = { uid = "downloaded-1", index = 1, title = "Offline", url = "https://s/1",
+        source_id = "source-s", book_id = book.id }
+    book.source_id = Models.sourceId(source)
+    chapter.source_id = book.source_id
+    assert(downloaded:writeCatalog(book.source_id, book.id, { chapters = { chapter }, complete = true }))
+    assert(downloaded:writeBody(book.source_id, book.id, chapter, "<p>Downloaded chapter</p>"))
+    local network_calls, catalog_calls, opened = 0, 0, 0
+    local session = ReaderSession.new({ cache = online, offline_cache = downloaded,
+        storage = { getProgress = function() return nil end, putProgress = function() return true end,
+            listSources = function() return { source } end },
+        service = { getContent = function() network_calls = network_calls + 1 end,
+            getChapters = function() catalog_calls = catalog_calls + 1 end },
+        ui = { openDocument = function(_, _, callbacks)
+            opened = opened + 1
+            local document = { getProgressFraction = function() return 0 end }
+            callbacks.ready(document)
+            return document
+        end } })
+    truthy(session:openOffline(source, book, 1), "downloaded book opens from the dedicated cache")
+    equal(1, opened, "downloaded chapter reaches the reader")
+    equal(0, network_calls, "offline cached book does not fetch a chapter")
+    session:close()
+    local resumed
+    local app = App.new({ storage = session.storage, book_service = session.service,
+        reader_session = { cache = online, offline_cache = downloaded,
+            resume = function(_, _, _, chapters) resumed = chapters; return { chapters = chapters } end } })
+    local opened_again = app:startReading(book)
+    truthy(type(opened_again) == "table", "ordinary book opening can use the full downloaded catalog")
+    equal(chapter.uid, resumed and resumed[1].uid, "ordinary opening uses the downloaded chapter list")
+    equal(0, catalog_calls, "ordinary opening does not refetch a fully cached catalog")
+    local detail = App.new({ storage = session.storage, book_service = session.service,
+        reader_session = session }):createBookDetail(book)
+    local shown_catalog
+    detail:loadCatalog(function(value) shown_catalog = value end)
+    equal(chapter.uid, shown_catalog and shown_catalog.items[1].chapter.uid,
+        "book details show the downloaded catalog while offline")
+    equal(0, catalog_calls, "offline detail catalog does not use the network")
+    session:close()
+end
+
 return count

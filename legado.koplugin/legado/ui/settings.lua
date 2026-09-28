@@ -8,6 +8,8 @@ function SettingsView.new(options)
         kind = "settings",
         settings = options.settings,
         settings_error = options.settings_error,
+        default_download_cache_dir = options.default_download_cache_dir,
+        validate_download_cache_dir = options.validate_download_cache_dir,
         temporary_reader_mode = options.temporary_reader_mode,
         values = values,
         clear_cache = options.clear_cache, cache_usage = options.cache_usage, cache_cleanup = options.cache_cleanup, local_library = options.local_library,
@@ -29,6 +31,14 @@ end
 
 function SettingsView:set(key, value)
     if not self.settings or type(self.settings.set) ~= "function" then return nil, { code = "STORAGE_ERROR" } end
+    if key == "download_cache_dir" then
+        local path, path_error = require("legado.lib.download_cache_path").resolve(value, self.default_download_cache_dir)
+        if not path then return nil, path_error end
+        if self.validate_download_cache_dir then
+            local valid, validation_error = self.validate_download_cache_dir(path)
+            if not valid then return nil, validation_error end
+        end
+    end
     local saved, err = self.settings:set(key, value)
     self:refresh()
     if saved ~= nil and (key == 'progress_bar' or key:match('^progress_bar_')) and self.on_progress_change then

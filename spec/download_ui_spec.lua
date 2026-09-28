@@ -9,16 +9,18 @@ local function equal(expected, actual, message) count = count + 1; assertx.equal
 local function truthy(value, message) count = count + 1; assertx.truthy(value, message) end
 
 local tasks = {
-    { id = "active", book = { name = "下载中" }, status = "running", completed = 2, total = 5, current = "c2" },
+    { id = "active", kind = "cache", book = { name = "下载中" }, status = "running", completed = 2, total = 5, current = "c2" },
     { id = "failed", book = { name = "失败书" }, status = "failed", completed = 1, total = 3, failed = 1 },
     { id = "done", book = { name = "完成书" }, status = "completed", completed = 4, total = 4, final_path = "downloads/done.epub",
       published_diagnostic = { code = "STORAGE_ERROR", message = "EPUB published with a cleanup warning" } },
     { id = "old", book = { name = "中断书" }, status = "interrupted", completed = 1, total = 2 },
+    { id = "offline-done", kind = "cache", book = { name = "离线书" }, status = "completed", completed = 5, total = 5 },
 }
 local calls = {}
 local manager = {
     list = function() return tasks end,
     enqueue = function(_, book) calls[#calls + 1] = "enqueue:" .. book.id; return { id = "new", status = "queued" } end,
+    enqueueCache = function(_, book) calls[#calls + 1] = "cache:" .. book.id; return { id = "cached", kind = "cache", status = "queued" } end,
     cancel = function(_, id) calls[#calls + 1] = "cancel:" .. id; return true end,
     retry = function(_, id) calls[#calls + 1] = "retry:" .. id; return true end,
     resume = function(_, id) calls[#calls + 1] = "resume:" .. id; return true end,
@@ -28,8 +30,10 @@ local manager = {
 do
     local view = Downloads.new({ manager = manager })
     equal("downloads", view.kind, "download manager view has stable kind")
-    equal(4, #view.items, "download history is listed")
+    equal(5, #view.items, "download history is listed")
     truthy(view.items[1].text:find("2/5", 1, true), "active progress is visible")
+    truthy(view.items[1].text:find("40%%"), "cache task shows a percentage")
+    truthy(view.items[1].text:find("章节缓存", 1, true), "cache task is distinguished from EPUB export")
     truthy(view.items[2].text:find("失败", 1, true), "failure state is visible")
     truthy(view.items[3].text:find("完成", 1, true), "completion state is visible")
     truthy(view.items[3].text:find("警告", 1, true), "published cleanup diagnostic is visible without marking failure")
@@ -53,6 +57,7 @@ do
     equal("new", queued.id, "detail download action enqueues through manager")
     local detail = app:createBookDetail({ id = "book-detail", source_id = "source-ui", name = "详情" })
     equal("new", detail:startDownload().id, "book detail uses the same download manager hook")
+    equal("cached", detail:startCache().id, "book detail can queue chapter caching")
 end
 
 do
@@ -77,6 +82,9 @@ do
     local interrupted_actions = menu.item_table[4].callback()
     menu.close_callback()
     equal("继续下载", interrupted_actions.item_table[1].text, "interrupted task exposes resume action")
+    local offline_actions = menu.item_table[5].callback()
+    menu.close_callback()
+    equal("返回书架阅读", offline_actions.item_table[1].text, "completed chapter cache leads back to the shelf")
     truthy(type(menu.close_callback) == "function", "download menu exposes lifecycle close callback")
     menu.close_callback()
     equal(false, view.alive, "presenter close callback invalidates stale actions")
@@ -90,11 +98,28 @@ do
     end
     local download_action
     for _, item in ipairs(shown[#shown].item_table) do
-        if item.text == "下载整本" then download_action = item; break end
+        if item.text == "导出 EPUB" then download_action = item; break end
     end
     truthy(download_action, "detail More menu exposes the whole-book download action")
+    local cache_action
+    for _, item in ipairs(shown[#shown].item_table) do
+        if item.text == "缓存整本（离线阅读）" then cache_action = item; break end
+    end
+    truthy(cache_action, "detail More menu exposes in-app offline caching")
     download_action.callback()
     equal("string", type(shown[#shown].subtitle), "queued task result is rendered as a user-facing message, not a table")
+
+    local local_detail = App.new({ download_manager = manager }):createBookDetail({
+        id = "local-book", source_id = "local", name = "本地文件", is_local = true,
+    })
+    local local_menu = presenter:show(local_detail)
+    for _, item in ipairs(local_menu.actions) do
+        if item.text == "更多" then item.callback(); break end
+    end
+    for _, item in ipairs(shown[#shown].item_table) do
+        truthy(item.text ~= "导出 EPUB" and item.text ~= "缓存整本（离线阅读）",
+            "local documents do not show source-download actions")
+    end
 end
 
 do
