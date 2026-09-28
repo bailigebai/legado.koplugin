@@ -93,4 +93,140 @@ clock_now = clock_now + 2
 auth:pollLogin("deadline-qr", function(_, status) deadline_state = status end)
 eq("expired", deadline_state, "QR polling stops after five minutes")
 eq(request_count, #pending, "expired QR does not start another network request")
+
+do
+    local shared = new_auth()
+    local before = #pending
+    local first, second
+    shared:refresh(function(value) first = value end)
+    shared:refresh(function(value) second = value end)
+    eq(before + 1, #pending, "concurrent refresh callers share one login request")
+    pending[before + 1].callback({ status = 200,
+        body = Json.encode({ vid = 1234, accessToken = "shared-access" }) })
+    eq("shared-access", first.access_token, "first caller receives the renewed session")
+    eq("shared-access", second.access_token, "second caller receives the same renewed session")
+end
+
+do
+    local shared = new_auth()
+    local before = #pending
+    local cancelled_called, remaining
+    local first = shared:refresh(function() cancelled_called = true end)
+    shared:refresh(function(value) remaining = value end)
+    first:cancel()
+    eq(false, pending[before + 1].cancelled,
+        "cancelling one waiter keeps the shared login request active")
+    pending[before + 1].callback({ status = 200,
+        body = Json.encode({ vid = 1234, accessToken = "remaining-access" }) })
+    eq(nil, cancelled_called, "cancelled waiter does not receive the renewal result")
+    eq("remaining-access", remaining.access_token, "remaining waiter receives the renewal result")
+end
+
+do
+    local shared = new_auth()
+    local before, saved_before = #pending, saved
+    local callbacks = 0
+    local first = shared:refresh(function() callbacks = callbacks + 1 end)
+    local second = shared:refresh(function() callbacks = callbacks + 1 end)
+    first:cancel()
+    second:cancel()
+    eq(true, pending[before + 1].cancelled, "last waiter cancels the shared login request")
+    pending[before + 1].callback({ status = 200,
+        body = Json.encode({ vid = 1234, accessToken = "late-access" }) })
+    eq(0, callbacks, "late cancelled renewal cannot notify former waiters")
+    eq(saved_before, saved, "late cancelled renewal cannot overwrite the saved session")
+    local renewed
+    shared:refresh(function(value) renewed = value end)
+    eq(before + 2, #pending, "a new request may start after all waiters cancel")
+    pending[before + 2].callback({ status = 200,
+        body = Json.encode({ vid = 1234, accessToken = "next-access" }) })
+    eq("next-access", renewed.access_token, "new renewal still succeeds")
+end
+
+do
+    local shared = new_auth()
+    local before = #pending
+    local second_handle, cancel_result, second_called
+    shared:refresh(function() cancel_result = second_handle:cancel() end)
+    second_handle = shared:refresh(function() second_called = true end)
+    pending[before + 1].callback({ status = 200,
+        body = Json.encode({ vid = 1234, accessToken = "fanout-access" }) })
+    eq(true, cancel_result, "first waiter can cancel an undelivered second waiter")
+    eq(nil, second_called, "cancelled second waiter is skipped during result delivery")
+end
+
+do
+    local shared = new_auth()
+    local before = #pending
+    local second
+    shared:refresh(function() error("first waiter failed") end)
+    shared:refresh(function(value) second = value end)
+    local ok, callback_error = pcall(pending[before + 1].callback, { status = 200,
+        body = Json.encode({ vid = 1234, accessToken = "isolated-access" }) })
+    eq(false, ok, "a caller exception remains visible")
+    eq(true, tostring(callback_error):find("first waiter failed", 1, true) ~= nil,
+        "a caller exception retains its original reason")
+    eq("isolated-access", second and second.access_token,
+        "one caller exception does not strand other renewal waiters")
+end
+
+do
+    local shared = new_auth()
+    local before = #pending
+    local first_error, second_error
+    shared:refresh(function(_, err) first_error = err end)
+    shared:refresh(function(_, err) second_error = err end)
+    eq(before + 1, #pending, "failed concurrent renewals still use one login request")
+    pending[before + 1].callback({ status = 401, body = "{}" })
+    eq("微信读书登录或续期失败", first_error, "first caller receives the renewal failure")
+    eq(first_error, second_error, "second caller receives the same renewal failure")
+end
+
+do
+    local shared = new_auth()
+    local before = #pending
+    local refreshed, refresh_error, logged
+    shared:refresh(function(value, err) refreshed, refresh_error = value, err end)
+    shared:completeLogin("new-account-code", function(value) logged = value end)
+    pending[before + 2].callback({ status = 200,
+        body = Json.encode({ vid = 9999, accessToken = "new-account-access",
+            refreshToken = "new-account-refresh" }) })
+    eq("9999", logged.vid, "new account login succeeds while old renewal is pending")
+    local new_account_renewed
+    shared:refresh(function(value) new_account_renewed = value end)
+    eq(before + 3, #pending, "new account does not join the old account renewal")
+    local new_refresh_body = pending[before + 3].request.body
+    if type(new_refresh_body) == "string" then new_refresh_body = Json.decode(new_refresh_body) end
+    eq("new-account-refresh", new_refresh_body.refreshToken,
+        "new account renews with its own refresh token")
+    pending[before + 1].callback({ status = 200,
+        body = Json.encode({ vid = 1234, accessToken = "old-account-late" }) })
+    eq("9999", shared:session().vid, "late old-account renewal cannot replace the new login")
+    eq(nil, refreshed, "late old-account renewal does not report stale credentials")
+    eq("微信读书会话已更新", refresh_error, "stale renewal reports the account change")
+    pending[before + 3].callback({ status = 200,
+        body = Json.encode({ vid = 9999, accessToken = "new-account-renewed" }) })
+    eq("new-account-renewed", new_account_renewed.access_token,
+        "new account renewal completes independently")
+end
+
+do
+    local sync_calls = 0
+    local synchronous = Auth.new{
+        requests = { execute = function(_, _, callback)
+            sync_calls = sync_calls + 1
+            callback({ status = 200, body = Json.encode({ vid = 1234,
+                accessToken = "instant-" .. sync_calls }) })
+            return { cancel = function() end }
+        end },
+        fs = fs, path = "weread-session.json", sha256 = function() return string.rep("a", 64) end,
+        now = function() return clock_now end, random = function() return 7 end,
+    }
+    local first, second
+    synchronous:refresh(function(value) first = value end)
+    synchronous:refresh(function(value) second = value end)
+    eq("instant-1", first.access_token, "synchronous renewal reaches its caller")
+    eq("instant-2", second.access_token, "completed synchronous renewal clears the shared flight")
+    eq(2, sync_calls, "later synchronous renewal starts a new login request")
+end
 return count

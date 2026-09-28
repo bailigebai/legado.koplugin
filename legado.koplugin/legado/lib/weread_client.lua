@@ -76,13 +76,26 @@ function Client:_call(method, path, body, eink, callback, options)
                 or err and type(err.details) == "table" and tonumber(err.details.status)
             local code = data and tonumber(data.errCode or data.errcode)
             if number == 1 and (status == 401 or code == -2012) then
-                local refreshed = false
-                local refresh_handle = self.auth:refresh(function(new_session, refresh_error)
-                    refreshed = true
+                local latest = self.auth:session()
+                if not latest then return callback(nil, "请先扫码登录微信读书") end
+                if latest.vid ~= session.vid then return callback(nil, "微信读书账号已切换") end
+                local function after_refresh(new_session, refresh_error)
                     if cancelled then return end
+                    local current_session = self.auth:session()
+                    if not current_session then return callback(nil, "请先扫码登录微信读书") end
+                    if current_session.vid ~= session.vid
+                        or (new_session and new_session.vid ~= session.vid) then
+                        return callback(nil, "微信读书账号已切换")
+                    end
                     if new_session and replayable then attempt(2)
                     elseif new_session then callback(nil, "微信读书登录已续期，请同步书架确认写入结果")
                     else callback(nil, refresh_error or "微信读书登录已失效") end
+                end
+                if latest.access_token ~= session.access_token then return after_refresh(latest) end
+                local refreshed = false
+                local refresh_handle = self.auth:refresh(function(new_session, refresh_error)
+                    refreshed = true
+                    after_refresh(new_session, refresh_error)
                 end)
                 if not refreshed then active = refresh_handle end
                 return

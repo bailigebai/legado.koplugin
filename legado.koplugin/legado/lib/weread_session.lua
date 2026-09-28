@@ -51,6 +51,13 @@ local function valid_session(session)
     return true
 end
 
+local function same_session(left, right)
+    return left and right and left.vid == right.vid
+        and left.access_token == right.access_token
+        and left.refresh_token == right.refresh_token
+        and left.device_id == right.device_id
+end
+
 function Auth.new(options)
     options = options or {}
     assert(options.requests and options.fs and options.path, "WeRead auth requires requests, fs and path")
@@ -180,8 +187,14 @@ function Auth:_exchange(fields, previous, callback, device_id)
     device_id = device_id or previous and previous.device_id or self:_deviceId()
     local body = self:_loginBody(device_id, fields)
     if not body then callback(nil, "签名组件不可用"); return nil end
-    return self.requests:execute({ url = API .. "/login", method = "POST", source_id = "weread", body = body,
+    local cancelled, completed = false, false
+    local request = self.requests:execute({ url = API .. "/login", method = "POST", source_id = "weread", body = body,
         body_type = "json", headers = headers(), priority = "foreground" }, function(response, err)
+        if cancelled or completed then return end
+        completed = true
+        if previous and not same_session(self.saved, previous) then
+            return callback(nil, "微信读书会话已更新")
+        end
         local data = success(response, err) and decode(response) or nil
         local session = data and {
             vid = tostring(data.vid or previous and previous.vid or ""),
@@ -193,6 +206,12 @@ function Auth:_exchange(fields, previous, callback, device_id)
         local saved, save_error = self:_save(session)
         callback(saved, save_error)
     end)
+    return { cancel = function()
+        if cancelled or completed then return false end
+        cancelled = true
+        if request and type(request.cancel) == "function" then request:cancel() end
+        return true
+    end }
 end
 
 function Auth:completeLogin(code, callback)
@@ -209,8 +228,45 @@ end
 function Auth:refresh(callback)
     local current = self:session()
     if not current then callback(nil, "请先扫码登录微信读书"); return nil end
-    return self:_exchange({ refreshToken = current.refresh_token, inBackground = 0,
-        kickType = 1, refCgi = "" }, current, callback)
+    local flight = self.refresh_flight
+    local new_flight = not flight or not same_session(flight.session, current)
+    if new_flight then
+        flight = { session = current, waiters = {}, completed = false }
+        self.refresh_flight = flight
+    end
+    local waiter = { callback = callback, cancelled = false, delivered = false }
+    flight.waiters[#flight.waiters + 1] = waiter
+    local handle = { cancel = function()
+        if waiter.cancelled or waiter.delivered then return false end
+        waiter.cancelled = true
+        if flight.completed then return true end
+        for _, waiting in ipairs(flight.waiters) do
+            if not waiting.cancelled then return true end
+        end
+        flight.completed = true
+        if self.refresh_flight == flight then self.refresh_flight = nil end
+        if flight.request and type(flight.request.cancel) == "function" then flight.request:cancel() end
+        return true
+    end }
+    if new_flight then
+        local request = self:_exchange({ refreshToken = current.refresh_token, inBackground = 0,
+            kickType = 1, refCgi = "" }, current, function(session, err)
+            if flight.completed then return end
+            flight.completed = true
+            if self.refresh_flight == flight then self.refresh_flight = nil end
+            local failed, failure = false, nil
+            for _, waiting in ipairs(flight.waiters) do
+                if not waiting.cancelled then
+                    waiting.delivered = true
+                    local ok, callback_error = pcall(waiting.callback, session, err)
+                    if not ok and not failed then failed, failure = true, callback_error end
+                end
+            end
+            if failed then error(failure, 0) end
+        end)
+        if not flight.completed then flight.request = request end
+    end
+    return handle
 end
 
 return Auth

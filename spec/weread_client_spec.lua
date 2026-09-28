@@ -225,4 +225,85 @@ do
     eq(1, #sent, "cancelled shelf write is never replayed")
     eq(nil, outcome, "cancelled shelf write does not update a closed page")
 end
+
+do
+    local local_client, sent, refresh_count = auth_expiry_case()
+    local first, second
+    local_client:bookInfo("b1", function(value) first = value end)
+    local_client:bookInfo("b2", function(value) second = value end)
+    sent[1].callback({ status = 401, body = "{}" })
+    sent[2].callback({ status = 401, body = "{}" })
+    eq(1, refresh_count(), "late old-token error uses the renewal already completed")
+    eq("renewed", sent[4].spec.headers["X-Skey"], "late read retries with the current token")
+    sent[3].callback({ status = 200, body = Json.encode({ book = { bookId = "b1" } }) })
+    sent[4].callback({ status = 200, body = Json.encode({ book = { bookId = "b2" } }) })
+    eq("b1", first.book.bookId, "first read completes after renewal")
+    eq("b2", second.book.bookId, "late read completes after renewal")
+end
+
+do
+    local local_client, sent, refresh_count = auth_expiry_case()
+    local write_error
+    local_client:bookInfo("b1", function() end)
+    local_client:addToShelf("b2", function(_, err) write_error = err end)
+    sent[1].callback({ status = 401, body = "{}" })
+    sent[2].callback({ status = 401, body = "{}" })
+    eq(1, refresh_count(), "late shelf write does not renew an already updated token")
+    eq(3, #sent, "late shelf write is not replayed")
+    eq("微信读书登录已续期，请同步书架确认写入结果", write_error,
+        "late shelf write still reports an unknown result")
+end
+
+do
+    local sent, vid, refreshes, error_message = {}, "old-account", 0, nil
+    local local_client = Client.new{
+        requests = { execute = function(_, spec, callback)
+            sent[#sent + 1] = { spec = spec, callback = callback }
+            return { cancel = function() end }
+        end },
+        auth = {
+            session = function() return { vid = vid, access_token = "token" } end,
+            refresh = function() refreshes = refreshes + 1 end,
+        },
+    }
+    local_client:bookInfo("b1", function(_, err) error_message = err end)
+    vid = "new-account"
+    sent[1].callback({ status = 401, body = "{}" })
+    eq(0, refreshes, "an old-account response cannot renew the new account")
+    eq(1, #sent, "an old-account response cannot retry under the new account")
+    eq("微信读书账号已切换", error_message, "old-account response reports the account switch")
+end
+
+do
+    local sent, waiters, vid, token = {}, {}, "account-a", "expired"
+    local second_error
+    local local_client = Client.new{
+        requests = { execute = function(_, spec, callback)
+            sent[#sent + 1] = { spec = spec, callback = callback }
+            if spec.headers["X-Skey"] == "renewed" then
+                callback({ status = 200, body = Json.encode({ book = { bookId = "b1" } }) })
+            end
+            return { cancel = function() end }
+        end },
+        auth = {
+            session = function() return { vid = vid, access_token = token } end,
+            refresh = function(_, callback)
+                waiters[#waiters + 1] = callback
+                return { cancel = function() end }
+            end,
+        },
+    }
+    local_client:bookInfo("b1", function(value)
+        if value then vid, token = "account-b", "account-b-token" end
+    end)
+    local_client:bookInfo("b2", function(_, err) second_error = err end)
+    sent[1].callback({ status = 401, body = "{}" })
+    sent[2].callback({ status = 401, body = "{}" })
+    token = "renewed"
+    waiters[1]({ vid = "account-a", access_token = token })
+    waiters[2]({ vid = "account-a", access_token = token })
+    eq(3, #sent, "second old-account read cannot replay after first callback switches account")
+    eq("微信读书账号已切换", second_error,
+        "old-account read reports a switch that happens during renewal fanout")
+end
 return count
