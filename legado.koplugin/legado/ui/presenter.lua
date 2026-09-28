@@ -2375,6 +2375,19 @@ end
 
 local function download_items(self, view)
     local items = {}
+    if view.persistence_error then
+        items[#items + 1] = { text = "下载记录暂不可用 · " .. safe_token(view.persistence_error.code, "STORAGE_ERROR"),
+            enabled = false }
+        items[#items + 1] = { text = "重新读取下载记录", callback = function()
+            if not view.alive then return false end
+            local recovered, err = view:recover()
+            self:_downloads(view)
+            if not recovered then
+                return self:_info("重新读取失败 · " .. safe_token(type(err) == "table" and err.code, "STORAGE_ERROR"), "下载管理")
+            end
+            return recovered
+        end }
+    end
     for _, row in ipairs(view.items or {}) do
         local task = row.task
         items[#items + 1] = { text = row.text, callback = function()
@@ -2432,7 +2445,7 @@ local function download_items(self, view)
         end }
     end
     if #items == 0 then items[1] = { text = "暂无下载记录", enabled = false } end
-    if self.app and self.app.storage and type(self.app.createBookDetail) == "function" then
+    if not view.persistence_error and self.app and self.app.storage and type(self.app.createBookDetail) == "function" then
         items[#items + 1] = { text = "新建缓存任务", callback = function() return self:_downloadBookPicker(view) end }
     end
     items[#items + 1] = { text = "刷新", callback = function() return self:_downloads(view) end }

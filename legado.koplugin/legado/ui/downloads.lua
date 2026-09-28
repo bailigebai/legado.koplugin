@@ -20,6 +20,7 @@ function Downloads.new(options)
 end
 
 function Downloads:_hasActive()
+    if self.persistence_error then return false end
     for _, item in ipairs(self.items or {}) do
         local status = item.task and item.task.status
         if status == "queued" or status == "running" or status == "cancelling" then return true end
@@ -46,6 +47,8 @@ end
 
 function Downloads:refresh()
     if not self.alive then return false end
+    self.persistence_error = self.manager.persistence_blocked and
+        (self.manager.init_error or { code = "STORAGE_ERROR" }) or nil
     local items = {}
     for _, task in ipairs(self.manager:list() or {}) do
         local completed, total = tonumber(task.completed) or 0, tonumber(task.total) or 0
@@ -86,6 +89,14 @@ function Downloads:cancel(id) return action(self, "cancel", id) end
 function Downloads:retry(id) return action(self, "retry", id) end
 function Downloads:resume(id) return action(self, "resume", id) end
 function Downloads:open(id) return action(self, "open", id) end
+
+function Downloads:recover()
+    if not self.alive or type(self.manager.recoverPersistence) ~= "function" then return false end
+    local result, err = self.manager:recoverPersistence()
+    local items = self:refresh()
+    if type(self.on_refresh) == "function" then pcall(self.on_refresh, self, items) end
+    return result, err
+end
 
 function Downloads:close()
     if not self.alive then return false end

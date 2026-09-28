@@ -363,4 +363,55 @@ do
     equal(4, #shown, "late menu close does not reopen another list over the error")
 end
 
+do
+    local shown, attempts, tasks = {}, 0, {}
+    local manager = { persistence_blocked = true, init_error = { code = "STORAGE_ERROR" },
+        list = function() return tasks end,
+        recoverPersistence = function(self)
+            attempts = attempts + 1
+            tasks[1] = { id = "restored", kind = "cache", book = { name = "恢复的书" },
+                status = "completed", completed = 3, total = 3 }
+            if attempts == 1 then return nil, { code = "STORAGE_ERROR" } end
+            self.persistence_blocked, self.init_error = false, nil
+            return true
+        end }
+    local presenter = Presenter.new({ app = { storage = {}, createBookDetail = function() end },
+        menu = { new = function(_, options) return options end },
+        info_message = { new = function(_, options) options.kind = "info"; return options end },
+        ui_manager = { show = function(_, widget) shown[#shown + 1] = widget end,
+            close = function() end } })
+    local view = Downloads.new({ manager = manager })
+    local list = presenter:show(view)
+    local function find(items, label)
+        for _, entry in ipairs(items or {}) do if entry.text == label then return entry end end
+    end
+    truthy(find(list.item_table, "下载记录暂不可用 · STORAGE_ERROR"),
+        "persistence failure is not shown as an empty download list")
+    equal(nil, find(list.item_table, "暂无下载记录"), "blocked download history is not called empty")
+    equal(nil, find(list.item_table, "新建缓存任务"), "blocked persistence cannot start a new task")
+    truthy(find(list.item_table, "重新读取下载记录"), "download manager offers persistence recovery")
+    find(list.item_table, "重新读取下载记录").callback()
+    equal(1, attempts, "retry invokes existing download persistence recovery")
+    equal("info", shown[#shown].kind, "failed recovery explains the failure")
+    local retry_list = shown[#shown - 1]
+    truthy(find(retry_list.item_table, "重新读取下载记录"), "failed recovery keeps the retry action")
+    truthy(retry_list.item_table[3].text:find("恢复的书", 1, true),
+        "failed recovery keeps tasks that were already loaded")
+    local retry_recovery = find(retry_list.item_table, "重新读取下载记录").callback
+    retry_recovery()
+    local restored_list = shown[#shown]
+    equal(2, attempts, "recovery can be retried after a transient storage failure")
+    truthy(restored_list.item_table[1].text:find("恢复的书", 1, true),
+        "successful recovery shows persisted tasks")
+    equal(nil, find(restored_list.item_table, "重新读取下载记录"),
+        "recovered management no longer shows the error action")
+    truthy(find(restored_list.item_table, "新建缓存任务"),
+        "new cache tasks are available after persistence recovers")
+    view:close()
+    local shown_before_stale = #shown
+    retry_recovery()
+    equal(2, attempts, "stale recovery action cannot access a closed download manager")
+    equal(shown_before_stale, #shown, "stale recovery action cannot reopen a closed download page")
+end
+
 return count
