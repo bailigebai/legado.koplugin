@@ -1590,7 +1590,9 @@ function Presenter:_aiSettings(view)
     local items = {}
     for _, choice in ipairs({ { "DeepSeek", "deepseek" }, { "小米 MiMo", "mimo" } }) do
         items[#items + 1] = { text = choice[1], callback = function()
-            view:set("ai_provider", choice[2])
+            local saved, err = view:set("ai_provider", choice[2])
+            if saved == nil then return self:_info("设置保存失败（"
+                .. safe_token(err and err.code, "STORAGE_ERROR") .. "）", "AI 服务") end
             return self:_aiSettings(view)
         end }
     end
@@ -1626,7 +1628,9 @@ function Presenter:_aiSettings(view)
             if value == nil and dialog and type(dialog.getInputText) == "function" then value = dialog:getInputText() end
             if type(value) ~= "string" or #value > 2000 then return self:_info("补充提示词不能超过 2000 字节", "AI 服务") end
             if not self:_closeWidget(dialog) then return false end
-            view:set("ai_prompt_extra", value)
+            local saved, err = view:set("ai_prompt_extra", value)
+            if saved == nil then return self:_info("设置保存失败（"
+                .. safe_token(err and err.code, "STORAGE_ERROR") .. "）", "AI 服务") end
             return self:_aiSettings(view)
         end
         dialog = construct(self.input_dialog, { title = "补充提示词", input = values.ai_prompt_extra or "",

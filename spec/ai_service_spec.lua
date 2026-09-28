@@ -36,8 +36,13 @@ eq("解释结果", answer, "answer is returned to reading UI")
 files["mimo.json"] = Json.encode({ mimo = { api_key = "secret-mimo" } })
 eq(true, ai:setKeyFile("mimo", "mimo.json"), "provider-specific JSON key is accepted")
 settings:set("ai_provider", "mimo")
-ai:testConnection(function() end)
+local connected, connection_error
+ai:testConnection(function(value, err) connected, connection_error = value, err end)
 eq("https://api.xiaomimimo.com/v1/chat/completions", pending[2].spec.url,
     "connection test uses the selected provider")
 eq("mimo-v2.5-pro", pending[2].spec.body.model, "MiMo test uses its default model")
+pending[2].callback({status = 200, body = Json.encode({choices = {{message = {}}}})})
+eq(nil, connected, "missing answer content does not count as a connected model")
+eq("AI 返回内容不可用，请检查密钥、模型和服务余额", connection_error,
+    "a successful HTTP status without text reports a useful error")
 return count
