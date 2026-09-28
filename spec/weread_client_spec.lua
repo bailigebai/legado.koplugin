@@ -73,4 +73,27 @@ eq("ranked-1", ranked.books[1].bookInfo.bookId, "ranked books retain the nested 
 client:category("../shelf", 0, function(value, err) ranked = value; eq("榜单标识无效", err,
     "invalid category IDs are rejected before creating a request") end)
 eq(10, #requests, "invalid category ID cannot change the request path")
+
+local original_decode = Json.decode
+local decode_count = 0
+Json.decode = function(...)
+    decode_count = decode_count + 1
+    return original_decode(...)
+end
+local raw_body = '{"bookId":"b1","chapterUid":"c1","content":"正文"}'
+local raw_result
+client:_call("POST", "/web/book/chapter/e_0", {}, false, function(value) raw_result = value end,
+    { raw = true })
+requests[11].callback({ status = 200, body = raw_body })
+Json.decode = original_decode
+eq(raw_body, raw_result, "raw chapter data reaches the caller unchanged")
+eq(0, decode_count, "successful raw chapter data is not JSON-decoded before shard assembly")
+
+local raw_auth_result
+client:_call("GET", "/web/book/reader", nil, false, function(value) raw_auth_result = value end,
+    { raw = true })
+requests[12].callback({ status = 200, body = '{"errCode":-2012}' })
+eq(2, renews, "raw authentication errors still refresh the WeRead session")
+requests[13].callback({ status = 200, body = "<html>reader</html>" })
+eq("<html>reader</html>", raw_auth_result, "refreshed raw request returns the reader page")
 return count

@@ -15,6 +15,15 @@ local function decode(response)
     if ok and type(data) == "table" then return data end
 end
 
+local function decode_raw_error(response)
+    local body = response and response.body
+    if type(body) ~= "string" or not body:match("^%s*{") then return nil end
+    if not body:find('"errCode"', 1, true) and not body:find('"errcode"', 1, true) then
+        return nil
+    end
+    return decode(response)
+end
+
 local function session_headers(session, eink)
     if eink then return { ["User-Agent"] = EINK_AGENT, baseapi = "30", appver = "2.1.2.10245900",
         basever = "2.1.2.10245900", osver = "11", channelId = "900",
@@ -50,7 +59,9 @@ function Client:_call(method, path, body, eink, callback, options)
             delivered = true
             if cancelled then return end
             active = nil
-            local data = decode(response)
+            local data
+            if options.raw then data = decode_raw_error(response)
+            else data = decode(response) end
             local status = response and tonumber(response.status or response.code)
                 or err and type(err.details) == "table" and tonumber(err.details.status)
             local code = data and tonumber(data.errCode or data.errcode)
