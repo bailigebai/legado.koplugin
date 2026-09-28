@@ -2238,9 +2238,10 @@ end
 
 function Presenter:_downloadBookPicker(view)
     local storage = self.app and self.app.storage
-    local books = storage and type(storage.listShelf) == "function" and storage:listShelf() or {}
+    local books, read_error = {}, nil
+    if storage and type(storage.listShelf) == "function" then books, read_error = storage:listShelf() end
     local items = {}
-    for _, book in ipairs(books or {}) do
+    for _, book in ipairs(type(books) == "table" and books or {}) do
         if type(book) == "table" and type(book.id) == "string" and type(book.source_id) == "string"
             and not book.is_local and book.source_id ~= "local" and book.source_id ~= "weread" then
             items[#items + 1] = { text = book.name or "未命名书籍", callback = function()
@@ -2250,7 +2251,9 @@ function Presenter:_downloadBookPicker(view)
             end }
         end
     end
-    if #items == 0 then items[1] = { text = "书架没有可缓存的书源书籍", enabled = false } end
+    if type(books) ~= "table" then
+        items[1] = { text = "书架读取失败 · " .. safe_token(type(read_error) == "table" and read_error.code, "STORAGE_ERROR"), enabled = false }
+    elseif #items == 0 then items[1] = { text = "书架没有可缓存的书源书籍", enabled = false } end
     local widget
     widget = self:_modelMenu(view, { title = "选择要缓存的书籍", item_table = items,
         close_callback = function()

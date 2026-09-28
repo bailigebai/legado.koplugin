@@ -123,4 +123,25 @@ do
     eq(false, direct_view.alive, "back from the direct picker closes download refresh state")
 end
 
+do
+    local failed_shown, returned = {}, 0
+    local failed_presenter
+    local failed_app = App.new({
+        storage = {listShelf = function() return nil, {code = "STORAGE_ERROR"} end},
+        download_manager = {list = function() return {} end},
+        show = function(page) return failed_presenter:show(page) end,
+    })
+    failed_presenter = Presenter.new({app = failed_app,
+        menu = {new = function(_, options) return options end},
+        ui_manager = {show = function(_, widget) failed_shown[#failed_shown + 1] = widget end,
+            close = function() end}})
+    failed_app:openDownloads(function() returned = returned + 1 end, true)
+    eq("书架读取失败 · STORAGE_ERROR", failed_shown[#failed_shown].item_table[1].text,
+        "cache picker reports a shelf read failure instead of claiming there are no books")
+    eq(false, failed_shown[#failed_shown].item_table[1].enabled,
+        "a failed shelf load cannot open a book selection")
+    failed_shown[#failed_shown].close_callback()
+    eq(1, returned, "back from a failed cache picker still restores the shelf")
+end
+
 return count
