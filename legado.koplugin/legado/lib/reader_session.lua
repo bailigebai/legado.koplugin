@@ -1178,14 +1178,35 @@ function ReaderSession:openOffline(source, book, index, callback, options)
         return nil, catalog_error
     end
     local chapters = catalog.chapters or catalog
+    local progress, progress_error
+    if index == nil and type(self.storage.getProgress) == "function" then
+        progress, progress_error = self.storage:getProgress(book.id)
+    end
+    local function fail_exact(err)
+        if type(callback) == "function" then pcall(callback, nil, err) end
+        return nil, err
+    end
+    if options.exact_progress and (progress_error or type(progress) ~= "table") then
+        return fail_exact(progress_error or Errors.new(Errors.STORAGE_ERROR, "本地阅读进度不可用"))
+    end
+    if progress then index = self:recoverIndex(chapters, progress) end
+    local wanted = math.max(1, math.min(#chapters, tonumber(index) or 1))
+    if options.exact_progress then
+        local selected = chapters[wanted]
+        local saved_index = tonumber(progress.chapter_index)
+        if not selected
+            or (progress.chapter_uid and selected.uid ~= progress.chapter_uid)
+            or (progress.chapter_url and selected.url ~= progress.chapter_url)
+            or (not progress.chapter_uid and not progress.chapter_url
+                and (not saved_index or saved_index % 1 ~= 0 or saved_index < 1 or saved_index > #chapters)) then
+            return fail_exact(Errors.new(Errors.STORAGE_ERROR, "已缓存目录找不到上次阅读章节", { stage = "cache_read" }))
+        end
+    end
     self:_cancelForeground()
     self:_cancelPrefetch()
     self:_cancelCatalog()
-    local progress = index == nil and type(self.storage.getProgress) == "function" and self.storage:getProgress(book.id) or nil
-    if progress then index = self:recoverIndex(chapters, progress) end
-    local wanted = math.max(1, math.min(#chapters, tonumber(index) or 1))
     local notification = { callback = callback, notified = false }
-    for candidate = wanted, 1, -1 do
+    for candidate = wanted, options.exact_progress and wanted or 1, -1 do
         local state = { source = source, book = book, chapters = chapters, index = candidate,
             catalog_complete = catalog.complete == true,
             active = false, offline = true, backend = backend, on_complete = callback, notification = notification,
@@ -1198,7 +1219,10 @@ function ReaderSession:openOffline(source, book, index, callback, options)
             self:_notify(state,nil,open_error)
             return nil,open_error
         end
-        if candidate == 1 then self:_notify(state, nil, open_error); return nil, open_error end
+        if candidate == 1 or options.exact_progress then
+            self:_notify(state, nil, open_error)
+            return nil, open_error
+        end
     end
     local err = Errors.new(Errors.STORAGE_ERROR, "no readable cached chapter", { last_readable = 0 })
     if type(callback) == "function" and not notification.notified then pcall(callback, nil, err) end

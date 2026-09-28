@@ -5,8 +5,8 @@ local function eq(expected,actual,message) count=count+1;A.equal(expected,actual
 local book={id='book-local',remote_id='remote-1',source_id='weread',name='测试书'}
 local chapter={uid='chapter-local',remote_uid='remote-chapter',index=1,source_id='weread',book_id='book-local',title='第一章'}
 local values={}
-local stored_progress
-local storage={getProgress=function() return stored_progress end,putProgress=function(_,progress)
+local stored_progress, progress_read_error
+local storage={getProgress=function() return stored_progress,progress_read_error end,putProgress=function(_,progress)
     values.saved=progress;return progress
 end}
 local session={cache={writeCatalog=function(_,source,id,catalog)
@@ -14,9 +14,16 @@ local session={cache={writeCatalog=function(_,source,id,catalog)
 end},resume=function(_,source,target,chapters,callback)
     values.resume={source,target,chapters};callback({backend='native'});return {cancel=function() end}
 end,close=function() return true end}
+session.openOffline=function(_,source,target,index,callback,options)
+    values.offline={source=source,target=target,index=index,options=options}
+    callback({backend='native',offline=true})
+    return {cancel=function() end}
+end
+local catalog_error
 local service={getChapters=function(_,source,target,callback)
     eq('weread',source.id,'WeRead opens with its own virtual source')
-    callback({chapter});return {cancel=function() end}
+    if catalog_error then callback(nil,catalog_error) else callback({chapter}) end
+    return {cancel=function() end}
 end}
 local cloud_progress={book={chapterUid='remote-chapter',chapterOffset=4500}}
 local cloud_error, progress_queries = nil, 0
@@ -54,6 +61,28 @@ values.resume=nil
 app:startWeReadReading(book,function(document) opened=document end)
 eq(queries_before_local,progress_queries,'existing local position does not depend on cloud progress availability')
 eq('native',opened.backend,'a book with local progress still opens while the cloud is unavailable')
+
+catalog_error={code='NETWORK_ERROR',message='目录暂时不可用'}
+values.offline,values.resume=nil,nil
+app:startWeReadReading(book,function(document) opened=document end)
+eq('weread',values.offline and values.offline.source.id,'local history opens cached WeRead chapters after catalog failure')
+eq(nil,values.offline.index,'offline fallback resumes the saved chapter rather than forcing chapter one')
+eq(true,values.offline.options.exact_progress,'WeRead fallback requires the exact saved chapter')
+eq(true,opened.offline,'offline fallback returns the cached reader document')
+eq(nil,values.resume,'remote catalog failure does not start a normal online session')
+
+stored_progress,values.offline=nil,nil
+local catalog_failure
+app:startWeReadReading(book,function(_,err) catalog_failure=err end)
+eq(nil,values.offline,'without local history a failed catalog cannot open from chapter one')
+eq('NETWORK_ERROR',catalog_failure and catalog_failure.code,'catalog failure remains visible without local history')
+
+progress_read_error={code='STORAGE_ERROR'}
+app:startWeReadReading(book,function(_,err) catalog_failure=err end)
+eq(nil,values.offline,'progress storage failure does not start offline reading')
+eq('STORAGE_ERROR',catalog_failure and catalog_failure.code,'progress storage error is reported')
+progress_read_error=nil
+catalog_error=nil
 stored_progress=nil
 
 values.resume=nil
@@ -67,4 +96,10 @@ local cancelled=pending:startWeReadReading(book,function() end)
 eq(true,cancelled:cancel(),'a pending WeRead reading request can be cancelled')
 delayed_chapters({chapter})
 eq(nil,values.resume,'cancelled chapter loading cannot open the reader later')
+local cancelled_failure=pending:startWeReadReading(book,function() end)
+stored_progress={book_id='book-local',source_id='weread',chapter_index=1}
+values.offline=nil
+eq(true,cancelled_failure:cancel(),'pending catalog request can be cancelled before failure')
+delayed_chapters(nil,{code='NETWORK_ERROR'})
+eq(nil,values.offline,'cancelled catalog failure cannot open offline reader later')
 return count

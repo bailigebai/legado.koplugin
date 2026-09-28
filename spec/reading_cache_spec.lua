@@ -159,6 +159,40 @@ do
 end
 
 do
+    local cache = CacheStore.new({ fs = fs, root = "weread-exact-offline" })
+    local source, book = { id = "weread" }, { id = "weread-book", source_id = "weread" }
+    local chapters = {
+        { uid = "weread-1", index = 1, title = "One", url = "https://weread.test/1", source_id = "weread", book_id = book.id },
+        { uid = "weread-2", index = 2, title = "Two", url = "https://weread.test/2", source_id = "weread", book_id = book.id },
+    }
+    assert(cache:writeCatalog("weread", book.id, { chapters = chapters, complete = true }))
+    assert(cache:writeBody("weread", book.id, chapters[1], "<p>Earlier cached chapter</p>"))
+    local progress = { chapter_uid = "weread-2", chapter_index = 2, fraction = 0.5 }
+    local opened = 0
+    local session = ReaderSession.new({ cache = cache,
+        storage = { getProgress = function() return progress end, putProgress = function() return true end },
+        ui = { openDocument = function() opened = opened + 1; return {} end } })
+    local document, err = session:openOffline(source, book, nil, nil, { exact_progress = true })
+    equal(nil, document, "exact offline resume does not fall back to an earlier cached chapter")
+    equal("STORAGE_ERROR", err and err.code, "missing current chapter remains a cache error")
+    equal("cache_read", err and err.details and err.details.stage,
+        "missing current chapter retains the actionable cache-read stage")
+    equal(0, opened, "missing target chapter never opens a different document")
+    progress = { chapter_uid = "old-uid", chapter_index = 1 }
+    document, err = session:openOffline(source, book, nil, nil, { exact_progress = true })
+    equal(nil, document, "stale catalog identity cannot substitute a chapter by index")
+    equal("STORAGE_ERROR", err and err.code, "stale catalog identity reports a storage error")
+    progress = { fraction = 0.5 }
+    document, err = session:openOffline(source, book, nil, nil, { exact_progress = true })
+    equal(nil, document, "positionless history cannot silently start at chapter one")
+    equal("STORAGE_ERROR", err and err.code, "positionless history requests a recoverable cached position")
+    progress = { chapter_uid = "weread-1", chapter_index = 1, fraction = 0.5 }
+    document, err = session:openOffline(source, book, nil, nil, { exact_progress = true })
+    truthy(document, "exact offline resume still opens the saved chapter when its body is cached")
+    equal(1, opened, "exact offline resume opens only its matching cached document")
+end
+
+do
     local unsafe = Cleaner.normalize('<a href="jav&#x61;\nscript:alert(1)">x</a><img src="data:image/svg+xml;base64,PHN2Zz4=">')
     equal("<a>x</a><img>", unsafe, "decoded and whitespace-obfuscated unsafe schemes are removed")
     local invalid, err = Cleaner.normalize("<p>x</p>", { replaceRegex = { "@js:evil" } })

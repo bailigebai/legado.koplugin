@@ -359,8 +359,17 @@ function App:startWeReadReading(book,callback)
             open(chapters)
         end)
     end
+    local function offline_after_catalog_failure(err)
+        local failure=err or {code='NETWORK_ERROR',message='微信读书目录获取失败'}
+        local existing,read_error=self.storage:getProgress(book.id)
+        if read_error then return deliver(nil,read_error) end
+        if not existing or type(self.reader_session.openOffline)~='function' then return deliver(nil,failure) end
+        stage(function(done)
+            return self.reader_session:openOffline({id='weread'},book,nil,done,{exact_progress=true})
+        end,deliver)
+    end
     stage(function(done) return self.weread_service:getChapters({id='weread'},book,done) end,function(chapters,err)
-        if not chapters then return deliver(nil,err) end
+        if not chapters then return offline_after_catalog_failure(err) end
         progress(chapters)
     end)
     return {cancel=function()
