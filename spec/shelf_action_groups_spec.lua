@@ -68,6 +68,23 @@ eq(1, review_count, "reading review appears exactly once")
 eq('function',type(item(last().items,'AI 服务').callback),'AI service has a direct more-page entry')
 eq('function',type(item(last().items,'插件缓存').callback),'plugin cache has a direct more-page entry')
 eq("function", type(item(last().items, "设置").callback), "settings remain reachable")
+
+local cancelled_updates = 0
+app.service = {checkUpdates = function()
+    return {cancel = function() cancelled_updates = cancelled_updates + 1 end}
+end}
+app:openHome()
+open_group("整理书架")
+item(last().items, "未读").callback()
+last().on_next()
+eq(2, last().page, "unread shelf is on its second page before update check")
+open_group("更多")
+item(last().items, "检查更新").callback()
+eq("正在检查更新", last().title, "update progress opens from the shelf group")
+last().close_callback()
+eq(2, last().page, "closing update progress restores the previous shelf page")
+eq("b7", last().items[1].book.id, "the unread filter remains applied after update check")
+eq(1, cancelled_updates, "leaving update progress cancels its pending request")
 local detail = {kind = "book_detail", book = books[1], info = books[1], alternatives = {books[1]}, alive = true}
 presenter:show(detail)
 item(last().actions, "更多").callback()

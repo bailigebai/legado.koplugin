@@ -1157,7 +1157,7 @@ function Presenter:_readerChromeSettings(view, back)
     return self:_show(widget)
 end
 
-function Presenter:_checkUpdates(view)
+function Presenter:_checkUpdates(view,page)
     local app=self.app
     if not app or not app.service or not app.service.checkUpdates then return self:_info('更新服务尚未就绪。') end
     local books,err=app.storage:listShelf()
@@ -1184,7 +1184,7 @@ function Presenter:_checkUpdates(view)
         if handle and handle.cancel then handle:cancel() end
         self:_closeWidget(menu)
         if view.kind=='home' then return self:_home(view) end
-        return self:_shelf(view,1)
+        return self:_shelf(view,page or 1)
     end})
     self:_show(menu)
     local ok,result=pcall(app.service.checkUpdates,app.service,books,function(value)

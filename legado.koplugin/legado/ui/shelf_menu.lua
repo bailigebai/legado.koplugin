@@ -109,7 +109,7 @@ function ShelfMenu.open(presenter, view, page, group)
             {text = "插件缓存", callback = function() return app:openSettings(nil,nil,back,'cache') end},
             {text = "设置", callback = function() return app:openSettings(nil, nil, back) end},
             {text = "关于", callback = function() return app:openAbout(back) end},
-            {text = "检查更新", callback = function() return presenter:_checkUpdates(view) end},
+            {text = "检查更新", callback = function() return presenter:_checkUpdates(view,page) end},
         }
     else
         return nil
