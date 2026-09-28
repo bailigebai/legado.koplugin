@@ -4,6 +4,7 @@ local Auth = require("legado.lib.weread_session")
 local count = 0
 local function eq(expected, actual, message) count = count + 1; A.equal(expected, actual, message) end
 local pending, saved = {}, nil
+local clock_now = 1788134400
 local requests = { execute = function(_, request, callback)
     local row = { request = request, callback = callback, cancelled = false }
     pending[#pending + 1] = row
@@ -16,7 +17,7 @@ local fs = {
 local function new_auth()
     return Auth.new{ requests = requests, fs = fs, path = "weread-session.json",
         sha256 = function() return string.rep("a", 64) end,
-        now = function() return 1788134400 end, random = function() return 7 end }
+        now = function() return clock_now end, random = function() return 7 end }
 end
 local auth = new_auth()
 local qr, failure
@@ -76,4 +77,20 @@ pending[8].callback({ status = 200, body = Json.encode({ wx_errcode = 404 }) })
 auth:pollLogin("new-qr", function() end)
 eq(true, pending[9].request.url:find("last=404", 1, true) ~= nil,
     "the scanned state is carried into the next QR poll")
+
+local retry_state
+auth:pollLogin("network-qr", function(_, status) retry_state = status end)
+pending[10].callback(nil, {code = "NETWORK_ERROR"})
+eq("retrying", retry_state, "temporary network errors keep the current QR available")
+
+local deadline_state
+auth:pollLogin("deadline-qr", function(_, status) deadline_state = status end)
+clock_now = clock_now + 299
+pending[11].callback(nil, {code = "TIMEOUT"})
+eq("waiting", deadline_state, "long-poll timeout before the deadline keeps waiting")
+local request_count = #pending
+clock_now = clock_now + 2
+auth:pollLogin("deadline-qr", function(_, status) deadline_state = status end)
+eq("expired", deadline_state, "QR polling stops after five minutes")
+eq(request_count, #pending, "expired QR does not start another network request")
 return count

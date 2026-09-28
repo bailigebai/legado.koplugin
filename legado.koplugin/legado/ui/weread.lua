@@ -279,12 +279,13 @@ function WeRead:start(on_qr, on_done)
                     if session then finish("已登录") else finish(login_error or "登录失败") end
                 end)
                 if not confirmed then self.request = login end
-            elseif state == "waiting" or state == "scanned" then
-                self.status = state == "scanned" and "已扫码，请在微信中确认" or "等待扫码…"
+            elseif state == "waiting" or state == "scanned" or state == "retrying" then
+                self.status = state == "scanned" and "已扫码，请在微信中确认"
+                    or state == "retrying" and "网络暂时不可用，正在重试…" or "等待扫码…"
                 if self.scheduler and type(self.scheduler.scheduleIn) == "function" then
                     local action = function() self.scheduled = nil; poll(uuid) end
                     self.scheduled = action
-                    self.scheduler:scheduleIn(0.2, action)
+                    self.scheduler:scheduleIn(state == "retrying" and 3 or 0.2, action)
                 else finish("扫码轮询不可用") end
             else finish(err or "二维码已失效，请重新登录") end
         end)

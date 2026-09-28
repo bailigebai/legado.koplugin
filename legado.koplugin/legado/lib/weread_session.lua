@@ -9,6 +9,7 @@ local API = "https://i.weread.qq.com"
 local WX = "https://open.weixin.qq.com"
 local APP_ID = "wxab9b71ad2b90ff34"
 local USER_AGENT = "WeRead/2.1.2 WRBrand/Onyx wr_eink Dalvik/2.1.0 (Linux; U; Android 11; BOOX Build/onyx)"
+local QR_DEADLINE_SECONDS = 5 * 60
 
 local function headers(extra)
     local values = { ["User-Agent"] = USER_AGENT, baseapi = "30", appver = "2.1.2.10245900",
@@ -116,6 +117,8 @@ function Auth:beginLogin(callback)
             if not data or tonumber(data.errcode) ~= 0 or type(data.uuid) ~= "string" or data.uuid == "" then
                 return callback(nil, "获取微信扫码标识失败")
             end
+            self.poll_uuid, self.poll_last = data.uuid, nil
+            self.poll_deadline = self.now() + QR_DEADLINE_SECONDS
             callback({ uuid = data.uuid, payload = WX .. "/connect/confirm?uuid=" .. Url(data.uuid) })
         end)
     end)
@@ -132,22 +135,41 @@ function Auth:pollLogin(uuid, callback)
     if type(uuid) ~= "string" or uuid == "" or #uuid > 256 then
         callback(nil, "error", "扫码标识无效"); return nil
     end
-    if self.poll_uuid ~= uuid then self.poll_uuid, self.poll_last = uuid, nil end
+    local now = self.now()
+    if self.poll_uuid ~= uuid then
+        self.poll_uuid, self.poll_last = uuid, nil
+        self.poll_deadline = now + QR_DEADLINE_SECONDS
+    end
+    local deadline = self.poll_deadline
+    if now >= deadline then
+        self.poll_uuid, self.poll_last, self.poll_deadline = nil, nil, nil
+        callback(nil, "expired", "二维码已失效，请重新登录")
+        return nil
+    end
     return self.requests:execute({ url = "https://long.open.weixin.qq.com/connect/l/qrconnect?"
-        .. query({ f = "json", uuid = uuid, last = self.poll_last }), method = "GET", source_id = "weread", timeout = 20,
+        .. query({ f = "json", uuid = uuid, last = self.poll_last }), method = "GET", source_id = "weread",
+        timeout = math.min(20, math.max(1, deadline - now)),
         headers = { ["User-Agent"] = "Mozilla/5.0" }, priority = "foreground" }, function(response, err)
-        if self.poll_uuid ~= uuid then return end
-        if err and err.code == "TIMEOUT" then return callback(nil, "waiting") end
+        if self.poll_uuid ~= uuid or self.poll_deadline ~= deadline then return end
+        if self.now() >= deadline then
+            self.poll_uuid, self.poll_last, self.poll_deadline = nil, nil, nil
+            return callback(nil, "expired", "二维码已失效，请重新登录")
+        end
+        if err then
+            if type(err) == "table" and err.code == "TIMEOUT" then return callback(nil, "waiting") end
+            return callback(nil, "retrying", "网络暂时不可用")
+        end
         local data = success(response, err) and decode(response) or nil
         local code = data and tonumber(data.wx_errcode)
         if code == 405 and type(data.wx_code) == "string" and data.wx_code ~= "" then
-            self.poll_uuid, self.poll_last = nil, nil
+            self.poll_uuid, self.poll_last, self.poll_deadline = nil, nil, nil
             callback(data.wx_code, "confirmed")
         elseif code == 404 or code == 408 then
             self.poll_last = code
             callback(nil, code == 404 and "scanned" or "waiting")
         else
-            self.poll_uuid, self.poll_last = nil, nil
+            if not success(response, nil) then return callback(nil, "retrying", "网络暂时不可用") end
+            self.poll_uuid, self.poll_last, self.poll_deadline = nil, nil, nil
             if code == 403 then callback(nil, "denied", "已在微信中拒绝登录")
             else callback(nil, "expired", "二维码已失效，请重新登录") end
         end

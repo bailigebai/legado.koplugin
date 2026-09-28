@@ -4,10 +4,14 @@ local App = require("legado.ui.app")
 local Presenter = require("legado.ui.presenter")
 local count = 0
 local function eq(expected, actual, message) count = count + 1; A.equal(expected, actual, message) end
-local shown, scheduled = {}, {}
+local shown, scheduled, delays = {}, {}, {}
 local ui = { show = function(_, widget) shown[#shown + 1] = widget end,
     close = function() end,
-    scheduleIn = function(_, _, callback) scheduled[#scheduled + 1] = callback; return callback end,
+    scheduleIn = function(_, delay, callback)
+        delays[#delays + 1] = delay
+        scheduled[#scheduled + 1] = callback
+        return callback
+    end,
     unschedule = function() end }
 local begin_callback, poll_callback, complete_callback, cancelled
 local auth = {
@@ -30,7 +34,12 @@ begin_callback({ uuid = "uuid", payload = "https://open.weixin.qq.com/connect/co
 eq("qr", shown[#shown].kind, "login displays a native QR widget")
 eq(true, type(poll_callback) == "function", "scan polling starts while QR is visible")
 poll_callback(nil, "waiting")
+eq(0.2, delays[1], "normal QR waiting restarts polling promptly")
 scheduled[1]()
+poll_callback(nil, "retrying")
+eq(3, delays[2], "temporary network error backs off before polling again")
+eq("网络暂时不可用，正在重试…", view.status, "retry status explains the wait")
+scheduled[2]()
 poll_callback("wx-code", "confirmed")
 complete_callback({ vid = "1234" })
 eq("已登录", view.status, "confirmed login updates the page")
