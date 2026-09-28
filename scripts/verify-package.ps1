@@ -8,7 +8,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
-$python = Join-Path $repositoryRoot ".tools\python\python.exe"
+$python = Join-Path $repositoryRoot ".tools\python\Scripts\python.exe"
 $archivePath = if ([System.IO.Path]::IsPathRooted($Archive)) { $Archive } else { Join-Path $repositoryRoot $Archive }
 
 if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {

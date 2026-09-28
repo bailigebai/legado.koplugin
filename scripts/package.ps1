@@ -7,7 +7,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
-$python = Join-Path $repositoryRoot ".tools\python\python.exe"
+$python = Join-Path $repositoryRoot ".tools\python\Scripts\python.exe"
 
 if (-not $SkipTests) {
     & (Join-Path $PSScriptRoot "run-specs.ps1")

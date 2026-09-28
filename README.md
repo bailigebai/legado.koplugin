@@ -1,17 +1,19 @@
 # 不亦阅乎：KOReader 书源阅读插件
 
 
-升级无需重新激活：同一 Kindle 已成功激活后，覆盖更新插件代码即可，原短密钥和离线授权继续有效。请保留 KOReader 的用户数据和 settings 目录，不要删除 legado.json 或 legado-license.json；它们不在插件安装包中。GitHub 下载目录和 Releases 仅保留最新安装包。
+升级无需重新激活：同一 Kindle 已成功激活后，覆盖更新插件代码即可，原短密钥和离线授权继续有效。请保留 KOReader 的用户数据和 settings 目录，不要删除 legado.json 或 legado-license.json；它们不在插件安装包中。最新安装包以 GitHub Releases 的最新版本为准。
 
-[下载最新安装包](https://github.com/bailigebai/legado.koplugin/releases/latest) · [下载 v0.10.34 ZIP](https://github.com/bailigebai/legado.koplugin/releases/download/v0.10.34/legado.koplugin-v0.10.34-20260926.zip)
+[下载最新安装包](https://github.com/bailigebai/legado.koplugin/releases/latest) · [下载 v0.10.35 ZIP](https://github.com/bailigebai/legado.koplugin/releases/download/v0.10.35/legado.koplugin-v0.10.35-20260928.zip)
 
 应用商店：刷新仓库列表，打开 `bailigebai/legado.koplugin`，选择“下载插件”并安装最新正式版，完成后重启 KOReader。
 
-## 开发中：整书离线缓存
+## v0.10.35：整书离线缓存
 
 在书源书籍详情的“更多”中选“缓存整本（离线阅读）”，插件会取得完整目录并逐章保存正文。也可以选“导出 EPUB”生成电子书文件；书源原始内容不必是 EPUB。两种任务都在“下载管理”中显示类型、章节进度和百分比。章节缓存完成后，书架封面右下角显示“已下载”；从书架打开即可离线阅读。含有不可下载 VIP 章节、目录不完整或正文获取失败的任务不会显示完成标记，可在下载管理中重试。
 
-默认离线缓存目录是 `${DataStorage:getDataDir()}/legado/offline-cache/`。可在插件“设置 → 离线缓存目录”填入 Kindle 上的绝对路径；留空恢复默认目录，保存后需完全重启 KOReader 才生效。更换目录不会移动或删除旧缓存，切回旧目录可继续使用。此目录与受容量限制的普通阅读缓存分开；EPUB 文件仍在 `${DataStorage:getDataDir()}/legado/downloads/`。本工作区的功能尚未作为正式版本发布，Kindle 上的触控、路径权限和断网阅读仍需实机验收。
+默认离线缓存目录是 `${DataStorage:getDataDir()}/legado/offline-cache/`。可在插件“设置 → 离线缓存目录”填入 Kindle 上的绝对路径；留空恢复默认目录，保存后需完全重启 KOReader 才生效。更换目录不会移动或删除旧缓存，切回旧目录可继续使用。此目录与受容量限制的普通阅读缓存分开；EPUB 文件仍在 `${DataStorage:getDataDir()}/legado/downloads/`。Kindle 上的触控、路径权限和断网阅读仍需实机验收。
+
+2026-09-28 v0.10.35：插件显示名改为“不亦阅乎”。书源书籍可选择逐章缓存整本供离线阅读，也可导出 EPUB；两种任务都能在下载管理中查看进度。支持自定义离线缓存目录，完整缓存后的书架封面右下角显示“已下载”。
 
 2026-09-26 v0.10.34：修复长篇目录受普通规则 1,000 条限制而无法补全的问题，目录选择单独允许最多 10,000 条，搜索等普通规则保持原限制。后台目录在首屏提交后尽快开始，网站分页允许最多 512 页并保留总条目与防循环保护；临时网络失败从当前页有限重试，不重抓前面的目录。跨章继续已有任务，新章继承等待期间更新的完整目录；最终失败在阅读进度位置显示“目录加载失败”，不再一直显示加载中。已验证停留正文、不操作目录时单页 1,407 章及 80 个网页的 1,600 章自动补全。保留已修复的跨章画面与授权。范围及站点限制见 [后台目录补全记录](docs/catalog-background-0.10.34.md)。
 
@@ -53,7 +55,7 @@ Swipe 操作：阅读菜单 → 阅读设置 → 动画效果 → Swipe动画，
 
 形态参考公开的 [GL Transitions 圆形开合](https://github.com/gl-transitions/gl-transitions/blob/902218a1b63773ac0d0d9f491951da3392365bfe/transitions/circleopen.glsl)、[WaterDrop](https://github.com/gl-transitions/gl-transitions/blob/902218a1b63773ac0d0d9f491951da3392365bfe/transitions/WaterDrop.glsl) 和 [Wind](https://github.com/gl-transitions/gl-transitions/blob/902218a1b63773ac0d0d9f491951da3392365bfe/transitions/wind.glsl)，改成适合墨水屏的几何揭页；未移植 WebGL、像素折射或渐隐混合，也不增加依赖。
 
-`legado.koplugin` 在 Kindle KOReader 上独立运行。v0.10.34 未激活时最多添加 5 本书，添加第 6 本需输入短密钥；同一授权同时解锁阅读小票和阅读回顾数据展示，其他功能免费。已有书籍不会因升级被删除，重复加入同一本不占新名额，删除收藏后可腾出名额。首次激活联网绑定设备，之后可离线验证；沿用已发放的 Legado 短密钥。新安装不内置书源，需要从本地 JSON 或网址自行导入。网络书默认使用基于 Leko 的独立文字阅读器和侧边水波纹，兼容缺少 Fast 刷新接口的 Kindle。本地 EPUB/PDF 等文档仍交给 KOReader；独立阅读菜单点击“关闭无感阅读”可回到 KOReader。双向切换保留章节和近似章内位置，两种排版分别按书保存。阅读页目录新增侧边懒加载面板，每页 15 章，可放在左侧或右侧，支持目录、书签、字体和配置页。本版继续优化缓存命中章节切换，当前章节提交后立即后台预取下一章，并继续填充后两章；页脚“阅读进度”可独立启用/停用并保留显示模式。详情见 [v0.10.22 修复记录](docs/reader-library-0.10.22.md)。
+`legado.koplugin` 在 Kindle KOReader 上独立运行。v0.10.35 未激活时最多添加 5 本书，添加第 6 本需输入短密钥；同一授权同时解锁阅读小票和阅读回顾数据展示，其他功能免费。已有书籍不会因升级被删除，重复加入同一本不占新名额，删除收藏后可腾出名额。首次激活联网绑定设备，之后可离线验证；沿用已发放的 Legado 短密钥。新安装不内置书源，需要从本地 JSON 或网址自行导入。网络书默认使用基于 Leko 的独立文字阅读器和侧边水波纹，兼容缺少 Fast 刷新接口的 Kindle。本地 EPUB/PDF 等文档仍交给 KOReader；独立阅读菜单点击“关闭无感阅读”可回到 KOReader。双向切换保留章节和近似章内位置，两种排版分别按书保存。阅读页目录新增侧边懒加载面板，每页 15 章，可放在左侧或右侧，支持目录、书签、字体和配置页。本版继续优化缓存命中章节切换，当前章节提交后立即后台预取下一章，并继续填充后两章；页脚“阅读进度”可独立启用/停用并保留显示模式。详情见 [v0.10.22 修复记录](docs/reader-library-0.10.22.md)。
 
 目标设备是 Kindle Paperwhite 第 6 代（KPW6）、Kindle 固件 5.19.5。自动兼容基线为 KOReader v2026.07.1，并尽量只使用长期存在的 Lua/LuaJIT、UI、网络和文件接口。2026-09-14 已通过 MTP 读取 KPW6 的实际代码和日志，并安装小票重画修复；物理触屏及安装包清单中的设备项目仍待验收。
 
@@ -85,9 +87,9 @@ Swipe 操作：阅读菜单 → 阅读设置 → 动画效果 → Swipe动画，
 ## 安装
 
 1. 安装并确认 KOReader 能在 Kindle 上正常启动。
-2. 解压 `legado.koplugin-v0.10.34.zip`；压缩包只有一个顶层目录 `legado.koplugin/`。升级前退出 KOReader，保留数据目录，只替换旧插件代码目录。
+2. 解压 `legado.koplugin-v0.10.35-20260928.zip`；压缩包只有一个顶层目录 `legado.koplugin/`。升级前退出 KOReader，保留数据目录，只替换旧插件代码目录。
 3. 将该目录完整复制到 KOReader 的 `koreader/plugins/` 下，最终应存在 `koreader/plugins/legado.koplugin/main.lua`。
-4. 完全退出并重新启动 KOReader，点屏幕顶部打开菜单，进入“工具 → 书源阅读”。文件浏览界面和书籍阅读界面均可打开书架、搜索、发现或书源管理。
+4. 完全退出并重新启动 KOReader，点屏幕顶部打开菜单，进入“工具 → 不亦阅乎”。文件浏览界面和书籍阅读界面均可打开书架、搜索、发现或书源管理。
 
 插件不内置书源，也不自动下载或恢复书源。首次使用请进入“更多 → 书源管理”，选择“从本地 JSON 导入”或“从网址导入”，长按选择设备上的 JSON 文件，或填入自己的合集地址。导入后可正常聚合搜索、浏览发现分类和阅读。没有书源时，发现提示“请先导入书源”。升级保留设备上已经保存的书源、书架、进度、设置和授权；旧书源统一在管理页显示，可自行停用或删除。开发回归使用的书源样本不随安装包分发。
 
