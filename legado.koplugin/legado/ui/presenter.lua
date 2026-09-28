@@ -444,6 +444,13 @@ local function weread_page_active(presenter, view, page)
     return view.alive and presenter.library_view == view and presenter.library_subpage == page
 end
 
+function Presenter:_startWeReadReading(book)
+    if not self.app or not self.app.startWeReadReading then return self:_info('微信读书阅读服务不可用') end
+    return self.app:startWeReadReading(book,function(document,err)
+        if err then self:_info(err.message or '微信读书章节打开失败','微信读书') end
+    end)
+end
+
 function Presenter:_weread(view)
     local model = view:page(view.display_page)
     local items = {}
@@ -490,7 +497,9 @@ function Presenter:_weread(view)
     local has_books = model.total > 0
     local widget = self:_library(view, { title = "微信读书", subpage = "weread_shelf", subtitle = view.status,
         items = items, mode = has_books and model.mode or "list", grouped_actions = true,
-        hero_action = has_books and model.page == 1 and { text = "查看最近阅读", callback = items[1].callback } or nil,
+        hero_action = has_books and model.page == 1 and { text = "继续阅读", callback = function()
+            return self:_startWeReadReading(model.items[1])
+        end } or nil,
         grid_columns = 4, grid_rows = 3, already_paginated = true,
         page = model.page, page_count = model.page_count, actions = actions, navigation = {},
         on_prev = model.page > 1 and function() view.display_page = model.page - 1; return self:_weread(view) end or nil,
@@ -588,12 +597,7 @@ function Presenter:_wereadBook(view, book)
         items = { item }, mode = "detail",grouped_actions=true,
         subtitle = "阅读进度：" .. tostring(math.floor(tonumber(book.progress_percent) or 0)) .. "%",
         actions = {
-            {text='开始阅读',callback=function()
-                if not self.app or not self.app.startWeReadReading then return self:_info('微信读书阅读服务不可用') end
-                return self.app:startWeReadReading(book,function(document,err)
-                    if err then self:_info(err.message or '微信读书章节打开失败','微信读书') end
-                end)
-            end},
+            {text='开始阅读',callback=function() return self:_startWeReadReading(book) end},
             view:hasBook(book) and {text='已在微信书架',enabled=false}
                 or {text='加入微信书架',callback=function()
                     return view:addToShelf(book,function(added,err)
