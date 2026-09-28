@@ -28,6 +28,73 @@ do
     eq("recent13", recent_shelf:page(1, "cover").items[1].book.id, "reading filter keeps the most recent book first")
 end
 do
+    local progress_failed, batch_reads, single_reads, displayed = true, 0, 0, {}
+    local progress_storage = {
+        listShelf = function() return {
+            { id = "first", name = "原书架首本" },
+            { id = "recent", name = "最近阅读" },
+        } end,
+        listProgress = function()
+            batch_reads = batch_reads + 1
+            if progress_failed then return nil, { code = "STORAGE_ERROR" } end
+            return { { book_id = "recent", updated_at = 300 } }
+        end,
+        getProgress = function() single_reads = single_reads + 1; return nil end,
+    }
+    local model = Shelf.new({ storage = progress_storage })
+    local failed_page = model:page(1, "hero")
+    eq("STORAGE_ERROR", failed_page.progress_error.code,
+        "batch progress failure is kept separate from an unread book")
+    eq(2, failed_page.counts.unknown, "progress failure leaves reading state unknown")
+    eq(0, failed_page.counts.unread, "unknown progress is not counted as unread")
+    eq("first", failed_page.items[1].book.id,
+        "progress failure preserves the original shelf order")
+    model:setFilter("unread")
+    eq(2, model:page(1, "hero").total,
+        "unread filter keeps books reachable when progress cannot be checked")
+    model:setFilter("reading")
+    eq(2, model:page(1, "hero").total,
+        "reading filter also keeps books reachable when progress cannot be checked")
+    eq(0, single_reads, "available batch progress API avoids per-book reads")
+
+    local presenter = Presenter.new({ ui_manager = {
+        show = function(_, widget) displayed[#displayed + 1] = widget end,
+        close = function() end,
+    } })
+    local app = App.new({ storage = progress_storage,
+        show = function(view) return presenter:show(view) end })
+    presenter.app = app
+    app:openHome()
+    eq(true, displayed[#displayed].subtitle:find("阅读进度读取失败", 1, true) ~= nil,
+        "shelf explains that recent reading order is temporarily unavailable")
+    eq("打开阅读", displayed[#displayed].hero_action.text,
+        "unknown progress is not presented as a new or continued book")
+    eq("重新读取", displayed[#displayed].header_action.text,
+        "progress failure offers a retry without hiding books")
+    progress_failed = false
+    displayed[#displayed].header_action.callback()
+    eq("recent", displayed[#displayed].items[1].book.id,
+        "retry restores the most recently read book to the front")
+    eq("继续阅读", displayed[#displayed].hero_action.text,
+        "retry restores the continued-reading action")
+    eq(0, single_reads, "successful batch load still avoids per-book reads")
+    eq(true, batch_reads >= 4, "opening and retrying the shelf use batch progress reads")
+
+    local legacy_calls = 0
+    local legacy = Shelf.new({ storage = {
+        listShelf = progress_storage.listShelf,
+        getProgress = function()
+            legacy_calls = legacy_calls + 1
+            return nil, { code = "STORAGE_ERROR" }
+        end,
+    } })
+    local legacy_page = legacy:page(1, "hero")
+    eq("STORAGE_ERROR", legacy_page.progress_error.code,
+        "legacy per-book progress failure is also reported")
+    eq(2, legacy_page.total, "legacy failure keeps source books accessible")
+    eq(1, legacy_calls, "legacy progress reads stop after the first storage failure")
+end
+do
     local failed, displayed = true, {}
     local unreliable_storage = {
         listShelf = function()

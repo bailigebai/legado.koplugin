@@ -73,7 +73,7 @@ function Shelf:page(page, mode, page_size_override)
     local generation = self.generation
     local books, category_counts = {}, {}
     local read_at, read_state, original_order = {}, {}, {}
-    local counts = { all = 0, reading = 0, unread = 0 }
+    local counts = { all = 0, reading = 0, unread = 0, unknown = 0 }
     local all_books = {}
     local load_error
     if self.source_mode ~= "local" then
@@ -86,28 +86,51 @@ function Shelf:page(page, mode, page_size_override)
         end
     end
     if self.source_mode == "local" or self.source_mode == "mixed" then for _, book in ipairs(self:_localBooks()) do all_books[#all_books + 1] = book end end
+    local eligible = {}
     for index, book in ipairs(all_books) do
         local included = self.category == nil
         for _, name in ipairs(book_categories(book, self.settings == nil)) do
             category_counts[name] = (category_counts[name] or 0) + 1
             if name == self.category then included = true end
         end
-        if included then
-            local progress = type(self.storage.getProgress) == "function" and self.storage:getProgress(book.id)
-            local state = type(progress) == "table" and "reading" or "unread"
-            counts.all, counts[state] = counts.all + 1, counts[state] + 1
-            if self.reading_state == "all" or self.reading_state == state then
-                books[#books+1] = book
-                read_at[book] = type(progress) == "table" and (tonumber(progress.updated_at or progress.updatedAt or progress.timestamp) or 0) or 0
-                read_state[book] = state
-                original_order[book] = index
+        if included then eligible[#eligible + 1] = { book = book, index = index } end
+    end
+    local progress_by_id, progress_error = {}, nil
+    if #eligible > 0 and type(self.storage.listProgress) == "function" then
+        local values, err = self.storage:listProgress()
+        if type(values) ~= "table" then progress_error = err or { code = "STORAGE_ERROR" }
+        else
+            for _, progress in ipairs(values) do
+                if type(progress) == "table" and progress.book_id ~= nil then
+                    progress_by_id[tostring(progress.book_id)] = progress
+                end
             end
         end
+    elseif type(self.storage.getProgress) == "function" then
+        for _, entry in ipairs(eligible) do
+            local progress, err = self.storage:getProgress(entry.book.id)
+            if err then progress_error = err; break end
+            progress_by_id[entry.book.id] = progress
+        end
     end
-    table.sort(books, function(a, b)
-        if read_at[a] == read_at[b] then return original_order[a] < original_order[b] end
-        return read_at[a] > read_at[b]
-    end)
+    for _, entry in ipairs(eligible) do
+        local book = entry.book
+        local progress = not progress_error and progress_by_id[book.id] or nil
+        local state = progress_error and "unknown" or type(progress) == "table" and "reading" or "unread"
+        counts.all, counts[state] = counts.all + 1, counts[state] + 1
+        if self.reading_state == "all" or progress_error or self.reading_state == state then
+            books[#books+1] = book
+            read_at[book] = type(progress) == "table" and (tonumber(progress.updated_at or progress.updatedAt or progress.timestamp) or 0) or 0
+            read_state[book] = state
+            original_order[book] = entry.index
+        end
+    end
+    if not progress_error then
+        table.sort(books, function(a, b)
+            if read_at[a] == read_at[b] then return original_order[a] < original_order[b] end
+            return read_at[a] > read_at[b]
+        end)
+    end
     local categories = {}
     for _, name in ipairs(self.settings and self.settings:get("shelf_categories") or {}) do
         if trim(name) ~= "" and category_counts[name] == nil then category_counts[name] = 0 end
@@ -154,7 +177,8 @@ function Shelf:page(page, mode, page_size_override)
     return {
         items = items, page = page, page_count = page_count, mode = mode, total = #books,
         categories = categories, counts = counts, category = self.category, reading_state = self.reading_state,
-        source_mode = self.source_mode, warning = self.local_warning, load_error = load_error,
+        source_mode = self.source_mode, warning = self.local_warning,
+        load_error = load_error, progress_error = progress_error,
         empty_text = #books == 0 and (load_error and "书架读取失败" or "暂无收藏") or nil,
         empty_actions = #books == 0 and not load_error and {
             { text = "搜索添加", callback = self.on_search },

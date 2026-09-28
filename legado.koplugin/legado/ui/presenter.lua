@@ -732,6 +732,7 @@ function Presenter:_shelf(view, page)
     end
     local local_mode=view.source_mode=='local'
     local subtitle = model.load_error and ('书架读取失败 · '..safe_token(type(model.load_error)=='table' and model.load_error.code,'STORAGE_ERROR'))
+        or model.progress_error and ('阅读进度读取失败 · '..safe_token(type(model.progress_error)=='table' and model.progress_error.code,'STORAGE_ERROR')..' · 暂显示全部（原书架顺序）')
         or model.warning or (tostring(model.total or #items)..' 本'..(local_mode and '本地书籍' or '收藏'))
     if view.batch_select then
         local selected_count = 0
@@ -740,12 +741,12 @@ function Presenter:_shelf(view, page)
     end
     local hero_action
     if items[1] and items[1].hero and not view.batch_select and self.app then
-        hero_action={text=model.items[1].reading and '继续阅读' or '开始阅读',callback=function()
+        hero_action={text=model.progress_error and '打开阅读' or model.items[1].reading and '继续阅读' or '开始阅读',callback=function()
             local detail=self.app:createBookDetail(items[1].book,{items[1].book})
             return self:_startReading(function(complete,progress) return detail:startReading(complete,progress) end,detail)
         end}
     end
-    local header_action = model.load_error and {text='重新读取',callback=function() return self:_shelf(view,model.page) end}
+    local header_action = (model.load_error or model.progress_error) and {text='重新读取',callback=function() return self:_shelf(view,model.page) end}
         or {text=local_mode and '书源书架' or '本地书架',callback=function()
             view.source_mode=local_mode and 'sources' or 'local'; view:setFilter('all',nil)
             return self:_shelf(view,1)
