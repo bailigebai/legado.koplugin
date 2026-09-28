@@ -1756,8 +1756,9 @@ function Presenter:_aiSettings(view)
     local values = view:refresh()
     local provider = values.ai_provider == "mimo" and "mimo" or "deepseek"
     local items = {}
+    local widget, test_generation = nil, 0
     for _, choice in ipairs({ { "DeepSeek", "deepseek" }, { "小米 MiMo", "mimo" } }) do
-        items[#items + 1] = { text = choice[1], callback = function()
+        items[#items + 1] = { text = (choice[2] == provider and "✓ " or "□ ") .. choice[1], callback = function()
             local saved, err = view:set("ai_provider", choice[2])
             if saved == nil then return self:_info("设置保存失败（"
                 .. safe_token(err and err.code, "STORAGE_ERROR") .. "）", "AI 服务") end
@@ -1807,11 +1808,14 @@ function Presenter:_aiSettings(view)
         return self:_showInput(dialog)
     end }
     items[#items + 1] = { text = "测试连接", callback = function()
+        test_generation = test_generation + 1
+        local generation = test_generation
         return view.ai_service:testConnection(function(answer, err)
+            if generation ~= test_generation or self.view_widgets[view] ~= widget
+                or self.closed_widgets[widget] or view.settings:get("ai_provider") ~= provider then return end
             self:_info(answer and "AI 连接成功" or (err or "AI 连接失败"), "AI 服务")
         end)
     end }
-    local widget
     widget = self:_modelMenu(view, { title = "AI 服务", item_table = items,
         close_callback = function()
             if not self:_closeWidget(widget) then return false end
