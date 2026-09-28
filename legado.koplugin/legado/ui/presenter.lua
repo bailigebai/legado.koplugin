@@ -2368,8 +2368,10 @@ local function download_items(self, view)
                 end
                 return result
             end
-            if task.status == "queued" or task.status == "running" or task.status == "cancelling" then
+            if task.status == "queued" or task.status == "running" then
                 actions[#actions + 1] = { text = "取消下载", callback = function() return update("cancel") end }
+            elseif task.status == "cancelling" then
+                actions[#actions + 1] = { text = "正在取消，请稍候", enabled = false }
             elseif task.status == "failed" or task.status == "cancelled" then
                 actions[#actions + 1] = { text = "重试", callback = function() return update("retry") end }
             elseif task.status == "interrupted" then

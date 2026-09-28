@@ -326,6 +326,25 @@ do
 end
 
 do
+    local cancel_calls, shown = 0, {}
+    local cancelling = { id = "cancelling", kind = "cache", book = { name = "等待取消" },
+        status = "cancelling", completed = 1, total = 3 }
+    local pending_manager = { list = function() return { cancelling } end,
+        cancel = function() cancel_calls = cancel_calls + 1; return true end }
+    local presenter = Presenter.new({ menu = { new = function(_, options) return options end },
+        ui_manager = { show = function(_, widget) shown[#shown + 1] = widget end } })
+    local view = Downloads.new({ manager = pending_manager })
+    local menu = presenter:show(view)
+    truthy(menu.item_table[1].text:find("正在取消", 1, true), "pending cancellation is visible in downloads")
+    local actions = menu.item_table[1].callback()
+    equal("正在取消，请稍候", actions.item_table[1].text,
+        "pending cancellation does not offer a redundant cancel action")
+    equal(false, actions.item_table[1].enabled,
+        "pending cancellation action is disabled until the task settles")
+    equal(0, cancel_calls, "opening the pending cancellation menu does not cancel twice")
+end
+
+do
     local shown = {}
     local task = { id = "broken-epub", kind = "epub", book = { name = "打开失败" },
         status = "completed", final_path = "downloads/broken.epub" }
