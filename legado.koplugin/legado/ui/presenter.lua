@@ -505,6 +505,11 @@ end
 function Presenter:_weread(view)
     local model = view:page(view.display_page)
     local account_id = view.account_id
+    local widget
+    local function current_shelf()
+        return weread_page_active(self, view, "weread_shelf")
+            and self.library_widget == widget and widget and widget.page == model.page
+    end
     local subtitle = view.status
     if model.progress_error then subtitle = tostring(subtitle or '') .. ' · 本地阅读记录不可用' end
     local items = {}
@@ -512,21 +517,28 @@ function Presenter:_weread(view)
         items[#items + 1] = { book = book, title = book.name, subtitle = book.author,
             intro = index == 1 and model.page == 1 and book.intro or nil,
             hero = index == 1 and model.page == 1, cover_url = book.cover_url,
-            callback = function() return self:_wereadBook(view, book, account_id) end }
+            callback = function()
+                if not current_shelf() then return false end
+                return self:_wereadBook(view, book, account_id)
+            end }
     end
     if #items == 0 then items[1] = { text = view.status, enabled = false } end
     local actions = {}
     actions[#actions + 1] = { text = "同步书架", enabled = view.client ~= nil, callback = function()
+        if not current_shelf() then return false end
         return view:sync(function()
             if weread_page_active(self, view, "weread_shelf") then self:_weread(view) end
         end)
     end }
     actions[#actions + 1] = { text = "书城发现", enabled = view.client ~= nil, callback = function()
+        if not current_shelf() then return false end
         view:clearStore()
         return self:_wereadStore(view)
     end }
     actions[#actions + 1] = { text = "微信扫码登录", enabled = view.auth ~= nil, callback = function()
+        if not current_shelf() then return false end
         return view:start(function(qr)
+            if not current_shelf() then return end
             local widget
             local screen = self.screen or (optional("device") or {}).screen
             local size = weread_qr_size(screen)
@@ -546,9 +558,10 @@ function Presenter:_weread(view)
         end)
     end }
     local has_books = model.total > 0
-    local widget = self:_library(view, { title = "微信读书", subpage = "weread_shelf", subtitle = subtitle,
+    widget = self:_library(view, { title = "微信读书", subpage = "weread_shelf", subtitle = subtitle,
         items = items, mode = has_books and model.mode or "list", grouped_actions = true,
         hero_action = has_books and model.page == 1 and { text = "继续阅读", callback = function()
+            if not current_shelf() then return false end
             return self:_startWeReadReading(view,model.items[1],account_id)
         end } or nil,
         grid_columns = 4, grid_rows = 3, already_paginated = true,
