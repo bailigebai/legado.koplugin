@@ -118,13 +118,16 @@ function WeRead:sync(callback)
         return nil
     end
     local session = self.auth:session()
-    self.status, self.synced = "正在同步微信书架…", true
     self.sync_generation = (self.sync_generation or 0) + 1
+    local previous = self.sync_request
+    self.sync_request = nil
+    if previous and type(previous.cancel) == "function" then pcall(previous.cancel, previous) end
+    self.status, self.synced = "正在同步微信书架…", true
     local generation, sync_generation, delivered = self.generation, self.sync_generation, false
     local handle = self.client:shelfSync(function(wire, err)
         delivered = true
         if not self.alive or generation ~= self.generation or sync_generation ~= self.sync_generation then return end
-        self.request = nil
+        self.sync_request = nil
         local current = self.auth:session()
         if not current or current.vid ~= session.vid then
             self:_refreshAccount()
@@ -146,7 +149,7 @@ function WeRead:sync(callback)
         self.status = "已登录"
         callback(self.books)
     end)
-    if not delivered then self.request = handle end
+    if not delivered then self.sync_request = handle end
     return handle
 end
 
@@ -323,13 +326,14 @@ function WeRead:cancel()
     self.generation = self.generation + 1
     self:cancelReading()
     if self.request and type(self.request.cancel) == "function" then self.request:cancel() end
+    if self.sync_request and type(self.sync_request.cancel) == "function" then self.sync_request:cancel() end
     if self.store_request and type(self.store_request.cancel) == "function" then self.store_request:cancel() end
     if self.add_request and type(self.add_request.cancel) == "function" then self.add_request:cancel() end
     if self.review_request and type(self.review_request.cancel) == "function" then self.review_request:cancel() end
     if self.scheduled and self.scheduler and type(self.scheduler.unschedule) == "function" then
         pcall(self.scheduler.unschedule, self.scheduler, self.scheduled)
     end
-    self.request, self.store_request, self.add_request, self.review_request, self.scheduled = nil, nil, nil, nil, nil
+    self.request, self.sync_request, self.store_request, self.add_request, self.review_request, self.scheduled = nil, nil, nil, nil, nil, nil
     if self.alive and self.status ~= "已登录" then self.status = "已取消" end
 end
 

@@ -32,6 +32,29 @@ eq(19, #restarted.books, "offline restart restores the last synced shelf")
 restarted:sync()
 callback(nil, "network offline")
 eq(19, #restarted.books, "network failure keeps the cached WeRead shelf")
+
+do
+    local pending, cancelled = {}, 0
+    local repeated = View.new{ auth = auth, client = { shelfSync = function(_, done)
+        pending[#pending + 1] = done
+        return { cancel = function()
+            cancelled = cancelled + 1
+            done({ books = {{ bookId = "cancelled", title = "取消时回包" }} })
+        end }
+    end } }
+    repeated:sync()
+    repeated:sync()
+    eq(1, cancelled, "starting a new shelf sync cancels the previous network request")
+    pending[1]({ books = {{ bookId = "stale", title = "旧回包" }} })
+    eq(0, #repeated.books, "late cancelled sync cannot replace the current shelf")
+    pending[2]({ books = {{ bookId = "fresh", title = "新回包" }} })
+    eq("fresh", repeated.books[1].remote_id, "the latest shelf sync still publishes its result")
+    repeated:sync()
+    repeated:cancel()
+    eq(2, cancelled, "leaving the WeRead view cancels its active shelf sync")
+    eq("fresh", repeated.books[1].remote_id, "a cancelled sync cannot replace the visible shelf")
+end
+
 local account, add_response, new_sync, add_error = "account-1", nil, nil, nil
 local switched = View.new{auth={session=function() return {vid=account} end,hasSession=function() return true end},
     client={addToShelf=function(_, _, done) add_response=done;return {cancel=function() end} end,
