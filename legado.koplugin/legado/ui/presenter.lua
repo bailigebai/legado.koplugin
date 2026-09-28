@@ -751,6 +751,14 @@ end
 function Presenter:_wereadReviews(view, book, page)
     local review_page = "weread_reviews:" .. book.remote_id
     local account_id = view.account_id
+    local widget
+    local function current_reviews()
+        if not widget or not weread_page_active(self, view, review_page)
+            or self.library_widget ~= widget or view.review_book_id ~= book.remote_id
+            or view.review_account_id ~= account_id then return false end
+        local session = view.auth and view.auth:session()
+        return session and session.vid == account_id
+    end
     local function cancel_request()
         view.review_generation = (view.review_generation or 0) + 1
         if view.review_request and type(view.review_request.cancel) == "function" then
@@ -784,6 +792,7 @@ function Presenter:_wereadReviews(view, book, page)
                 local content = review_text(review)
                 items[#items + 1] = { text = content ~= "" and content or "无文字评论",
                     callback = function()
+                        if not current_reviews() then return false end
                         local height
                         if #content > 480 then
                             local screen = self.screen or (optional("device") or {}).screen
@@ -799,27 +808,35 @@ function Presenter:_wereadReviews(view, book, page)
             end
         end
         local page_count = loaded + (view.review_has_more and 1 or 0)
-        return self:_library(view, { title = "阅读评论 · " .. book.name, subpage = review_page,
+        widget = self:_library(view, { title = "阅读评论 · " .. book.name, subpage = review_page,
             items = items, empty_text = "这页没有可显示的评论。", on_back = back,
             already_paginated = true, page = page, page_count = page_count,
-            on_prev = page > 1 and function() return self:_wereadReviews(view, book, page - 1) end or nil,
+            on_prev = page > 1 and function()
+                if not current_reviews() then return false end
+                return self:_wereadReviews(view, book, page - 1)
+            end or nil,
             on_next = page < page_count and function()
+                if not current_reviews() then return false end
                 return self:_wereadReviews(view, book, page + 1)
             end or nil })
+        return widget
     end
     local previous = page > 1 and function()
+        if not current_reviews() then return false end
         cancel_request()
         return self:_wereadReviews(view, book, page - 1)
     end or nil
     if view.review_error then
-        return self:_library(view, { title = "阅读评论 · " .. book.name, subpage = review_page,
+        widget = self:_library(view, { title = "阅读评论 · " .. book.name, subpage = review_page,
             items = {{text = "加载失败，点击重试", callback = function()
+                if not current_reviews() then return false end
                 view.review_error = nil
                 return self:_wereadReviews(view, book, page)
             end}}, subtitle = view.review_error, already_paginated = true,
             page = page, page_count = page, on_prev = previous, on_back = back })
+        return widget
     end
-    local widget = self:_library(view, { title = "阅读评论 · " .. book.name, subpage = review_page,
+    widget = self:_library(view, { title = "阅读评论 · " .. book.name, subpage = review_page,
         items = { { text = "正在加载评论…", enabled = false } },
         already_paginated = true, page = page, page_count = page,
         on_prev = previous, on_back = back })

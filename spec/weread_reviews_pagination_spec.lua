@@ -34,10 +34,17 @@ requests[1].callback({reviews = {{review = {review = {book = {bookId = "remote-1
     has_more = true, next_cursor = {max_idx = 20, synckey = 123}})
 eq("第一页", shown[#shown].items[1].text, "first review batch appears")
 eq(1, shown[#shown].page, "first batch is page one")
+local first_review_page = shown[#shown]
 shown[#shown].on_next()
 eq(2, #requests, "next page fetches only after navigation")
 eq(20, requests[2].cursor.max_idx, "next page reuses the review cursor")
 eq("正在加载评论…", shown[#shown].items[1].text, "loading is visible without blocking the old page")
+local after_next = #shown
+first_review_page.items[1].callback()
+eq(after_next, #shown, "old comment row cannot open a popup over the next page")
+first_review_page.on_next()
+eq(after_next, #shown, "old next-page button cannot replace the loading page")
+eq(2, #requests, "old next-page button does not start another request")
 requests[2].callback({reviews = {{review = {review = {book = {bookId = "remote-1"}, content = "第二页"}}}},
     has_more = true, next_cursor = {max_idx = 40, synckey = 123}})
 eq("第二页", shown[#shown].items[1].text, "second review batch appears")
@@ -61,6 +68,7 @@ shown[#shown].on_next()
 eq(4, #requests, "reopening reviews reuses loaded pages before requesting the next one")
 requests[4].callback(nil, "暂时失败")
 eq("加载失败，点击重试", shown[#shown].items[1].text, "failed page offers an in-place retry")
+local failed_review_page = shown[#shown]
 shown[#shown].items[1].callback()
 eq(5, #requests, "retry requests the failed review page again")
 eq(40, requests[5].cursor.max_idx, "retry does not skip the failed cursor")
@@ -68,6 +76,14 @@ requests[5].callback({reviews = {{review = {review = {book = {bookId = "remote-1
     has_more = false})
 eq("第三页", shown[#shown].items[1].text, "retry result appears on the requested page")
 eq(nil, shown[#shown].on_next, "last review page has no further navigation")
+local finished_review_page = shown[#shown]
+failed_review_page.items[1].callback()
+eq(5, #requests, "old retry button cannot request the resolved page again")
+eq(finished_review_page, shown[#shown], "old retry button leaves the completed review page visible")
+finished_review_page.on_back()
+local returned_detail = shown[#shown]
+finished_review_page.items[1].callback()
+eq(returned_detail, shown[#shown], "old review row cannot open text after leaving comments")
 
 local html_view = View.new{auth = auth, client = client}
 html_view.synced = true
