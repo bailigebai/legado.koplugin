@@ -154,7 +154,7 @@ function WeRead:_startStore(label, category_id, callback)
     self.store_generation = (self.store_generation or 0) + 1
     if self.store_request and type(self.store_request.cancel) == "function" then self.store_request:cancel() end
     self.store_keyword, self.store_category_id = tostring(label or ""), category_id
-    self.store_results, self.store_loading, self.store_error = {}, true, nil
+    self.store_results, self.store_loading, self.store_error, self.store_notice = {}, true, nil, nil
     self.store_cursor, self.store_sid, self.store_has_more, self.store_page = 0, nil, false, 1
     local generation, store_generation, delivered = self.generation, self.store_generation, false
     local handle = self:_fetchStore(0, function(wire, err)
@@ -198,7 +198,7 @@ end
 function WeRead:loadMoreStore(callback)
     callback = callback or function() end
     if not self.alive or not self.client or not self.store_has_more or self.store_loading then return nil end
-    self.store_loading, self.store_error = true, nil
+    self.store_loading, self.store_error, self.store_notice = true, nil, nil
     local generation, store_generation, delivered = self.generation, self.store_generation, false
     local cursor = self.store_cursor
     local handle = self:_fetchStore(cursor, function(wire, err)
@@ -222,7 +222,10 @@ function WeRead:loadMoreStore(callback)
         self.store_cursor = next_cursor
         if type(wire.sid) == "string" and wire.sid ~= "" then self.store_sid = wire.sid end
         self.store_has_more = (wire.hasMore == 1 or wire.hasMore == true)
-            and #rows > 0 and next_cursor > cursor and added > 0
+            and #rows > 0 and next_cursor > cursor
+        if added == 0 and self.store_has_more then
+            self.store_notice = "本批没有新书，点击下一页继续"
+        end
         callback(self.store_results)
     end)
     if not delivered then self.store_request = handle end
@@ -233,7 +236,7 @@ function WeRead:clearStore()
     self.store_generation = (self.store_generation or 0) + 1
     if self.store_request and type(self.store_request.cancel) == "function" then self.store_request:cancel() end
     self.store_request, self.store_keyword, self.store_category_id, self.store_results = nil, nil, nil, nil
-    self.store_loading, self.store_error, self.store_has_more = false, nil, false
+    self.store_loading, self.store_error, self.store_notice, self.store_has_more = false, nil, nil, false
     self.store_cursor, self.store_sid, self.store_page = nil, nil, nil
 end
 

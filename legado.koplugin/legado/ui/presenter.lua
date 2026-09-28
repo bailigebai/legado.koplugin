@@ -539,7 +539,7 @@ function Presenter:_wereadStore(view)
             page = page, page_count = loaded_pages + (view.store_has_more and 1 or 0),
             on_prev = page > 1 and function() return turn(page - 1) end or nil,
             on_next = not view.store_loading and (page < loaded_pages or view.store_has_more) and next_page or nil,
-            subtitle = view.store_loading and "正在搜索…" or view.store_error,
+            subtitle = view.store_loading and "正在搜索…" or view.store_error or view.store_notice,
             empty_text = view.store_loading and "正在加载书城书籍…" or "没有找到书籍，可换个关键词。",
             on_back = function() view:clearStore(); return self:_wereadStore(view) end })
     end
