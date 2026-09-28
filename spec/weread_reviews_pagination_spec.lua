@@ -68,4 +68,33 @@ requests[5].callback({reviews = {{review = {review = {book = {bookId = "remote-1
 eq("第三页", shown[#shown].items[1].text, "retry result appears on the requested page")
 eq(nil, shown[#shown].on_next, "last review page has no further navigation")
 
+local html_view = View.new{auth = auth, client = client}
+html_view.synced = true
+html_view.books = view.books
+presenter:show(html_view)
+shown[#shown].items[1].callback()
+action("阅读评论").callback()
+requests[#requests].callback({reviews = {{review = {review = {book = {bookId = "remote-1"},
+    htmlContent = "<p>完整&nbsp;评论</p><p>第二段</p>"}}},
+    {review = {review = {book = {bookId = "remote-1"}, htmlContent = "<p> </p>"}}},
+    {review = {review = {book = {bookId = "remote-1"},
+        htmlContent = "<script>忽略</script><p>正文</p>"}}},
+    {review = {review = {book = {bookId = "remote-1"},
+        content = "摘要", htmlContent = "<p>可阅读的完整点评</p>"}}}}, has_more = false})
+eq("完整 评论\n第二段", shown[#shown].items[1].text,
+    "a rich-text-only review appears as readable plain text")
+eq("无文字评论", shown[#shown].items[2].text,
+    "empty rich text does not create a blank review row")
+eq("正文", shown[#shown].items[3].text,
+    "non-review markup is omitted from the displayed review")
+eq("可阅读的完整点评", shown[#shown].items[4].text,
+    "rich text takes precedence when it contains more than the summary")
+local review_screen = shown[#shown]
+review_screen.items[1].callback()
+eq("完整 评论\n第二段", shown[#shown].text,
+    "opening a rich-text-only review shows its full plain text")
+review_screen.items[4].callback()
+eq("可阅读的完整点评", shown[#shown].text,
+    "opening a review with both fields shows the complete rich text")
+
 return count

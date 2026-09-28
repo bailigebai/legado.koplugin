@@ -1,6 +1,7 @@
 local Presenter = {}
 Presenter.__index = Presenter
 local ShelfMenu = require("legado.ui.shelf_menu")
+local html_decode = require("legado.lib.safe_functions").functions.htmldecode
 
 local function optional(name)
     local ok, value = pcall(require, name)
@@ -642,6 +643,27 @@ function Presenter:_wereadBook(view, book)
         end })
 end
 
+local function review_text(review)
+    local html = review.htmlContent
+    if type(html) == "string" and html ~= "" then
+        html = html:gsub("<[sS][cC][rR][iI][pP][tT][^>]*>.-</[sS][cC][rR][iI][pP][tT]%s*>", "")
+            :gsub("<[sS][tT][yY][lL][eE][^>]*>.-</[sS][tT][yY][lL][eE]%s*>", "")
+            :gsub("<%s*/?%s*([%a%d]+)[^>]*>", function(tag)
+                tag = tag:lower()
+                return (tag == "p" or tag == "div" or tag == "br" or tag == "li" or tag == "blockquote")
+                    and "\n" or ""
+            end)
+        local text = html_decode(html:gsub("<[^>]*>", "")):gsub("[ \t]*\n[ \t]*", "\n")
+            :gsub("\n+", "\n"):match("^%s*(.-)%s*$")
+        if text and text ~= "" then return text end
+    end
+    for _, field in ipairs({"content", "reviewContent"}) do
+        local value = review[field]
+        if type(value) == "string" and value:match("%S") then return value end
+    end
+    return ""
+end
+
 function Presenter:_wereadReviews(view, book, page)
     local review_page = "weread_reviews:" .. book.remote_id
     local account_id = view.account_id
@@ -675,7 +697,7 @@ function Presenter:_wereadReviews(view, book, page)
             local owner = type(review) == "table" and (review.bookId
                 or type(review.book) == "table" and review.book.bookId)
             if type(review) == "table" and (owner == nil or tostring(owner) == book.remote_id) then
-                local content = tostring(review.content or review.reviewContent or "")
+                local content = review_text(review)
                 items[#items + 1] = { text = content ~= "" and content or "无文字评论",
                     callback = function() return self:_info(content, "微信读书评论") end }
             end
