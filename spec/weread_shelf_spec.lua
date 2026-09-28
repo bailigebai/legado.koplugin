@@ -55,4 +55,21 @@ callback({books={{bookId="older",title="旧书"},{bookId="latest",title="最近�
     recentBooks={{book={bookId="latest",title="最近读"},progress=48}}})
 eq("latest",recent_view:page(1).items[1].remote_id,"the WeRead hero follows recent reading without a separate progress list")
 eq(48,recent_view:page(1).items[1].progress_percent,"the hero retains embedded reading progress")
+local failed_fs = { readBounded = function() return saved end,
+    atomicWrite = function() return nil, {code = "STORAGE_ERROR"} end }
+local failed_view = View.new{auth = auth, client = client, fs = failed_fs, path = "weread-shelf.json"}
+local sync_result, sync_error
+failed_view:sync(function(result, err) sync_result, sync_error = result, err end)
+callback({books = {{bookId = "unsaved", title = "本次同步"}}})
+eq("unsaved", failed_view.books[1].remote_id, "a storage failure keeps the freshly fetched shelf visible")
+eq(nil, sync_result, "a shelf that could not be saved is not reported as fully synchronized")
+eq("微信书架已更新，但本地保存失败；重启后可能恢复上次书架", sync_error,
+    "storage failure is explained to the caller")
+eq(sync_error, failed_view.status, "storage failure is visible on the shelf page")
+eq(2, #make_view().books, "a failed write does not replace the previous local shelf")
+failed_fs.atomicWrite = function(_, _, value) saved = value; return true end
+failed_view:sync()
+callback({books = {{bookId = "unsaved", title = "本次同步"}}})
+eq("已登录", failed_view.status, "a successful manual retry clears the storage warning")
+eq("unsaved", make_view().books[1].remote_id, "a successful retry persists the new shelf")
 return count

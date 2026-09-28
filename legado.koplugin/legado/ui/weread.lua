@@ -78,7 +78,11 @@ function WeRead:sync(callback)
         self.books = Mapper.shelf(wire, self.account_id)
         if self.fs and self.path then
             local encoded = Json.encode({ account_id = self.account_id, books = self.books })
-            self.fs:atomicWrite(self.path, encoded)
+            local saved = self.fs:atomicWrite(self.path, encoded)
+            if not saved then
+                self.status = "微信书架已更新，但本地保存失败；重启后可能恢复上次书架"
+                return callback(nil, self.status)
+            end
         end
         self.status = "已登录"
         callback(self.books)

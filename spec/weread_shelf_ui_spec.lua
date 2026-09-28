@@ -32,4 +32,13 @@ review_action.callback()
 eq("评论正文", shown[#shown].items[1].text, "review list shows content")
 shown[#shown].items[1].callback()
 eq("评论正文", shown[#shown].text, "review opens a detail message")
+local warning = "微信书架已更新，但本地保存失败；重启后可能恢复上次书架"
+local unsaved_view = View.new{auth = auth, path = "weread-shelf.json",
+    fs = {readBounded = function() return nil end, atomicWrite = function() return nil end},
+    client = {shelfSync = function(_, done)
+        done({books = {{bookId = "recent", title = "本次同步"}}})
+        return {cancel = function() end}
+    end}}
+presenter:show(unsaved_view)
+eq(warning, shown[#shown].subtitle, "the shelf page shows that remote books were not saved")
 return count
