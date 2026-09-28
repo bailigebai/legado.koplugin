@@ -481,6 +481,8 @@ end
 
 function Presenter:_weread(view)
     local model = view:page(view.display_page)
+    local subtitle = view.status
+    if model.progress_error then subtitle = tostring(subtitle or '') .. ' · 本地阅读记录不可用' end
     local items = {}
     for index, book in ipairs(model.items) do
         items[#items + 1] = { book = book, title = book.name, subtitle = book.author,
@@ -520,7 +522,7 @@ function Presenter:_weread(view)
         end)
     end }
     local has_books = model.total > 0
-    local widget = self:_library(view, { title = "微信读书", subpage = "weread_shelf", subtitle = view.status,
+    local widget = self:_library(view, { title = "微信读书", subpage = "weread_shelf", subtitle = subtitle,
         items = items, mode = has_books and model.mode or "list", grouped_actions = true,
         hero_action = has_books and model.page == 1 and { text = "继续阅读", callback = function()
             return self:_startWeReadReading(model.items[1])

@@ -12,6 +12,13 @@ local Mapper = require("legado.lib.weread_mapper")
 local SAVE_WARNING = "微信书架已更新，但本地保存失败；重启后可能恢复上次书架"
 local SYNC_WARNING = "已加入微信书架，但完整书架同步失败；显示本地记录"
 
+local function read_time(value)
+    value=tonumber(value) or 0
+    if value>=1e14 then value=value/1000000
+    elseif value>=1e11 then value=value/1000 end
+    return math.max(0,value)
+end
+
 local function load_books(fs, path, account_id)
     if not fs or not path or not account_id then return {} end
     local raw = fs:readBounded(path, 2 * 1024 * 1024)
@@ -33,7 +40,7 @@ function WeRead.new(options)
     local session = options.auth and type(options.auth.session) == "function" and options.auth:session()
     local account_id = session and session.vid
     return setmetatable({ kind = "weread", auth = options.auth, client = options.client,
-        fs = options.fs, path = options.path, account_id = account_id,
+        fs = options.fs, path = options.path, storage = options.storage, account_id = account_id,
         books = load_books(options.fs, options.path, account_id), synced = false,
         scheduler = options.scheduler,
         status = options.auth and options.auth:hasSession() and "已登录" or "未登录",
@@ -54,15 +61,50 @@ end
 function WeRead:page(page)
     self:_refreshAccount()
     page = math.max(1, math.floor(tonumber(page) or 1))
-    local total = #self.books
+    local progress_by_id, progress_error = {}, nil
+    if #self.books>0 and self.storage and type(self.storage.listProgress)=='function' then
+        local values,err=self.storage:listProgress()
+        if type(values)~='table' then progress_error=err or {code='STORAGE_ERROR'}
+        else
+            for _,progress in ipairs(values) do
+                if type(progress)=='table' and type(progress.book_id)=='string'
+                    and (progress.source_id==nil or progress.source_id=='weread') then
+                    progress_by_id[progress.book_id]=progress
+                end
+            end
+        end
+    end
+    local latest_remote=0
+    for _,book in ipairs(self.books) do latest_remote=math.max(latest_remote,read_time(book.read_at)) end
+    local ordered={}
+    for index,book in ipairs(self.books) do
+        local local_progress=progress_by_id[book.id]
+        local display=book
+        if local_progress then
+            display={};for key,value in pairs(book) do display[key]=value end
+            local count,chapter=tonumber(local_progress.chapter_count),tonumber(local_progress.chapter_index)
+            if local_progress.catalog_complete~=false and count and count>0 and chapter and chapter>=1 then
+                local fraction=math.max(0,math.min(1,tonumber(local_progress.fraction) or 0))
+                display.progress_percent=math.floor(math.max(0,math.min(1,(chapter-1+fraction)/count))*100)
+            end
+        end
+        local local_time=read_time(local_progress and local_progress.updated_at)
+        ordered[#ordered+1]={book=display,order=index,
+            time=local_time>latest_remote and local_time or 0}
+    end
+    table.sort(ordered,function(a,b)
+        if a.time==b.time then return a.order<b.order end
+        return a.time>b.time
+    end)
+    local total = #ordered
     local page_count = 1 + math.ceil(math.max(0, total - 5) / 12)
     page = math.min(page, page_count)
     local first = page == 1 and 1 or 6 + (page - 2) * 12
     local last = math.min(total, page == 1 and 5 or first + 11)
     local items = {}
-    for index = first, last do items[#items + 1] = self.books[index] end
+    for index = first, last do items[#items + 1] = ordered[index].book end
     return { items = items, page = page, page_count = page_count, total = total,
-        mode = page == 1 and "shelf_hero" or "grid" }
+        mode = page == 1 and "shelf_hero" or "grid", progress_error=progress_error }
 end
 
 function WeRead:sync(callback)

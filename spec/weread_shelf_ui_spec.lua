@@ -52,4 +52,13 @@ local unsaved_view = View.new{auth = auth, path = "weread-shelf.json",
     end}}
 presenter:show(unsaved_view)
 eq(warning, shown[#shown].subtitle, "the shelf page shows that remote books were not saved")
+local unreadable_history=View.new{auth=auth,storage={listProgress=function()
+    return nil,{code='STORAGE_ERROR'}
+end}}
+unreadable_history.books={{id='local-1',remote_id='remote-1',source_id='weread',name='离线封面'}}
+unreadable_history.synced=true
+presenter:show(unreadable_history)
+eq('已登录 · 本地阅读记录不可用',shown[#shown].subtitle,
+    'local progress failure is visible while remote covers remain usable')
+eq('离线封面',shown[#shown].items[1].title,'history failure does not hide the remote shelf')
 return count

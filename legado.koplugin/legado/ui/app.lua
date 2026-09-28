@@ -306,7 +306,7 @@ function App:openDownloads(back, start_picker)
 end
 function App:openWeRead(back)
     local view = WeRead.new({ auth = self.weread_auth, client = self.weread_client,
-        fs = self.fs, path = self.weread_shelf_path, scheduler = self.scheduler })
+        fs = self.fs, path = self.weread_shelf_path, scheduler = self.scheduler, storage = self.storage })
     view._back = back
     return self:_present(view)
 end
