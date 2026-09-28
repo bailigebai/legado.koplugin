@@ -49,4 +49,10 @@ account="account-3"
 pending_sync({books={{bookId="old-book",title="旧账号书籍"}}})
 eq(0,#switching.books,"a late response cannot show books from a previous account")
 eq("微信读书账号已切换",sync_error,"late shelf response reports the account change")
+local recent_view = make_view()
+recent_view:sync()
+callback({books={{bookId="older",title="旧书"},{bookId="latest",title="最近读"}},
+    recentBooks={{book={bookId="latest",title="最近读"},progress=48}}})
+eq("latest",recent_view:page(1).items[1].remote_id,"the WeRead hero follows recent reading without a separate progress list")
+eq(48,recent_view:page(1).items[1].progress_percent,"the hero retains embedded reading progress")
 return count

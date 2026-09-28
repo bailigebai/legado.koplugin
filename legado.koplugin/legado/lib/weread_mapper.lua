@@ -14,6 +14,24 @@ local function unwrap(row)
     return row
 end
 
+local function clamp_percent(value)
+    return math.max(0, math.min(100, tonumber(value) or 0))
+end
+
+local function finished(row)
+    return type(row) == "table" and (row.finishReading == 1 or row.finishReading == true)
+end
+
+local function book_percent(source, row)
+    if finished(source) or finished(row) then return 100 end
+    return clamp_percent(source.progress or source.readProgress or source.progressPercent or source.percent or row.progress)
+end
+
+local function has_progress(source, row)
+    return finished(source) or finished(row) or source.progress ~= nil or source.readProgress ~= nil
+        or source.progressPercent ~= nil or source.percent ~= nil or row.progress ~= nil
+end
+
 function Mapper.book(row, account_id)
     local source = unwrap(row)
     if not source then return nil end
@@ -28,6 +46,9 @@ function Mapper.book(row, account_id)
         author = text(source.author or source.authors),
         cover_url = cover, intro = text(source.intro or source.description or source.summary),
         kind = text(source.category),
+        progress_percent = book_percent(source, row),
+        read_at = tonumber(source.updateTime or source.updatedAt or source.readTime
+            or row.updateTime or row.updatedAt or row.readTime) or 0,
     }
 end
 
@@ -37,20 +58,31 @@ function Mapper.shelf(wire, account_id)
     for _, row in ipairs(type(wire.bookProgress) == "table" and wire.bookProgress or {}) do
         if type(row) == "table" and row.bookId ~= nil then progress[tostring(row.bookId)] = row end
     end
+    local recent = {}
+    for index, row in ipairs(type(wire.recentBooks) == "table" and wire.recentBooks or {}) do
+        local source = unwrap(row)
+        local id = source and (source.bookId or source.id or source.book_id)
+        if id ~= nil and recent[tostring(id)] == nil then recent[tostring(id)] = index end
+    end
     local rows, seen, order = {}, {}, 0
     local function append(list)
         for _, row in ipairs(type(list) == "table" and list or {}) do
             local book = Mapper.book(row, account_id)
-            if book and not seen[book.remote_id] then
+            if book and seen[book.remote_id] then
+                local existing = seen[book.remote_id]
+                if not progress[book.remote_id] and has_progress(unwrap(row), row) then
+                    existing.progress_percent = book.progress_percent end
+                existing.read_at = math.max(existing.read_at, book.read_at)
+            elseif book then
                 order = order + 1
-                seen[book.remote_id] = true
+                seen[book.remote_id] = book
                 local state = progress[book.remote_id]
                 if state then
-                    local percent = tonumber(state.progress or state.readProgress) or 0
-                    book.progress_percent = math.max(0, math.min(100, percent))
-                    book.read_at = tonumber(state.updateTime or state.updatedAt or state.readTime) or 0
-                else
-                    book.progress_percent, book.read_at = 0, 0
+                    if state.progress ~= nil or state.readProgress ~= nil then
+                        book.progress_percent = clamp_percent(state.progress or state.readProgress)
+                    end
+                    if finished(state) then book.progress_percent = 100 end
+                    book.read_at = tonumber(state.updateTime or state.updatedAt or state.readTime) or book.read_at
                 end
                 book._order = order
                 rows[#rows + 1] = book
@@ -62,6 +94,12 @@ function Mapper.shelf(wire, account_id)
     append(wire.finishReadBooks)
     append(type(wire.data) == "table" and wire.data.books or nil)
     table.sort(rows, function(a, b)
+        local ar, br = recent[a.remote_id], recent[b.remote_id]
+        if ar ~= br then
+            if ar == nil then return false end
+            if br == nil then return true end
+            return ar < br
+        end
         if a.read_at == b.read_at then return a._order < b._order end
         return a.read_at > b.read_at
     end)
