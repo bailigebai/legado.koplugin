@@ -9,7 +9,7 @@
 - 本插件当前 `App`、`Presenter`、`Shelf`、`ReaderSession`、`DownloadManager` 已分别承担入口、展示、书架、阅读和下载职责。现有 `Presenter:_library` 在每页附加阅读回顾、书源、下载等通用按钮，导致重复；`_navigation` 又重复提供书架、阅读回顾、发现。
 - [Moon 项目](https://github.com/AnkioTomas/moon) 的 2026-09-28 `main` 树 `e0af48d2ae27db3605ec91844775a69d5207c448` 已检查。参考其 `source/wechat/{eink,auth,client,mapper}.lua` 的扫码、会话、书架、进度接口分层，及 `ui/desktop/home/views/recent_hero.lua` 的最近阅读大卡片。只移植交互原则和必要协议适配，不复制其独立书库、数据库与桌面框架。
 - DeepSeek 的 OpenAI 兼容基址为 `https://api.deepseek.com`；小米 MiMo 为 `https://api.xiaomimimo.com/v1`。以各自官方文档为配置依据，不在安装包内放密钥。
-- 图标候选为 Lucide `book-open`（MIT），用单色高对比排版适配墨水屏；保留其许可声明。正式落地前检查 KOReader 对插件图标路径和尺寸的实际要求。
+- 图标候选包括 Lucide `book-open`（当前图标页注明 ISC）、Phosphor 和 Material Symbols；比较结果见 [图标核对](../../logo-research-0.10.37.md)。实际采用项目原创单色开卷 SVG，不复制第三方图标。KOReader 标题栏按 30 像素加载该 SVG。
 
 ## 方案比较
 

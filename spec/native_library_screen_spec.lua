@@ -73,14 +73,25 @@ local ui = {
 }
 package.loaded["ui/uimanager"] = ui
 local Widget = require("ui/widget/widget")
-local failed_image_frees = 0
+local failed_image_frees, requested_images = 0, {}
 local Image = Widget:extend{
-    getSize=function(self) if self.file == "bad.jpg" then error("lazy decode") end return {w=self.width,h=self.height} end,
+    getSize=function(self)
+        requested_images[#requested_images+1] = self.file
+        if self.file == "bad.jpg" then error("lazy decode") end
+        return {w=self.width,h=self.height}
+    end,
     free=function(self) if self.file == "bad.jpg" then failed_image_frees=failed_image_frees+1 end end,
 }
 package.loaded["ui/widget/imagewidget"] = Image
 
 local LibraryScreen = require("legado.ui.library_screen")
+local branded = LibraryScreen.new{title="书架",brand_logo=true,items={},compact=true}
+local logo_loaded = false
+for _,path in ipairs(requested_images) do
+    if type(path)=="string" and path:find("/assets/logo.svg",1,true) then logo_loaded=true end
+end
+truthy(logo_loaded,"the visible bookshelf header loads the plugin logo")
+truthy(branded:getSize().w<=600,"branded bookshelf header fits the Kindle width")
 local callbacks, cancels = {}, 0
 local function loader(book, callback)
     callbacks[book.id] = callback

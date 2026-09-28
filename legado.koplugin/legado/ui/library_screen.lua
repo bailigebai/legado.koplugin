@@ -309,7 +309,7 @@ function LibraryScreen.new(options)
     local header_action=options.header_action and make_button(options.header_action,scale(96),scale(36))
     local right_width=header_action and header_action:getSize().w or back_size.w
     local logo
-    if options.title=='不亦阅乎' and plugin_root then
+    if (options.brand_logo == true or options.title=='不亦阅乎') and plugin_root then
         local path=plugin_root..'/assets/logo.svg'
         local candidate
         local ok=pcall(function()

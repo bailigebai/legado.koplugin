@@ -778,7 +778,8 @@ function Presenter:_shelf(view, page)
     elseif model.category or (model.reading_state and model.reading_state~='all') then
         empty_text='这个分类还没有书，可在“整理书架”切换分类或去“找书”。'
     else empty_text='书架还是空的，点击“找书”收藏第一本书。' end
-    return self:_library(view,{title=local_mode and '本地书架' or '书架',subtitle=subtitle,items=items,
+    return self:_library(view,{title=local_mode and '本地书架' or '书架',brand_logo=true,
+        subtitle=subtitle,items=items,
         mode=model.mode=="hero" and model.page==1 and "shelf_hero" or "grid",hero_action=hero_action,
         header_action=header_action,
         grid_columns=4,grid_rows=3,categories={},already_paginated=true,page=model.page,page_count=model.page_count,
