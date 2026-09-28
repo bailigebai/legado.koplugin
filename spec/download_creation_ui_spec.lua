@@ -13,7 +13,8 @@ local function item(items, label)
 end
 
 local source_book = { id = "source-book", source_id = "source-1", name = "在线书" }
-local tasks, calls, shown = {}, {}, {}
+local tasks, calls, shown, scheduled = {}, {}, {}, {}
+local scheduler = {scheduleIn = function(_, _, callback) scheduled[#scheduled + 1] = callback end}
 local detail
 local app = {
     storage = { listShelf = function() return { source_book,
@@ -46,8 +47,9 @@ local presenter = Presenter.new({ app = app,
     input_dialog = { new = function(_, options) return options end },
     ui_manager = { show = function(_, widget) shown[#shown + 1] = widget end,
         close = function() end } })
-local view = Downloads.new({ manager = { list = function() return tasks end } })
+local view = Downloads.new({ manager = { list = function() return tasks end }, scheduler = scheduler })
 presenter:show(view)
+eq(0, #scheduled, "an empty download manager has no progress timer")
 truthy(item(shown[#shown].item_table, "新建缓存任务"), "download management can create a cache task")
 item(shown[#shown].item_table, "新建缓存任务").callback()
 eq("选择要缓存的书籍", shown[#shown].title, "cache creation starts with a book picker")
@@ -58,6 +60,11 @@ truthy(item(shown[#shown].item_table, "缓存部分章节"), "selected source bo
 item(shown[#shown].item_table, "缓存整本（离线阅读）").callback()
 eq("whole", calls[1], "full cache queues the entire source book")
 eq("下载管理", shown[#shown].title, "queued full cache returns to live downloads")
+eq(1, #scheduled, "creating a cache task starts live progress polling")
+tasks[1].status, tasks[1].completed, tasks[1].total = "running", 1, 3
+scheduled[1]()
+eq(true, view.items[1].text:find("1/3", 1, true) ~= nil,
+    "the newly created task updates its progress without manual refresh")
 
 item(shown[#shown].item_table, "新建缓存任务").callback()
 shown[#shown].item_table[1].callback()

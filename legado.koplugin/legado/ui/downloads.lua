@@ -16,7 +16,6 @@ function Downloads.new(options)
         on_refresh = options.on_refresh, refresh_action = nil,
         items = {}, alive = true, generation = 0, navigation = Navigation.new({ count = 0, columns = 1 }) }, Downloads)
     self:refresh()
-    self:_scheduleRefresh()
     return self
 end
 
@@ -38,7 +37,6 @@ function Downloads:_scheduleRefresh()
         self.refresh_action = nil
         local items = self:refresh()
         if type(self.on_refresh) == "function" then pcall(self.on_refresh, self, items) end
-        self:_scheduleRefresh()
     end
     self.refresh_action = action
     local scheduled = pcall(self.scheduler.scheduleIn, self.scheduler, self.refresh_interval, action)
@@ -67,6 +65,7 @@ function Downloads:refresh()
     end
     self.items = items
     self.navigation:setCount(#items)
+    self:_scheduleRefresh()
     return items
 end
 
@@ -79,7 +78,6 @@ local function action(self, method, id)
     if result and method ~= "open" then
         local items = self:refresh()
         if type(self.on_refresh) == "function" then pcall(self.on_refresh, self, items) end
-        self:_scheduleRefresh()
     end
     return result, err
 end

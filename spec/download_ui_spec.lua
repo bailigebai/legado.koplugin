@@ -241,6 +241,25 @@ do
 end
 
 do
+    local scheduled, tasks = {}, {}
+    local scheduler = {scheduleIn = function(_, _, callback) scheduled[#scheduled + 1] = callback end}
+    local manager = {list = function() return tasks end}
+    local view = Downloads.new({manager = manager, scheduler = scheduler})
+    equal(0, #scheduled, "an idle download manager starts without a timer")
+    tasks[1] = {id = "fresh-cache", kind = "cache", book = {name = "新建缓存"},
+        status = "running", completed = 0, total = 2}
+    view:refresh()
+    equal(1, #scheduled, "a new task starts polling when the existing list is refreshed")
+    tasks[1].completed = 1
+    scheduled[1]()
+    truthy(view.items[1].text:find("1/2", 1, true), "the newly started timer updates cache progress")
+    tasks[1].status = "completed"
+    scheduled[2]()
+    equal(2, #scheduled, "polling stops once the new task completes")
+    view:close()
+end
+
+do
     local shown, closed = {}, {}
     local task = { id = "popup-retry", book = { name = "待重试" }, status = "failed" }
     local manager = { list = function() return { task } end,
