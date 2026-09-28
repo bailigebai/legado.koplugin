@@ -4,9 +4,9 @@ local App = require("legado.ui.app")
 local Presenter = require("legado.ui.presenter")
 local count = 0
 local function eq(expected, actual, message) count = count + 1; A.equal(expected, actual, message) end
-local shown, scheduled, delays = {}, {}, {}
+local shown, scheduled, delays, closed_widgets = {}, {}, {}, {}
 local ui = { show = function(_, widget) shown[#shown + 1] = widget end,
-    close = function() end,
+    close = function(_, widget) closed_widgets[widget] = true end,
     scheduleIn = function(_, delay, callback)
         delays[#delays + 1] = delay
         scheduled[#scheduled + 1] = callback
@@ -44,4 +44,19 @@ poll_callback("wx-code", "confirmed")
 complete_callback({ vid = "1234" })
 eq("已登录", view.status, "confirmed login updates the page")
 eq(false, cancelled == true, "successful login does not cancel the session")
+
+app.storage = {listShelf = function() return {} end, getProgress = function() return nil end}
+cancelled = false
+local pending_view = app:openWeRead()
+local pending_login
+for _, item in ipairs(shown[#shown].actions) do
+    if item.text == "微信扫码登录" then pending_login = item end
+end
+pending_login.callback()
+begin_callback({uuid = "pending", payload = "https://open.weixin.qq.com/connect/confirm?uuid=pending"})
+local pending_qr = shown[#shown]
+app:openBookshelf()
+eq(true, closed_widgets[pending_qr] == true, "leaving WeRead closes the pending QR widget")
+eq(true, cancelled == true, "leaving WeRead cancels the pending login request")
+eq(false, pending_view.alive, "leaving WeRead closes its login controller")
 return count

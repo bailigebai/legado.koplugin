@@ -180,6 +180,15 @@ function Presenter:_closeWidget(widget)
     return true
 end
 
+function Presenter:_closeWeReadQr(view)
+    if not view or view.kind ~= "weread" or not view.qr_widget then return false end
+    local widget = view.qr_widget
+    view.qr_widget = nil
+    widget.dismiss_callback = nil
+    self:_closeWidget(widget)
+    return true
+end
+
 function Presenter:showNativeStatistics(statistics,document)
     document=document or self:_independentReader()
     if document and document.backend=='immersive' then
@@ -334,7 +343,9 @@ end
 
 function Presenter:_leaveLibrary(keep)
     self:_hideLibrary()
-    for view in pairs(self.controllers) do if view ~= keep then close_view(view) end end
+    for view in pairs(self.controllers) do
+        if view ~= keep then self:_closeWeReadQr(view); close_view(view) end
+    end
     self.controllers, self.library_view, self.library_subpage = {}, nil, nil
 end
 
@@ -356,6 +367,7 @@ function Presenter:_library(view, options)
         display.on_request_close=function() self:_confirmExit();return true end
     end
     display.on_back = function()
+        if self:_closeWeReadQr(view) then view:cancel() end
         self:_hideLibrary()
         if not local_back then self.controllers[view] = nil; close_view(view) end
         if back then return back() end
@@ -484,12 +496,7 @@ function Presenter:_weread(view)
             view.qr_widget = widget
             self:_show(widget)
         end, function(success)
-            local widget = view.qr_widget
-            if widget then
-                view.qr_widget = nil
-                widget.dismiss_callback = nil
-                self:_closeWidget(widget)
-            end
+            self:_closeWeReadQr(view)
             if success then view.synced = false end
             if weread_page_active(self, view, "weread_shelf") then self:_weread(view) end
         end)
