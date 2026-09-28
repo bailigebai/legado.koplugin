@@ -116,4 +116,15 @@ eq(true, requests[15].spec.url:find("synckey=123", 1, true) ~= nil,
 requests[15].callback({status = 200, body = Json.encode({reviewsHasMore = 1, synckey = 123,
     reviews = {{idx = 22, review = {review = {book = {bookId = "b1"}, content = "重复页"}}}}})})
 eq(false, review_page.has_more, "a repeated review cursor stops further requests")
+
+token = "a+b/c=="
+client:shelfSync(function() end)
+eq("wr_vid=123; wr_skey=a+b/c==; wr_ql=0", requests[16].spec.headers.Cookie,
+    "WeRead cookie preserves token punctuation exactly")
+token = "bad;\r\nInjected: value"
+local invalid_session_error
+client:shelfSync(function(_, err) invalid_session_error = err end)
+eq(16, #requests, "unsafe cookie token never reaches the network layer")
+eq("微信读书会话无效，请重新扫码登录", invalid_session_error,
+    "invalid session reports a clear login action")
 return count

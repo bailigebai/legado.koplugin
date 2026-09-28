@@ -24,14 +24,22 @@ local function decode_raw_error(response)
     return decode(response)
 end
 
+local function cookie_value(value)
+    if type(value) ~= "string" or value == "" or value:find("[%c%s;,]")
+        or value:find('"', 1, true) or value:find("\\", 1, true) then return nil end
+    return value
+end
+
 local function session_headers(session, eink)
+    local vid, access_token = cookie_value(session.vid), cookie_value(session.access_token)
+    if not vid or not access_token then return nil end
     if eink then return { ["User-Agent"] = EINK_AGENT, baseapi = "30", appver = "2.1.2.10245900",
         basever = "2.1.2.10245900", osver = "11", channelId = "900",
-        vid = session.vid, accessToken = session.access_token } end
+        vid = vid, accessToken = access_token } end
     return { ["User-Agent"] = BROWSER_AGENT, ["Accept-Language"] = "zh-CN,zh;q=0.9",
         Referer = WEB .. "/", Origin = WEB,
-        Cookie = "wr_vid=" .. Url(session.vid) .. "; wr_skey=" .. Url(session.access_token) .. '; wr_ql=0',
-        ["X-Vid"] = session.vid, ["X-Skey"] = session.access_token }
+        Cookie = "wr_vid=" .. vid .. "; wr_skey=" .. access_token .. '; wr_ql=0',
+        ["X-Vid"] = vid, ["X-Skey"] = access_token }
 end
 
 function Client.new(options)
@@ -49,6 +57,7 @@ function Client:_call(method, path, body, eink, callback, options)
         if not session then return callback(nil, "请先扫码登录微信读书") end
         local delivered = false
         local headers=session_headers(session, eink)
+        if not headers then return callback(nil, "微信读书会话无效，请重新扫码登录") end
         for key,value in pairs(options.headers or {}) do headers[key]=value end
         local handle = self.requests:execute({
             url = (eink and EINK or WEB) .. path, method = method,
