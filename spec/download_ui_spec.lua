@@ -305,6 +305,35 @@ do
 end
 
 do
+    local shown, retries = {}, 0
+    local book = {id = "changed-book", source_id = "source-1", name = "目录变动书"}
+    local task = {id = "changed-catalog", kind = "cache", book = book, status = "failed",
+        error = {code = "INVALID_INPUT", message = "目录已变化，请从书籍详情重新选择缓存范围"}}
+    local manager = {list = function() return {task} end,
+        retry = function() retries = retries + 1; return true end}
+    local app = {storage = {listShelf = function() return {book} end},
+        createBookDetail = function() return {} end}
+    local presenter = Presenter.new({app = app, menu = {new = function(_, options) return options end},
+        ui_manager = {show = function(_, widget) shown[#shown + 1] = widget end,
+            close = function() end}})
+    local view = Downloads.new({manager = manager})
+    local list = presenter:show(view)
+    truthy(list.item_table[1].text:find("目录已变化，请重新选择", 1, true),
+        "changed catalog explains the next step on the download row")
+    local actions = list.item_table[1].callback()
+    equal("重新选择缓存范围", actions.item_table[1].text,
+        "changed catalog offers a new selection instead of retrying the stale task")
+    actions.item_table[1].callback()
+    equal("选择要缓存的书籍", shown[#shown].title,
+        "changed catalog opens the existing cache book picker")
+    equal(0, retries, "changed catalog does not retry the stale task")
+    view:close()
+    local shown_before_stale = #shown
+    actions.item_table[1].callback()
+    equal(shown_before_stale, #shown, "a stale changed-catalog action cannot reopen the picker")
+end
+
+do
     local shown, closed, opened, returned = {}, {}, 0, 0
     local task = { id = "ready-epub", kind = "epub", book = { name = "已导出" },
         status = "completed", final_path = "downloads/ready.epub" }

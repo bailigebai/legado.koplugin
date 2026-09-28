@@ -2486,6 +2486,13 @@ local function download_items(self, view)
                 actions[#actions + 1] = { text = "取消下载", callback = function() return update("cancel") end }
             elseif task.status == "cancelling" then
                 actions[#actions + 1] = { text = "正在取消，请稍候", enabled = false }
+            elseif task.status == "failed" and row.catalog_changed
+                and self.app and self.app.storage and type(self.app.createBookDetail) == "function" then
+                actions[#actions + 1] = { text = "重新选择缓存范围", callback = function()
+                    if not view.alive then return false end
+                    self:_closeWidget(action_menu)
+                    return self:_downloadBookPicker(view)
+                end }
             elseif task.status == "failed" or task.status == "cancelled" then
                 actions[#actions + 1] = { text = "重试", callback = function() return update("retry") end }
             elseif task.status == "interrupted" then
