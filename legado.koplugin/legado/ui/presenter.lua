@@ -810,6 +810,9 @@ function Presenter:_search_results(view)
     if not view.loading then actions[#actions+1]={text="重试",callback=function() return self:_runSearch(view,view.keyword,view.source_ids,view.page or 1) end} end
     if self.app then actions[#actions+1]={text="搜索书名",callback=function() return self:_search(view,true) end} end
     local empty = view.loading and "正在各书源查找，找到后会自动显示封面和简介。" or "未找到匹配书籍，可换个书名或检查已启用的书源。"
+    if not view.loading and not view.error and progress.total == 0 and #items == 0 then
+        empty = "暂无已启用的书源，请先在“书源与下载 → 书源管理”导入或启用书源。"
+    end
     if view.error then empty=diagnostic_text(view.error) end
     return self:_library(view,{title=view.explore_source and (view.title or "分类图书") or ("搜索 · "..tostring(view.keyword or "")),
         subtitle=status,items=items,mode="cards",subpage="search_results",actions=actions,empty_text=empty,page=view.result_page,

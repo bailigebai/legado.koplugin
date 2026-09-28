@@ -408,7 +408,11 @@ function BookService:_selected_sources(source_ids)
             if source and source.enabled ~= false then output[#output + 1] = source end
         end
     else
-        for _, source in ipairs(self.storage:listSources() or {}) do
+        local listed, err = self.storage:listSources()
+        if type(listed) ~= "table" then
+            return nil, type(err) == "table" and err or Errors.new(Errors.STORAGE_ERROR, "cannot load search sources")
+        end
+        for _, source in ipairs(listed) do
             if source.enabled ~= false then output[#output + 1] = source end
         end
     end
@@ -419,10 +423,15 @@ function BookService:search(keyword, source_ids, page, callback, on_progress)
     assert(type(callback) == "function", "BookService search callback must be a function")
     local handle, state = composite()
     keyword, page = trim(keyword), math.max(1, math.floor(tonumber(page) or 1))
-    local sources = self:_selected_sources(source_ids)
+    local sources, source_error = self:_selected_sources(source_ids)
     if keyword == "" then
         state.completed = true
         callback(nil, Errors.new(Errors.INVALID_INPUT, "search keyword is required"))
+        return handle
+    end
+    if not sources then
+        state.completed = true
+        callback(nil, source_error)
         return handle
     end
     local limit = concurrency(self.settings)
