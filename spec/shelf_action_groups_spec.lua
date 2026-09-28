@@ -57,6 +57,7 @@ item(last().items, "全部").callback()
 open_group("书源与下载")
 eq("shelf_sources", last().subpage, "source and cache download share one group")
 eq("function", type(item(last().items, "书源管理").callback), "source management is reachable")
+eq("function", type(item(last().items, "缓存书籍").callback), "cache creation is reachable beside source management")
 eq("function", type(item(last().items, "下载管理").callback), "downloads are reachable")
 last():onClose()
 

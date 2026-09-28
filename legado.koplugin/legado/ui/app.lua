@@ -290,10 +290,11 @@ function App:switchReaderSource(state, candidate, callback, row)
     end
     return handle
 end
-function App:openDownloads(back)
+function App:openDownloads(back, start_picker)
     if not self.download_manager then return self:_present({ title = "下载管理", empty_text = "下载功能尚未初始化", _back = back }) end
     local view = Downloads.new({ manager = self.download_manager, scheduler = self.scheduler })
     view._back = back
+    view.start_picker = start_picker == true
     return self:_present(view)
 end
 function App:openWeRead(back)

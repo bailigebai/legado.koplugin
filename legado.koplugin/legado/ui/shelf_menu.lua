@@ -99,6 +99,7 @@ function ShelfMenu.open(presenter, view, page, group)
     elseif group == "sources" then
         items = {
             {text = "书源管理", callback = function() return app:openSources(back) end},
+            {text = "缓存书籍", callback = function() return app:openDownloads(back, true) end},
             {text = "下载管理", callback = function() return app:openDownloads(back) end},
         }
     elseif group == "more" then

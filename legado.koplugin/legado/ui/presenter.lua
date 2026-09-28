@@ -1747,7 +1747,11 @@ function Presenter:_catalog(view)
         items[#items + 1] = { title = tostring(item.index) .. ". " .. item.title .. (item.cached and " ✓" or ""), callback = function()
             if view.cache_selection then
                 local detail = view._detail
+                if not detail or detail.alive == false or self.library_view ~= view then return false end
                 local task, err = detail:startCache(item.position)
+                if type(view.on_cache_selected) == "function" then
+                    return view.on_cache_selected(task, err, item.position)
+                end
                 detail._notice = type(task) == "table" and ("已加入第 1 至 " .. tostring(item.position) .. " 章缓存队列")
                     or ("缓存失败 · " .. safe_token(type(err) == "table" and err.code, "DOWNLOAD_ERROR"))
                 return self:_detail(detail)
@@ -2172,6 +2176,102 @@ function Presenter:_detail(view)
     return self.library_widget or widget
 end
 
+function Presenter:_downloadBookPicker(view)
+    local storage = self.app and self.app.storage
+    local books = storage and type(storage.listShelf) == "function" and storage:listShelf() or {}
+    local items = {}
+    for _, book in ipairs(books or {}) do
+        if type(book) == "table" and type(book.id) == "string" and type(book.source_id) == "string"
+            and not book.is_local and book.source_id ~= "local" and book.source_id ~= "weread" then
+            items[#items + 1] = { text = book.name or "未命名书籍", callback = function()
+                if not view.alive then return false end
+                local detail = self.app:createBookDetail(book, { book })
+                return self:_downloadCacheOptions(view, detail)
+            end }
+        end
+    end
+    if #items == 0 then items[1] = { text = "书架没有可缓存的书源书籍", enabled = false } end
+    local widget
+    widget = self:_modelMenu(view, { title = "选择要缓存的书籍", item_table = items,
+        close_callback = function()
+            self:_closeWidget(widget)
+            if view.start_picker then
+                view:close()
+                if view._back then return view._back() end
+                return self.app and self.app:openBookshelf() or false
+            end
+            return self:_downloads(view)
+        end })
+    return widget
+end
+
+function Presenter:_downloadCacheOptions(view, detail)
+    local function enqueue(method, label)
+        if not view.alive or not detail.alive then return false end
+        local task, err = detail[method](detail)
+        detail:close()
+        view.start_picker = false
+        self:_downloads(view)
+        if type(task) ~= "table" then
+            return self:_info(label .. "失败 · " .. safe_token(type(err) == "table" and err.code, "DOWNLOAD_ERROR"), "下载管理")
+        end
+        return task
+    end
+    local widget
+    widget = self:_modelMenu(view, { title = "缓存 · " .. tostring(detail.book.name or "未命名书籍"), item_table = {
+        { text = "缓存整本（离线阅读）", callback = function() return enqueue("startCache", "缓存") end },
+        { text = "缓存部分章节", callback = function()
+            if not view.alive or not detail.alive then return false end
+            self:_closeWidget(self.view_widgets[view])
+            local function back()
+                self.library_view, self.library_subpage = nil, nil
+                self.controllers[detail] = nil
+                detail:close()
+                return self:_downloadBookPicker(view)
+            end
+            local waiting = self:_library(detail, { title = "选择缓存截至章节", subpage = "download_catalog_wait",
+                items = {}, empty_text = "正在加载目录…", on_back = back })
+            local delivered = false
+            local handle = detail:loadCatalog(function(catalog, err)
+                delivered = true
+                if not detail.alive or self.library_view ~= detail or self.library_subpage ~= "download_catalog_wait" then return end
+                if err or not catalog then
+                    self:_hideLibrary(); self.library_view, self.library_subpage = nil, nil; self.controllers[detail] = nil
+                    detail:close(); self:_downloadBookPicker(view)
+                    return self:_info("目录加载失败 · " .. safe_token(err and err.code, "PARSE_ERROR"), "下载管理")
+                end
+                catalog.cache_selection, catalog.display_page, catalog._detail = true, 1, detail
+                catalog._back = function()
+                    self.controllers[catalog] = nil
+                    return back()
+                end
+                catalog.on_cache_selected = function(task, cache_err)
+                    self:_hideLibrary(); self.library_view, self.library_subpage = nil, nil
+                    self.controllers[catalog], self.controllers[detail] = nil, nil
+                    detail:close(); view.start_picker = false; self:_downloads(view)
+                    if type(task) ~= "table" then
+                        return self:_info("缓存失败 · " .. safe_token(type(cache_err) == "table" and cache_err.code, "DOWNLOAD_ERROR"), "下载管理")
+                    end
+                    return task
+                end
+                return self:_catalog(catalog)
+            end)
+            if not delivered and not handle and not detail.loading_catalog then
+                self:_hideLibrary(); self.library_view, self.library_subpage = nil, nil; self.controllers[detail] = nil
+                detail:close(); self:_downloadBookPicker(view)
+                return self:_info("目录不可用，请检查书源后重试。", "下载管理")
+            end
+            return self.library_widget or waiting
+        end },
+        { text = "导出 EPUB", callback = function() return enqueue("startDownload", "导出") end },
+    }, close_callback = function()
+        self:_closeWidget(widget)
+        detail:close()
+        return self:_downloadBookPicker(view)
+    end })
+    return widget
+end
+
 local function download_items(self, view)
     local items = {}
     for _, row in ipairs(view.items or {}) do
@@ -2229,6 +2329,9 @@ local function download_items(self, view)
         end }
     end
     if #items == 0 then items[1] = { text = "暂无下载记录", enabled = false } end
+    if self.app and self.app.storage and type(self.app.createBookDetail) == "function" then
+        items[#items + 1] = { text = "新建缓存任务", callback = function() return self:_downloadBookPicker(view) end }
+    end
     items[#items + 1] = { text = "刷新", callback = function() return self:_downloads(view) end }
     return items
 end
@@ -2298,7 +2401,9 @@ function Presenter:show(view)
     if view.kind == "reading_review" then return self:_readingReview(view) end
     if view.kind == "reading_receipt" then return self:_readingReceipt(view) end
     if view.kind == "book_detail" then return self:_detail(view) end
-    if view.kind == "downloads" then return self:_downloads(view) end
+    if view.kind == "downloads" then
+        return view.start_picker and self:_downloadBookPicker(view) or self:_downloads(view)
+    end
     if view.kind == "compatibility_report" then return self:_compatibility(view) end
     return self:_info(view.text or view.empty_text or view.error or "", view.title)
 end
