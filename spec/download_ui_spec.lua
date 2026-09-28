@@ -127,17 +127,33 @@ do
 end
 
 do
-    local received_options
+    local received_options, network_calls, cache_calls = nil, 0, 0
     local detail = BookDetail.new({ book = { id = "long-book", source_id = "source-ui" },
         source_lookup = function() return { id = "source-ui" } end,
+        catalog_lookup = function()
+            cache_calls = cache_calls + 1
+            return { { uid = "old-chapter", index = 1, title = "旧目录" } }
+        end,
         service = { getChapters = function(_, _, _, callback, options)
+            network_calls = network_calls + 1
             received_options = options
-            callback({ { uid = "chapter-1", index = 1, title = "第一章" } })
+            callback({ { uid = "chapter-1", index = 1, title = "第一章" },
+                { uid = "chapter-2", index = 2, title = "第二章" } })
             return true
         end } })
-    detail:loadCatalog(function() end, { background_catalog = true })
+    local ordinary
+    detail:loadCatalog(function(catalog) ordinary = catalog end)
+    equal("old-chapter", ordinary.items[1].chapter.uid,
+        "ordinary detail keeps the available offline catalog")
+    equal(0, network_calls, "ordinary offline catalog avoids a network request")
+    local refreshed
+    detail:loadCatalog(function(catalog) refreshed = catalog end, { background_catalog = true })
     equal(true, received_options and received_options.background_catalog,
         "book detail forwards long-catalog options to the book service")
+    equal(1, network_calls, "cache range selection fetches a fresh online catalog")
+    equal(1, cache_calls, "cache range selection does not reuse a stale offline catalog")
+    equal("chapter-2", refreshed.items[2].chapter.uid,
+        "fresh range selection includes newly added chapters")
 end
 
 do
@@ -151,6 +167,11 @@ do
     local chapters = {}
     for index = 1, 45 do chapters[index] = { uid = "c" .. index, index = index, title = "第" .. index .. "章" } end
     detail.catalog_lookup = function() return chapters end
+    detail.source_lookup = function() return { id = "range-source" } end
+    detail.service = { getChapters = function(_, _, _, callback)
+        callback(chapters)
+        return true
+    end }
     local catalog_options
     local original_load_catalog = detail.loadCatalog
     detail.loadCatalog = function(self, callback, options)

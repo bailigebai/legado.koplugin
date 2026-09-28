@@ -145,7 +145,9 @@ function BookDetail:loadCatalog(callback, options)
                 return self:_beginReading(chapters, index, selected_callback, book)
             end)
     end
-    if self.catalog_lookup then
+    -- Cache range selection must use the current source catalog; an offline
+    -- snapshot may omit newly published chapters or retain changed identities.
+    if self.catalog_lookup and not (options and options.background_catalog) then
         local ok, cached = pcall(self.catalog_lookup, book)
         if ok and type(cached) == "table" and #cached > 0 then
             self.loading_catalog, self.catalog_error, self.catalog_request = false, nil, nil
