@@ -25,8 +25,13 @@ function Catalog:setOrder(reverse)
 end
 function Catalog:onKey(key) return self.navigation:onKey(key) end
 function Catalog:focused() return self.items[self.navigation:index()] end
+function Catalog:displayPosition(position)
+    position = tonumber(position)
+    if not position or position % 1 ~= 0 or position < 1 or position > #self.items then return nil end
+    return self.reverse and #self.items - position + 1 or position
+end
 function Catalog:select(position, callback)
-    local item = self.items[tonumber(position) or 0]
+    local item = self.items[self:displayPosition(position) or 0]
     if not item or type(self.on_select) ~= "function" then return nil, { code = "INVALID_INPUT", message = "章节不可用" } end
     return self.on_select(item.chapter, item.position, callback or function() end)
 end

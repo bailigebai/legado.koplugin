@@ -62,9 +62,16 @@ eq(35,session.active.index,'choosing web TOC item opens that chapter in KOReader
 local catalog_view=app:openReadingCatalog(session.active,{reader={}})
 complete_catalog(chapters)
 local Catalog=require('legado.ui.catalog')
-local ordered=Catalog.new(chapters)
+local selected_chapter,selected_position
+local ordered=Catalog.new(chapters,nil,function(chapter,position)
+    selected_chapter,selected_position=chapter,position
+    return true
+end)
 ordered:setOrder(true)
 eq('Chapter 36',ordered.items[1].title,'catalog can switch to reverse order')
+ordered:select(36)
+eq('Chapter 36',selected_chapter.title,'reversed catalog selection opens the displayed chapter')
+eq(36,selected_position,'reversed catalog selection keeps the original chapter number')
 ordered:setOrder(false)
 eq('Chapter 1',ordered.items[1].title,'catalog can switch back to forward order')
 

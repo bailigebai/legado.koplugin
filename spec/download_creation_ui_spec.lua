@@ -147,4 +147,25 @@ do
     eq(1, returned, "back from a failed cache picker still restores the shelf")
 end
 
+do
+    local chapters = {}
+    for index = 1, 45 do chapters[index] = {index = index, title = "第" .. index .. "章"} end
+    local reversed = Catalog.new(chapters)
+    local selected_end
+    reversed.cache_selection = true
+    reversed._detail = {alive = true, startCache = function(_, ending)
+        return {id = "reversed-cache", end_index = ending}
+    end}
+    reversed.on_cache_selected = function(_, _, ending) selected_end = ending end
+    presenter:_catalog(reversed)
+    item(shown[#shown].actions, "倒叙").callback()
+    item(shown[#shown].actions, "跳转章节").callback()
+    shown[#shown].buttons[1][2].callback("37")
+    eq(1, shown[#shown].page, "reverse chapter jump opens the page containing chapter 37")
+    eq("37. 第37章", shown[#shown].items[9].text,
+        "reverse chapter jump displays the requested chapter")
+    shown[#shown].items[9].callback()
+    eq(37, selected_end, "reverse partial cache still ends at the requested chapter")
+end
+
 return count

@@ -1948,7 +1948,7 @@ function Presenter:_catalog(view)
                 return self:_info("请输入 1 至 " .. tostring(#view.items) .. " 的章节序号。", "跳转章节")
             end
             if not self:_closeWidget(dialog) then return false end
-            view.display_page = math.ceil(target / page_size)
+            view.display_page = math.ceil(view:displayPosition(target) / page_size)
             return self:_catalog(view)
         end
         dialog = construct(self.input_dialog, { title = "跳转章节", input_type = "number", buttons = {
