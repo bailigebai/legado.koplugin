@@ -580,23 +580,36 @@ end
 
 function Presenter:_wereadStore(view)
     view:_refreshAccount()
+    local account_id, widget = view.account_id, nil
+    local function current_store(page_name)
+        if not widget or not weread_page_active(self, view, page_name) or self.library_widget ~= widget then return false end
+        if view:_refreshAccount() or view.account_id ~= account_id then
+            self:_weread(view)
+            return false
+        end
+        return true
+    end
     if view.store_keyword then
-        local account_id = view.account_id
         local items = {}
         for _, book in ipairs(view.store_results or {}) do
             items[#items + 1] = { book = book, title = book.name, subtitle = book.author,
                 intro = book.intro, cover_url = book.cover_url,
-                callback = function() return self:_wereadBook(view, book, account_id) end }
+                callback = function()
+                    if not current_store("weread_store_results") then return false end
+                    return self:_wereadBook(view, book, account_id)
+                end }
         end
         local loaded_pages = math.max(1, math.ceil(#items / 12))
         local page = math.min(view.store_page or 1, loaded_pages)
         local visible = {}
         for i = (page - 1) * 12 + 1, math.min(page * 12, #items) do visible[#visible + 1] = items[i] end
         local function turn(next_page)
+            if not current_store("weread_store_results") then return false end
             view.store_page = next_page
             return self:_wereadStore(view)
         end
         local function next_page()
+            if not current_store("weread_store_results") then return false end
             if #items >= (page + 1) * 12 or (page < loaded_pages and not view.store_has_more) then
                 return turn(page + 1)
             end
@@ -609,7 +622,7 @@ function Presenter:_wereadStore(view)
             end)
             return self:_wereadStore(view)
         end
-        return self:_library(view, { title = "微信书城 · " .. view.store_keyword, items = visible,
+        widget = self:_library(view, { title = "微信书城 · " .. view.store_keyword, items = visible,
             subpage = "weread_store_results", mode = "grid", grid_columns = 4, grid_rows = 3, already_paginated = true,
             page = page, page_count = loaded_pages + (view.store_has_more and 1 or 0),
             on_prev = page > 1 and function() return turn(page - 1) end or nil,
@@ -617,9 +630,11 @@ function Presenter:_wereadStore(view)
             subtitle = view.store_loading and "正在搜索…" or view.store_error or view.store_notice,
             empty_text = view.store_loading and "正在加载书城书籍…" or "没有找到书籍，可换个关键词。",
             on_back = function() view:clearStore(); return self:_wereadStore(view) end })
+        return widget
     end
     local items = {}
     local function search(keyword)
+        if not current_store("weread_store_home") then return false end
         view:searchStore(keyword, function()
             if weread_page_active(self, view, "weread_store_results") then self:_wereadStore(view) end
         end)
@@ -628,6 +643,7 @@ function Presenter:_wereadStore(view)
     for _, ranking in ipairs(view.RANKINGS or {}) do
         items[#items + 1] = {text = ranking.label, enabled = view.client and type(view.client.category) == "function",
             callback = function()
+                if not current_store("weread_store_home") then return false end
                 view:categoryStore(ranking.id, ranking.label, function()
                     if weread_page_active(self, view, "weread_store_results") then self:_wereadStore(view) end
                 end)
@@ -638,8 +654,10 @@ function Presenter:_wereadStore(view)
         items[#items + 1] = { text = label, callback = function() return search(label) end }
     end
     local actions = { { text = "搜索书名", callback = function()
+        if not current_store("weread_store_home") then return false end
         local dialog
         local function accepted(value)
+            if not current_store("weread_store_home") then return false end
             if value == nil and dialog and type(dialog.getInputText) == "function" then value = dialog:getInputText() end
             if type(value) ~= "string" or value:match("^%s*$") then return self:_info("请输入书名", "微信书城") end
             if not self:_closeWidget(dialog) then return false end
@@ -650,9 +668,10 @@ function Presenter:_wereadStore(view)
                 { text = "确定", is_enter_default = true, callback = accepted } } } })
         return self:_showInput(dialog)
     end } }
-    return self:_library(view, { title = "微信书城", subpage = "weread_store_home",
+    widget = self:_library(view, { title = "微信书城", subpage = "weread_store_home",
         items = items, page_size = 10, actions = actions,
         on_back = function() return self:_weread(view) end })
+    return widget
 end
 
 function Presenter:_wereadBook(view, book, expected_account_id)
@@ -671,26 +690,32 @@ function Presenter:_wereadBook(view, book, expected_account_id)
     local item = { book = book, title = book.name, subtitle = book.author,
         intro = book.intro, cover_url = book.cover_url }
     local detail_page = "weread_book_detail:" .. book.remote_id
-    return self:_library(view, { title = "微信读书 · " .. book.name, subpage = detail_page,
+    local widget
+    local function current_detail()
+        if not widget or not weread_page_active(self, view, detail_page) or self.library_widget ~= widget then return false end
+        if not same_account() then return false end
+        return true
+    end
+    widget = self:_library(view, { title = "微信读书 · " .. book.name, subpage = detail_page,
         items = { item }, mode = "detail",grouped_actions=true,
         subtitle = "阅读进度：" .. tostring(math.floor(tonumber(book.progress_percent) or 0)) .. "%",
         actions = {
             {text='开始阅读',callback=function()
-                if not same_account() then return false end
+                if not current_detail() then return false end
                 return self:_startWeReadReading(view,book,account_id)
             end},
             view:hasBook(book) and {text='已在微信书架',enabled=false}
                 or {text='加入微信书架',callback=function()
-                    if not same_account() then return false end
+                    if not current_detail() then return false end
                     return view:addToShelf(book,function(added,err)
-                        if not weread_page_active(self, view, detail_page) then return end
+                        if not current_detail() then return end
                         if not added then return self:_info(err or '加入微信书架失败','微信读书') end
                         self:_wereadBook(view,book,account_id)
                         if err then return self:_info(err, '微信读书') end
                     end)
                 end},
             { text = "阅读评论", callback = function()
-                if not same_account() then return false end
+                if not current_detail() then return false end
                 return self:_wereadReviews(view, book)
             end },
         },
@@ -699,6 +724,7 @@ function Presenter:_wereadBook(view, book, expected_account_id)
             if view.store_keyword then return self:_wereadStore(view) end
             return self:_weread(view)
         end })
+    return widget
 end
 
 local function review_text(review)
