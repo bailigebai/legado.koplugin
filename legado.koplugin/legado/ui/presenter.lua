@@ -597,8 +597,9 @@ function Presenter:_wereadBook(view, book)
             view:hasBook(book) and {text='已在微信书架',enabled=false}
                 or {text='加入微信书架',callback=function()
                     return view:addToShelf(book,function(added,err)
+                        if not weread_page_active(self, view, detail_page) then return end
                         if not added then return self:_info(err or '加入微信书架失败','微信读书') end
-                        if weread_page_active(self, view, detail_page) then self:_wereadBook(view,book) end
+                        self:_wereadBook(view,book)
                         if err then return self:_info(err, '微信读书') end
                     end)
                 end},

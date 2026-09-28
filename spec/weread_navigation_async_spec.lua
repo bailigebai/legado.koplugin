@@ -2,6 +2,7 @@ require("library_screen_stub")
 local A = require("assertions")
 local Presenter = require("legado.ui.presenter")
 local View = require("legado.ui.weread")
+local Mapper = require("legado.lib.weread_mapper")
 local count = 0
 local function eq(expected, actual, message) count = count + 1; A.equal(expected, actual, message) end
 local shown, shelf_reply, review_reply, review_cancelled = {}, nil, nil, false
@@ -42,4 +43,25 @@ eq("微信读书 · 测试书", shown[#shown].title, "back leaves review loading
 eq(true, review_cancelled, "leaving reviews cancels the pending request")
 review_reply({reviews = {{review = {review = {bookId = "remote-1", content = "迟到评论"}}}}})
 eq("微信读书 · 测试书", shown[#shown].title, "late reviews do not reopen the review page")
+local add_reply
+client.addToShelf = function(_, _, callback)
+    add_reply = callback
+    return {cancel = function() end}
+end
+client.shelfSync = function(_, callback)
+    callback(nil, "network offline")
+    return {cancel = function() end}
+end
+presenter:_wereadBook(view, Mapper.book({bookId = "remote-2", title = "另一本书"}, "account"))
+action("加入微信书架").callback()
+shown[#shown].on_back()
+local shown_before_add = #shown
+add_reply({errCode = 0})
+eq(shown_before_add, #shown, "late addition warning does not open a message over the shelf")
+presenter:_wereadBook(view, Mapper.book({bookId = "remote-3", title = "第三本书"}, "account"))
+action("加入微信书架").callback()
+shown[#shown].on_back()
+shown_before_add = #shown
+add_reply(nil, "network offline")
+eq(shown_before_add, #shown, "late addition failure does not open a message over the shelf")
 return count
