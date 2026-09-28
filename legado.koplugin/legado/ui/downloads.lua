@@ -76,7 +76,11 @@ function Downloads:focused() return self.items[self.navigation:index()] end
 local function action(self, method, id)
     if not self.alive or type(self.manager[method]) ~= "function" then return false end
     local result, err = self.manager[method](self.manager, id)
-    if result then self:refresh() end
+    if result and method ~= "open" then
+        local items = self:refresh()
+        if type(self.on_refresh) == "function" then pcall(self.on_refresh, self, items) end
+        self:_scheduleRefresh()
+    end
     return result, err
 end
 

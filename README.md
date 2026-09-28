@@ -1,13 +1,13 @@
 # 不亦阅乎：KOReader 书源阅读插件
 
 
-升级无需重新激活：同一 Kindle 已成功激活后，覆盖更新插件代码即可，原短密钥和离线授权继续有效。请保留 KOReader 的用户数据和 settings 目录，不要删除 legado.json 或 legado-license.json；它们不在插件安装包中。最新安装包以 GitHub Releases 的最新版本为准。
+升级无需重新激活：同一 Kindle 已成功激活后，覆盖更新插件代码即可，原短密钥和离线授权继续有效。请保留 KOReader 的用户数据和 settings 目录，不要删除 legado.json 或 legado-license.json；它们不在插件安装包中。已发布的正式版以 GitHub Releases 为准；本仓库 `downloads/` 和开发交接目录另有尚未发布的开发安装包。
 
-[下载最新安装包](https://github.com/bailigebai/legado.koplugin/releases/latest) · [下载 v0.10.37 ZIP](https://github.com/bailigebai/legado.koplugin/releases/download/v0.10.37/legado.koplugin-v0.10.37-20260928.zip)
+[下载已发布的最新安装包](https://github.com/bailigebai/legado.koplugin/releases/latest)
 
 应用商店：刷新仓库列表，打开 `bailigebai/legado.koplugin`，选择“下载插件”并安装最新正式版，完成后重启 KOReader。
 
-## v0.10.37：统一书架、微信读书、AI 解释与缓存管理
+## v0.10.37 开发包：统一书架、微信读书、AI 解释与缓存管理
 
 书架首页显示最近阅读的大封面、简介和另外 4 本书，后续每页 12 本；顶部功能收拢为“找书、整理书架、书源与下载、更多”。书源书籍可在详情选择从第 1 章缓存到指定章节，也可缓存整本或导出 EPUB；下载管理显示任务范围及章节进度。
 

@@ -2179,12 +2179,22 @@ local function download_items(self, view)
         items[#items + 1] = { text = row.text, callback = function()
             if not view.alive then return false end
             local actions = {}
+            local action_menu
+            local function update(method)
+                local result, err = view[method](view, task.id)
+                self:_closeWidget(action_menu)
+                self:_downloads(view)
+                if not result then
+                    return self:_info("下载操作失败 · " .. safe_token(type(err) == "table" and err.code, "TASK_CHANGED"), "下载管理")
+                end
+                return result
+            end
             if task.status == "queued" or task.status == "running" or task.status == "cancelling" then
-                actions[#actions + 1] = { text = "取消下载", callback = function() return view:cancel(task.id) end }
+                actions[#actions + 1] = { text = "取消下载", callback = function() return update("cancel") end }
             elseif task.status == "failed" or task.status == "cancelled" then
-                actions[#actions + 1] = { text = "重试", callback = function() return view:retry(task.id) end }
+                actions[#actions + 1] = { text = "重试", callback = function() return update("retry") end }
             elseif task.status == "interrupted" then
-                actions[#actions + 1] = { text = "继续下载", callback = function() return view:resume(task.id) end }
+                actions[#actions + 1] = { text = "继续下载", callback = function() return update("resume") end }
             elseif task.status == "completed" and task.kind == "cache" then
                 actions[#actions + 1] = { text = "返回书架阅读", callback = function()
                     return self.app and self.app:openBookshelf() or false
@@ -2193,7 +2203,6 @@ local function download_items(self, view)
                 actions[#actions + 1] = { text = "打开 EPUB", callback = function() return view:open(task.id) end }
             end
             if #actions == 0 then actions[1] = { text = "暂无可用操作", enabled = false } end
-            local action_menu
             action_menu = construct(self.menu, { title = "下载操作", item_table = actions,
                 close_callback = function()
                     if not self:_closeWidget(action_menu) then return false end

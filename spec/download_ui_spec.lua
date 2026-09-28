@@ -215,4 +215,51 @@ do
     equal(scheduled_count, #scheduled, "dismissed download menu cannot renew its refresh timer")
 end
 
+do
+    local scheduled, refreshed = {}, 0
+    local task = { id = "restart", book = { name = "重新下载" }, status = "failed", completed = 0, total = 2 }
+    local manager = {
+        list = function() return { task } end,
+        retry = function()
+            task.status = "queued"
+            return true
+        end,
+    }
+    local scheduler = { scheduleIn = function(_, _, callback)
+        scheduled[#scheduled + 1] = callback
+    end }
+    local view = Downloads.new({ manager = manager, scheduler = scheduler,
+        on_refresh = function() refreshed = refreshed + 1 end })
+    equal(0, #scheduled, "failed-only list starts without a polling timer")
+    truthy(view:retry("restart"), "failed task can be retried")
+    equal(1, refreshed, "retry immediately refreshes the visible progress list")
+    equal(1, #scheduled, "retry starts progress polling for a previously idle list")
+    task.status, task.completed = "running", 1
+    scheduled[1]()
+    truthy(view.items[1].text:find("1/2", 1, true), "restarted polling follows retry progress")
+    view:close()
+end
+
+do
+    local shown, closed = {}, {}
+    local task = { id = "popup-retry", book = { name = "待重试" }, status = "failed" }
+    local manager = { list = function() return { task } end,
+        retry = function() task.status = "queued"; return true end }
+    local presenter = Presenter.new({ menu = { new = function(_, options) return options end },
+        ui_manager = {
+            show = function(_, widget) shown[#shown + 1] = widget end,
+            close = function(_, widget) closed[widget] = true end,
+        } })
+    local view = Downloads.new({ manager = manager })
+    local list = presenter:show(view)
+    local popup = list.item_table[1].callback()
+    equal("重试", popup.item_table[1].text, "failed task offers retry")
+    popup.item_table[1].callback()
+    truthy(closed[popup], "running retry closes the stale action popup")
+    truthy(shown[#shown].item_table[1].text:find("等待中", 1, true),
+        "retry returns to a list with the new task status")
+    shown[#shown].close_callback()
+    equal(false, view.alive, "closing the refreshed download list releases its view")
+end
+
 return count
