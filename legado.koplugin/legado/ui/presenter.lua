@@ -767,6 +767,7 @@ function Presenter:_shelf(view, page)
     local header_action = (model.load_error or model.progress_error) and {text='重新读取',callback=function() return self:_shelf(view,model.page) end}
         or {text=local_mode and '书源书架' or '本地书架',callback=function()
             view.source_mode=local_mode and 'sources' or 'local'; view:setFilter('all',nil)
+            view.batch_select, view.selected_books = false, {}
             return self:_shelf(view,1)
         end}
     local empty_text

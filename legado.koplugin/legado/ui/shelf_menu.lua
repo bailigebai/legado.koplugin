@@ -34,26 +34,6 @@ local function category_menu(presenter, view, page)
         on_back = function() return ShelfMenu.open(presenter, view, page, "manage") end})
 end
 
-local function batch_books(view)
-    local selected, copies = view.selected_books or {}, {}
-    for _, book in ipairs(view.storage and view.storage.listShelf and view.storage:listShelf() or {}) do
-        if selected[book.id] then
-            local copy = {}
-            for key, value in pairs(book) do
-                if key == "custom_categories" and type(value) == "table" then
-                    local categories = {}
-                    for index, name in ipairs(value) do categories[index] = name end
-                    copy[key] = categories
-                else
-                    copy[key] = value
-                end
-            end
-            copies[#copies + 1] = copy
-        end
-    end
-    return copies
-end
-
 local function manage_items(presenter, view, page)
     local items = {}
     for _, entry in ipairs({{"全部", "all"}, {"在读", "reading"}, {"未读", "unread"}}) do
@@ -68,7 +48,8 @@ local function manage_items(presenter, view, page)
     end}
     if view.batch_select then
         items[#items + 1] = {text = "批量分类", callback = function()
-            local books = batch_books(view)
+            local books = view:selectedBooks()
+            if not books then return presenter:_info("书架读取失败，请重试。", "批量分类") end
             if #books == 0 then return presenter:_info("请先选择要分类的书籍。", "批量分类") end
             return presenter:_editCategories(return_to_shelf(presenter, view, page), nil, books)
         end}

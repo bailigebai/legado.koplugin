@@ -33,6 +33,43 @@ function Shelf:_localBooks()
     return self.local_books
 end
 
+function Shelf:_booksInMode()
+    local books, load_error = {}, nil
+    if self.source_mode ~= "local" then
+        local saved, err = self.storage:listShelf()
+        if type(saved) ~= "table" then load_error = err or { code = "STORAGE_ERROR" }
+        else
+            for _, book in ipairs(saved) do
+                if not book.is_local then books[#books + 1] = book end
+            end
+        end
+    end
+    if self.source_mode == "local" or self.source_mode == "mixed" then
+        for _, book in ipairs(self:_localBooks()) do books[#books + 1] = book end
+    end
+    return books, load_error
+end
+
+function Shelf:selectedBooks()
+    local books, err = self:_booksInMode()
+    if err then return nil, err end
+    local copies = {}
+    for _, book in ipairs(books) do
+        if self.selected_books and self.selected_books[book.id] then
+            local copy = {}
+            for key, value in pairs(book) do
+                if key == "custom_categories" and type(value) == "table" then
+                    local categories = {}
+                    for index, name in ipairs(value) do categories[index] = name end
+                    copy[key] = categories
+                else copy[key] = value end
+            end
+            copies[#copies + 1] = copy
+        end
+    end
+    return copies
+end
+
 function Shelf:add(book)
     return self.storage:createBook(book)
 end
@@ -74,18 +111,7 @@ function Shelf:page(page, mode, page_size_override)
     local books, category_counts = {}, {}
     local read_at, read_state, original_order = {}, {}, {}
     local counts = { all = 0, reading = 0, unread = 0, unknown = 0 }
-    local all_books = {}
-    local load_error
-    if self.source_mode ~= "local" then
-        local saved, err = self.storage:listShelf()
-        if type(saved) ~= "table" then load_error = err or { code = "STORAGE_ERROR" }
-        else
-            for _, book in ipairs(saved) do
-                if not book.is_local then all_books[#all_books + 1] = book end
-            end
-        end
-    end
-    if self.source_mode == "local" or self.source_mode == "mixed" then for _, book in ipairs(self:_localBooks()) do all_books[#all_books + 1] = book end end
+    local all_books, load_error = self:_booksInMode()
     local eligible = {}
     for index, book in ipairs(all_books) do
         local included = self.category == nil
