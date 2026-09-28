@@ -30,7 +30,7 @@ end
 
 local function query(values)
     local parts = {}
-    for _, key in ipairs({ "appid", "noncestr", "timestamp", "scope", "signature", "f", "uuid" }) do
+    for _, key in ipairs({ "appid", "noncestr", "timestamp", "scope", "signature", "f", "uuid", "last" }) do
         if values[key] ~= nil then parts[#parts + 1] = Url(key) .. "=" .. Url(tostring(values[key])) end
     end
     return table.concat(parts, "&")
@@ -132,18 +132,25 @@ function Auth:pollLogin(uuid, callback)
     if type(uuid) ~= "string" or uuid == "" or #uuid > 256 then
         callback(nil, "error", "扫码标识无效"); return nil
     end
+    if self.poll_uuid ~= uuid then self.poll_uuid, self.poll_last = uuid, nil end
     return self.requests:execute({ url = "https://long.open.weixin.qq.com/connect/l/qrconnect?"
-        .. query({ f = "json", uuid = uuid }), method = "GET", source_id = "weread", timeout = 20,
+        .. query({ f = "json", uuid = uuid, last = self.poll_last }), method = "GET", source_id = "weread", timeout = 20,
         headers = { ["User-Agent"] = "Mozilla/5.0" }, priority = "foreground" }, function(response, err)
+        if self.poll_uuid ~= uuid then return end
         if err and err.code == "TIMEOUT" then return callback(nil, "waiting") end
         local data = success(response, err) and decode(response) or nil
         local code = data and tonumber(data.wx_errcode)
         if code == 405 and type(data.wx_code) == "string" and data.wx_code ~= "" then
+            self.poll_uuid, self.poll_last = nil, nil
             callback(data.wx_code, "confirmed")
-        elseif code == 404 then callback(nil, "scanned")
-        elseif code == 408 then callback(nil, "waiting")
-        elseif code == 403 then callback(nil, "denied", "已在微信中拒绝登录")
-        else callback(nil, "expired", "二维码已失效，请重新登录") end
+        elseif code == 404 or code == 408 then
+            self.poll_last = code
+            callback(nil, code == 404 and "scanned" or "waiting")
+        else
+            self.poll_uuid, self.poll_last = nil, nil
+            if code == 403 then callback(nil, "denied", "已在微信中拒绝登录")
+            else callback(nil, "expired", "二维码已失效，请重新登录") end
+        end
     end)
 end
 
