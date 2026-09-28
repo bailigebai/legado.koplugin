@@ -2,13 +2,14 @@ require("library_screen_stub")
 local A = require("assertions")
 local App = require("legado.ui.app")
 local Presenter = require("legado.ui.presenter")
+local SourceManager = require("legado.ui.source_manager")
 local count = 0
 local function eq(expected, actual, reason)
     count = count + 1
     A.equal(expected, actual, reason)
 end
 local books = {}
-for index = 1, 15 do books[index] = { id = "b" .. index, name = "书" .. index } end
+for index = 1, 15 do books[index] = { id = "b" .. index, source_id = "source-1", name = "书" .. index } end
 local storage = {
     listShelf = function() return books end,
     getProgress = function(_, id) if id == "b1" then return {updated_at = 1} end end,
@@ -53,6 +54,10 @@ eq(1, last().page, "filter resets the shelf page")
 eq(1, #last().items, "reading filter is applied")
 open_group("整理书架")
 item(last().items, "全部").callback()
+open_group("整理书架")
+item(last().items, "未读").callback()
+last().on_next()
+eq(2, last().page, "source and download checks start on the second shelf page")
 
 open_group("书源与下载")
 eq("shelf_sources", last().subpage, "source and cache download share one group")
@@ -60,6 +65,33 @@ eq("function", type(item(last().items, "书源管理").callback), "source manage
 eq("function", type(item(last().items, "缓存书籍").callback), "cache creation is reachable beside source management")
 eq("function", type(item(last().items, "下载管理").callback), "downloads are reachable")
 last():onClose()
+eq(2, last().page, "source and download group closes to the original shelf page")
+
+app.source_manager = SourceManager.new{storage = storage}
+app.download_manager = {list = function() return {} end, isCached = function() return false end}
+presenter.menu = {new = function(_, options) return options end}
+
+open_group("书源与下载")
+item(last().items, "书源管理").callback()
+eq("书源管理", last().title, "source management opens from the second shelf page")
+last():onClose()
+eq(2, last().page, "source management returns to the second shelf page")
+eq("b7", last().items[1].book.id, "source management preserves the unread filter")
+
+open_group("书源与下载")
+item(last().items, "下载管理").callback()
+eq("下载管理", last().title, "download management opens from the second shelf page")
+last().close_callback()
+eq(2, last().page, "download management returns to the second shelf page")
+eq("b7", last().items[1].book.id, "download management preserves the unread filter")
+
+open_group("书源与下载")
+item(last().items, "缓存书籍").callback()
+eq("选择要缓存的书籍", last().title, "cache shortcut opens the book picker from the second page")
+eq("书1", last().item_table[1].text, "cache picker lists source books")
+last().close_callback()
+eq(2, last().page, "cache picker returns to the second shelf page")
+eq("b7", last().items[1].book.id, "cache picker preserves the unread filter")
 
 open_group("更多")
 local review_count = 0
