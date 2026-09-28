@@ -21,9 +21,9 @@ reader.highlight={selected_text={text='庄周梦蝶'},onClose=function() end,
 reader.menu=ReaderMenu:new{ui=reader}
 local Adapter=require('legado.lib.koreader_reader_ui')
 local toc_calls,toggle_calls,ai_text=0,0,nil
-local review_calls, site_calls, chrome_calls, receipt_calls,statistics_calls = 0, 0, 0, 0,0
+local site_calls, chrome_calls, receipt_calls,statistics_calls = 0, 0, 0,0
 local adapter=Adapter.new{ReaderUI={showReader=function(_,_,_,_,_,ready) ready(reader) end},on_toc=function() toc_calls=toc_calls+1 end,
-    on_review=function() review_calls=review_calls+1 end,on_receipt=function() receipt_calls=receipt_calls+1 end,on_source_sites=function() site_calls=site_calls+1 end,
+    on_receipt=function() receipt_calls=receipt_calls+1 end,on_source_sites=function() site_calls=site_calls+1 end,
     on_chrome_settings=function() chrome_calls=chrome_calls+1 end,on_statistics=function() statistics_calls=statistics_calls+1 end,
     on_toggle_reader=function() toggle_calls=toggle_calls+1;return true end,
     on_ai=function(text) ai_text=text;return true end}
@@ -33,21 +33,22 @@ reader.highlight['11_legado_ai'](reader.highlight).callback()
 eq('庄周梦蝶',ai_text,'native selection is delivered to AI')
 reader.menu:setUpdateItemTable()
 eq(true,reader.menu.tab_item_table[1].legado_reader,'unmodified native menu sorter exposes toolbar first')
-eq(9,#reader.menu.tab_item_table[1],'native tab includes both reader mode and existing tools')
-eq('无感阅读：启用',reader.menu.tab_item_table[1][9].text,'mode toggle is present in the native top tab')
-reader.menu.tab_item_table[1][9].callback()
-eq(1,toggle_calls,'native top tab invokes the real mode-switch callback')
+for _, entry in ipairs(reader.menu.tab_item_table[1]) do
+    eq(false, entry.text == '阅读回顾', 'native reading toolbar does not repeat the shelf review entry')
+end
+eq(8,#reader.menu.tab_item_table[1],'native tab includes reader mode and task-specific tools')
+eq('无感阅读：启用',reader.menu.tab_item_table[1][8].text,'mode toggle is present in the native top tab')
 reader.menu.tab_item_table[1][8].callback()
+eq(1,toggle_calls,'native top tab invokes the real mode-switch callback')
+reader.menu.tab_item_table[1][7].callback()
 eq(1,statistics_calls,'native toolbar statistics button invokes its real callback')
 reader.menu.tab_item_table[1][1].callback()
 eq(1,toc_calls,'native tab opens web chapter catalog')
-reader.menu.tab_item_table[1][4].callback()
-eq(1,review_calls,'native tab opens reading review')
-reader.menu.tab_item_table[1][7].callback()
-eq(1,receipt_calls,'native tab opens current book receipt')
-reader.menu.tab_item_table[1][5].callback()
-eq(1,site_calls,'native tab opens site source picker')
 reader.menu.tab_item_table[1][6].callback()
+eq(1,receipt_calls,'native tab opens current book receipt')
+reader.menu.tab_item_table[1][4].callback()
+eq(1,site_calls,'native tab opens site source picker')
+reader.menu.tab_item_table[1][5].callback()
 eq(1,chrome_calls,'native tab opens header/footer settings directly')
 local tabs=#reader.menu.tab_item_table
 ReaderMenu.init(reader.menu) -- native sorting consumes menu_items; rebuild from initialized providers

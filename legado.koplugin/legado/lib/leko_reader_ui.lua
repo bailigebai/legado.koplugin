@@ -233,7 +233,7 @@ function Adapter.open(owner,payload,callbacks)
     end
     if callbacks.refresh then core.refresh=function(view) return view:requestChapter(view.index,false,true) end end
     for action,handler in pairs{toc='on_toc',settings='on_settings',bookshelf='on_exit',receipt='on_receipt',
-        review='on_review',sources='on_source_sites',statistics='on_statistics',toggle_reader='on_toggle_reader',
+        sources='on_source_sites',statistics='on_statistics',toggle_reader='on_toggle_reader',
         book_info='on_book_info',add_to_shelf='on_add_to_shelf'} do
         local fn=owner[handler]
         if type(fn)=='function' then core[action]=function() if proxy.closed or not accepted then return false end;return fn(proxy) end end

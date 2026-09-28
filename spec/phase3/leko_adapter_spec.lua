@@ -10,7 +10,7 @@ local progress={book_id='book',chapter_uid='c1',fraction=.2,immersive_style={bod
     immersive_position={chapter_uid='c1',content_checksum=require('legado.lib.identity').hash(body),paragraph=1,char=31}}
 local old={closed=false};local owner={settings={get=function() end},ui_manager=h.ui,current_document=old}
 local counts={ready=0,closed=0,flush=0,pause=0,resume=0,failure=0};local calls,events={},{}
-for _,name in ipairs{'toc','settings','exit','receipt','review','source_sites','statistics','toggle_reader','book_info','add_to_shelf'} do
+for _,name in ipairs{'toc','settings','exit','receipt','source_sites','statistics','toggle_reader','book_info','add_to_shelf'} do
     owner['on_'..name]=function(proxy) calls[#calls+1]={name=name,proxy=proxy};return true end
 end
 local saved_style,requested,refresh_request,refused_style,refused_pause,refused_flush
@@ -71,7 +71,7 @@ eq(32,document:getReaderSettings().body_font_size,'save failure keeps accepted s
 assert(document:setProgressFraction(.4));eq(.4,document:getProgressFraction(),'fraction API updates the independent cursor')
 assert(document:pauseReading());assert(document:pauseReading());eq(1,counts.pause,'pause callback is idempotent')
 assert(document:resumeReading());eq(1,counts.resume,'resume reaches session lifecycle')
-for action,expected in pairs{toc='toc',settings='settings',bookshelf='exit',receipt='receipt',review='review',sources='source_sites',
+for action,expected in pairs{toc='toc',settings='settings',bookshelf='exit',receipt='receipt',sources='source_sites',
     statistics='statistics',toggle_reader='toggle_reader',book_info='book_info',add_to_shelf='add_to_shelf'} do
     document.widget:runAction(action)
     eq(expected,calls[#calls].name,'visible action forwards to its owner callback')
@@ -79,7 +79,10 @@ for action,expected in pairs{toc='toc',settings='settings',bookshelf='exit',rece
     document:resumeReading()
 end
 document.widget:showMenu();local found=false
-for _,row in ipairs(document.widget.menu_dialog.buttons) do for _,button in ipairs(row) do if button.text=='阅读统计' then found=true end end end
+for _,row in ipairs(document.widget.menu_dialog.buttons) do for _,button in ipairs(row) do
+    if button.text=='阅读统计' then found=true end
+    eq(false,button.text=='阅读回顾','independent reader menu does not repeat the shelf review entry')
+end end
 eq(true,found,'statistics owner action is reachable in the visible menu')
 document.widget:_closeDialog('menu_dialog');document:resumeReading()
 refused_pause=true;local before=#calls;local acted=document.widget:runAction('toc')

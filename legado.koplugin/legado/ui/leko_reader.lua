@@ -768,7 +768,7 @@ function View:showMenu()
     local buttons={}
     for _,row in ipairs{{{'回到书架','bookshelf'},{'关闭无感阅读','toggle_reader'}},{{'章节目录','toc'},{'书籍详情','book_info'}},
         {{'上一章','previous_chapter'},{'下一章','next_chapter'}},{{'阅读设置','layout'},{'重新获取本章','refresh'}},
-        {{'插件设置','settings'},{'当前书籍小票','receipt'}},{{'阅读回顾','review'},{'切换站点书源','sources'}},{{'阅读统计','statistics'}}} do
+        {{'插件设置','settings'},{'当前书籍小票','receipt'}},{{'切换站点书源','sources'},{'阅读统计','statistics'}}} do
         local cells={}
         for _,entry in ipairs(row) do
             if self.callbacks[entry[2]] or entry[2]=='layout' or entry[2]=='previous_chapter' or entry[2]=='next_chapter' then

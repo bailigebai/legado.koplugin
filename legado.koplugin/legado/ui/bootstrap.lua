@@ -223,7 +223,6 @@ function Bootstrap.build(plugin, options)
         reader_session.ui.on_sources = function(doc) return app:openReaderSources(reader_session.active,doc) end
         reader_session.ui.on_book_search = function(doc) return app:openReaderBookSearch(reader_session.active,doc) end
         reader_session.ui.on_source_sites = function(doc) return app:openReaderSourceSites(reader_session.active,doc) end
-        reader_session.ui.on_review = function(doc) return app:openReadingReview(nil,doc) end
         reader_session.ui.on_receipt = function(doc) return app:openCurrentReceipt(doc) end
         reader_session.ui.on_statistics = function(doc) return app:openNativeStatistics(doc) end
         reader_session.ui.on_toggle_reader = function(doc) return app:toggleImmersiveReader(doc) end

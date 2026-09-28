@@ -47,7 +47,6 @@ end
 host.showReader=function(self,path,_,_,_,ready) h.ui:scheduleIn(0,function() self:doShowReader(path,ready) end) end
 local adapter=require('legado.lib.koreader_reader_ui').new{ReaderUI=host,
     on_exit=function() app:openBookshelf() end,
-    on_review=function(doc) return app:openReadingReview(nil,doc) end,
     on_receipt=function(doc) return app:openCurrentReceipt(doc) end}
 app.reader_session={ui=adapter,close=function() return true end}
 app:openBookshelf();watch=true
@@ -58,11 +57,7 @@ end)
 eq('reading_progress',presenter.library_view.kind,'plugin preparation surface exists before native launch')
 tick()
 eq(reader,top(),'ready hides preparation only after the reader is shown')
-reader.menu.tab_item_table[1][4].callback()
-eq('reading_review',presenter.library_view.kind,'toolbar opens review over the same reader')
-presenter.library_widget:onClose();tick()
-eq(reader,top(),'review Back restores the same reader')
-reader.menu.tab_item_table[1][7].callback()
+reader.menu.tab_item_table[1][6].callback()
 local ticket=presenter.receipt_widget
 eq(ticket,top(),'current receipt floats above the reader')
 eq(false,ticket.covers_fullscreen,'receipt leaves surrounding book visible')
@@ -96,7 +91,7 @@ local native={};local chunk=assert(loadstring(code:sub(start,stop-1)));setfenv(c
 native.onHome(reader);tick()
 eq(1,closes,'native return closes the document only once')
 eq('bookshelf',presenter.library_view.kind,'native file-manager return reaches Legado shelf')
-eq(0,exposed,'reading, review, receipt and return never expose cache FileManager')
+eq(0,exposed,'reading, receipt and return never expose cache FileManager')
 eq(nil,adapter.current_document,'return releases the current document')
 presenter.library_widget:onClose();tick()
 watch=false;top().ok_callback()

@@ -129,3 +129,12 @@
 - [x] 普通原始正文直接交给分片解码；仅当响应看起来包含 `errCode` / `errcode` 时解析，以保留登录续期与人机验证提示。
 - [x] 定向规格验证正文零次额外解析、原始请求登录失效后仍可刷新并返回正文。
 - [x] 重建开发 ZIP、同步交接目录并核对校验值；真实设备跨章耗时仍需在线样本验证。
+
+### Task 13: 阅读回顾入口收敛
+
+**Files:** `legado.koplugin/legado/lib/koreader_reader_ui.lua`、`legado.koplugin/legado/lib/leko_reader_ui.lua`、`legado.koplugin/legado/ui/leko_reader.lua`、`legado.koplugin/legado/ui/bootstrap.lua`、原生与独立阅读菜单规格。
+
+- [x] 写失败规格：两种阅读菜单均不出现“阅读回顾”，书架“更多”仍提供唯一入口。
+- [x] 移除阅读菜单的重复按钮及不再使用的回调连接，保留阅读进度、小票和统计功能。
+- [x] 定向菜单/阅读返回规格通过；全量 Lua 规格 175 通过、1 项缺少外部书源样本。
+- [x] 重建并核验 141 条目安装包、同步交接目录中的 ZIP 与变更源码。
