@@ -110,7 +110,7 @@ function Mapper.progress(wire,chapters)
     for index,chapter in ipairs(chapters or {}) do
         if chapter.remote_uid==uid then return index,fraction end
     end
-    return 1,0
+    return nil
 end
 
 return Mapper

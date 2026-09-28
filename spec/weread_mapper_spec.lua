@@ -21,4 +21,11 @@ eq(false, books[1].id == Mapper.book({ bookId = "a", title = "另一本" }, "oth
     "different accounts cannot share local reading identity")
 eq("c", Mapper.shelf({ recentBooks = {{ bookId = "c", title = "第三本" }} })[1].remote_id,
     "a shelf with only recentBooks still loads")
+local chapters = {{remote_uid = "chapter-a"}, {remote_uid = "chapter-b"}}
+eq(nil, Mapper.progress({}, chapters), "empty cloud progress does not invent a first-chapter position")
+eq(nil, Mapper.progress({book = {chapterUid = "missing"}}, chapters),
+    "unknown cloud chapter is not stored as a false first-chapter position")
+local index, fraction = Mapper.progress({book = {chapterUid = "chapter-b", chapterOffset = 2500}}, chapters)
+eq(2, index, "known cloud chapter maps to the local catalog")
+eq(0.25, fraction, "known cloud position retains its chapter offset")
 return count

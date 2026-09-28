@@ -17,9 +17,10 @@ local service={getChapters=function(_,source,target,callback)
     eq('weread',source.id,'WeRead opens with its own virtual source')
     callback({chapter});return {cancel=function() end}
 end}
+local cloud_progress={book={chapterUid='remote-chapter',chapterOffset=4500}}
 local client={getProgress=function(_,remote_id,callback)
     eq('remote-1',remote_id,'historical progress is requested for the selected remote book')
-    callback({book={chapterUid='remote-chapter',chapterOffset=4500}})
+    callback(cloud_progress)
     return {cancel=function() end}
 end}
 local app=App.new{storage=storage,reader_session=session,weread_service=service,weread_client=client}
@@ -29,4 +30,9 @@ eq('chapter-local',values.saved.chapter_uid,'cloud chapter maps to stable local 
 eq(0.45,values.saved.fraction,'cloud position is restored locally')
 eq(true,values.catalog[3].complete,'WeRead catalog is stored as complete')
 eq('native',opened.backend,'WeRead reader returns the native document')
+cloud_progress={book={}}
+values.saved=nil
+app:startWeReadReading(book,function(document) opened=document end)
+eq(nil,values.saved,'empty cloud progress is not stored as a fabricated reading record')
+eq('native',opened.backend,'a book without cloud history still opens from the beginning')
 return count

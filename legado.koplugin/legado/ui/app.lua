@@ -340,10 +340,12 @@ function App:startWeReadReading(book,callback)
         stage(function(done) return self.weread_client:getProgress(book.remote_id,done) end,function(wire)
             if wire then
                 local index,fraction=WeReadMapper.progress(wire,chapters)
-                local chapter=chapters[index]
-                local saved,save_error=self.storage:putProgress({book_id=book.id,source_id='weread',chapter_uid=chapter.uid,
-                    chapter_index=index,fraction=fraction,updated_at=os.time()})
-                if not saved then return deliver(nil,save_error) end
+                if index then
+                    local chapter=chapters[index]
+                    local saved,save_error=self.storage:putProgress({book_id=book.id,source_id='weread',chapter_uid=chapter.uid,
+                        chapter_index=index,fraction=fraction,updated_at=os.time()})
+                    if not saved then return deliver(nil,save_error) end
+                end
             end
             open(chapters)
         end)
