@@ -21,8 +21,10 @@ function SourceManager.new(options)
 end
 
 function SourceManager:list()
+    local saved, err = self.storage:listSources()
+    if type(saved) ~= "table" then return nil, err or { code = Errors.STORAGE_ERROR } end
     local sources = {}
-    for _, source in ipairs(self.storage:listSources() or {}) do
+    for _, source in ipairs(saved) do
         sources[#sources + 1] = source
     end
     table.sort(sources, function(left, right)
@@ -43,7 +45,11 @@ function SourceManager:bookCount(source_id)
 end
 
 function SourceManager:viewModel()
-    local sources = self:list()
+    local sources, load_error = self:list()
+    if not sources then
+        return { kind = "source_manager", sources = {}, load_error = load_error,
+            empty_text = "书源读取失败" }
+    end
     local counts = {}
     for _, book in ipairs(self.storage:listShelf() or {}) do
         if book.source_id then counts[book.source_id] = (counts[book.source_id] or 0) + 1 end

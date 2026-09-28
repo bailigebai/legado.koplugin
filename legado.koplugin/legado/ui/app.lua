@@ -214,12 +214,14 @@ function App:openSources(back)
 end
 function App:openDiscovery(back)
     if not self.service or not self.storage then return self:_present({ title = "发现", error = "书源服务尚未初始化", _back = back }) end
+    local listed, err = self.storage:listSources()
+    local read_error = type(listed) ~= "table" and (err or { code = "STORAGE_ERROR" }) or nil
     local sources = {}
-    for _, source in ipairs(self.storage:listSources() or {}) do
+    for _, source in ipairs(type(listed) == "table" and listed or {}) do
         sources[#sources + 1] = source
     end
     return self:_present({ kind = "discovery", service = self.service, sources = sources, _back = back,
-        empty_text = #sources == 0 and "请先导入书源" or nil })
+        read_error = read_error, empty_text = #sources == 0 and not read_error and "请先导入书源" or nil })
 end
 function App:openReaderSourceSites(state, document, detail)
     local book=detail and detail.book or state and state.book

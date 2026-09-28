@@ -896,8 +896,14 @@ function Presenter:_discovery(view)
                 callback=function() return self:_categories(view,source) end}
         end
     end
-    return self:_library(view,{title="发现",subtitle="站点 → 分类 → 图书",items=items,
-        empty_text=view.empty_text or "暂无启用的站点，请到书源管理导入或启用书源。"})
+    local error_code = view.read_error and safe_token(type(view.read_error) == "table" and view.read_error.code, "STORAGE_ERROR")
+    local actions = error_code and {{text="重新读取书源",callback=function()
+        if not self.controllers[view] or not self.app then return false end
+        return self.app:openDiscovery(view._back)
+    end}} or {}
+    return self:_library(view,{title="发现",subtitle=error_code and ("书源读取失败 · "..error_code) or "站点 → 分类 → 图书",
+        items=items,actions=actions,empty_text=error_code and ("书源读取失败 · "..error_code)
+            or view.empty_text or "暂无启用的站点，请到书源管理导入或启用书源。"})
 end
 
 local function import_summary(report, err)
@@ -915,8 +921,21 @@ local function import_summary(report, err)
 end
 
 function Presenter:_sources(view)
-    local model = type(view.viewModel) == "function" and view:viewModel() or { sources = view:list() }
+    local model
+    if type(view.viewModel) == "function" then model = view:viewModel()
+    else
+        local sources, err = view:list()
+        model = { sources = sources, load_error = type(sources) ~= "table" and (err or {code="STORAGE_ERROR"}) or nil }
+    end
     local items, imports = {}, {}
+    local rendered
+    if model.load_error then
+        items[#items + 1] = { text = "书源读取失败 · " .. safe_token(type(model.load_error) == "table" and model.load_error.code, "STORAGE_ERROR"), enabled = false }
+        items[#items + 1] = { text = "重新读取书源", callback = function()
+            if view.alive == false or not self.controllers[view] or self.view_widgets[view] ~= rendered then return false end
+            return self:_sources(view)
+        end }
+    end
     for _, source in ipairs(model.sources or {}) do
         local status = source.enabled == false and "已停用" or "已启用"
         local group = tostring(source.bookSourceGroup or "")
@@ -989,8 +1008,11 @@ function Presenter:_sources(view)
             end)
         end)
     end }
-    local subtitle = "已导入 " .. tostring(#(model.sources or {})) .. " 个书源"
-    return self:_library(view, { title = "书源管理", subtitle = subtitle, items = items, actions = imports })
+    local subtitle = model.load_error and ("书源读取失败 · " .. safe_token(type(model.load_error) == "table" and model.load_error.code, "STORAGE_ERROR"))
+        or ("已导入 " .. tostring(#(model.sources or {})) .. " 个书源")
+    rendered = self:_library(view, { title = "书源管理", subtitle = subtitle, items = items,
+        actions = model.load_error and {} or imports })
+    return rendered
 end
 
 local function diagnostic_report_text(report)
