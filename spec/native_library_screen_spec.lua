@@ -247,6 +247,29 @@ local replaced = LibraryScreen.new{title="替换",items=books(1),cover_loader=lo
 truthy(replaced:closeForReplacement(), "replacement closes the native widget")
 equal(1, back, "replacement does not invoke controller callbacks")
 
+local Presenter = require("legado.ui.presenter")
+local WeRead = require("legado.ui.weread")
+local login_requests = 0
+local auth = {
+    hasSession = no,
+    beginLogin = function()
+        login_requests = login_requests + 1
+        return { cancel = noop }
+    end,
+}
+local presenter = Presenter.new{ui_manager=ui}
+local weread = WeRead.new{auth=auth}
+local weread_screen = presenter:_weread(weread)
+local login_button
+for _, row in ipairs(weread_screen.layout) do
+    for _, button in ipairs(row) do
+        if button.text == "微信扫码登录" then login_button = button end
+    end
+end
+truthy(login_button, "native WeRead shelf exposes the scan button")
+login_button.callback()
+equal(1, login_requests, "tapping scan starts a login request on the native screen")
+
 -- Repeat the sizing contract at another common portrait resolution.
 dimensions.w, dimensions.h = 758, 1024
 local kindle = LibraryScreen.new{title="Kindle",items=books(6),mode="grid",navigation={{text="书架",callback=noop}}}

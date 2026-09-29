@@ -422,6 +422,7 @@ function LibraryScreen.new(options)
     local widget = Root:new{ layout = layout, background }
     if detail_intro then detail_intro.dialog = widget end
     widget.kind, widget.items, widget.options, widget.cells = "library_screen", items, options, cells
+    widget.page = options.page or 1
     widget.covers_fullscreen=true
     widget.header, widget.category_buttons, widget.footer_rows, widget.alive = header, category_buttons, footer_rows, true
     widget.back_button, widget.empty_widget = back_button, empty_widget
