@@ -11,13 +11,7 @@ local Json = require("legado.lib.json_codec")
 local Mapper = require("legado.lib.weread_mapper")
 local SAVE_WARNING = "微信书架已更新，但本地保存失败；重启后可能恢复上次书架"
 local SYNC_WARNING = "已加入微信书架，但完整书架同步失败；显示本地记录"
-
-local function read_time(value)
-    value=tonumber(value) or 0
-    if value>=1e14 then value=value/1000000
-    elseif value>=1e11 then value=value/1000 end
-    return math.max(0,value)
-end
+local READ_TIME_SCHEMA = 2
 
 local function load_books(fs, path, account_id)
     if not fs or not path or not account_id then return {} end
@@ -30,6 +24,7 @@ local function load_books(fs, path, account_id)
     for _, book in ipairs(value.books) do
         if type(book) ~= "table" or type(book.id) ~= "string" or type(book.remote_id) ~= "string"
             or book.source_id ~= "weread" or type(book.name) ~= "string" then return {} end
+        if value.read_time_schema ~= READ_TIME_SCHEMA then book.read_at = 0 end
         books[#books + 1] = book
     end
     return books
@@ -76,8 +71,6 @@ function WeRead:page(page)
             end
         end
     end
-    local latest_remote=0
-    for _,book in ipairs(self.books) do latest_remote=math.max(latest_remote,read_time(book.read_at)) end
     local ordered={}
     for index,book in ipairs(self.books) do
         local local_progress=progress_by_id[book.id]
@@ -90,9 +83,9 @@ function WeRead:page(page)
                 display.progress_percent=math.floor(math.max(0,math.min(1,(chapter-1+fraction)/count))*100)
             end
         end
-        local local_time=read_time(local_progress and local_progress.updated_at)
+        local local_time=Mapper.readTime(local_progress and local_progress.updated_at)
         ordered[#ordered+1]={book=display,order=index,
-            time=local_time>latest_remote and local_time or 0}
+            time=math.max(Mapper.readTime(book.read_at),local_time)}
     end
     table.sort(ordered,function(a,b)
         if a.time==b.time then return a.order<b.order end
@@ -139,7 +132,8 @@ function WeRead:sync(callback)
         end
         self.books = Mapper.shelf(wire, self.account_id)
         if self.fs and self.path then
-            local encoded = Json.encode({ account_id = self.account_id, books = self.books })
+            local encoded = Json.encode({ account_id = self.account_id, books = self.books,
+                read_time_schema = READ_TIME_SCHEMA })
             local saved = self.fs:atomicWrite(self.path, encoded)
             if not saved then
                 self.status = SAVE_WARNING
@@ -190,7 +184,8 @@ function WeRead:addToShelf(book, callback)
                 self.books[#self.books + 1] = book
                 if self.fs and self.path then
                     local saved = self.fs:atomicWrite(self.path,
-                        Json.encode({ account_id = self.account_id, books = self.books }))
+                        Json.encode({ account_id = self.account_id, books = self.books,
+                            read_time_schema = READ_TIME_SCHEMA }))
                     if not saved then self.status, warning = SAVE_WARNING, SAVE_WARNING end
                     if saved and sync_error then self.status, warning = SYNC_WARNING, SYNC_WARNING end
                 end

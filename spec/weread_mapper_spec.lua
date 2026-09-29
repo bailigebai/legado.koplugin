@@ -16,6 +16,36 @@ eq("a", books[1].remote_id, "stable remote id remains available")
 eq("第一本", books[1].name, "remote title is mapped")
 eq(34, books[1].progress_percent, "remote historical progress is mapped")
 eq(300, books[1].read_at, "remote reading time is mapped")
+eq(120, Mapper.book({bookId = "read-time", readUpdateTime = 120, updateTime = 900}).read_at,
+    "a book update must not replace its last reading time")
+eq(0, Mapper.book({bookId = "unread", updateTime = 900}).read_at,
+    "a book update alone is not a reading event")
+eq(200, Mapper.book({book = {bookId = "wrapped", readTime = 100}, readUpdateTime = 200}).read_at,
+    "a newer outer reading event supersedes an older nested reading time")
+eq(200, Mapper.book({book = {bookId = "wrapped-zero", readUpdateTime = 0}, readUpdateTime = 200}).read_at,
+    "a zero nested reading time does not hide the outer reading event")
+local timestamp_books = Mapper.shelf({books = {
+    {bookId = "seconds", readUpdateTime = 1700000100},
+    {bookId = "milliseconds", readUpdateTime = 1700000200000},
+}})
+eq("milliseconds", timestamp_books[1].remote_id,
+    "second and millisecond reading times share one chronological order")
+eq(1700000200, timestamp_books[1].read_at,
+    "remote millisecond reading time is stored in seconds")
+local progress_time = Mapper.shelf({
+    books = {{bookId = "progress-time", readUpdateTime = 400}},
+    bookProgress = {{bookId = "progress-time", readUpdateTime = 300, updateTime = 900}},
+})
+eq(400, progress_time[1].read_at,
+    "older progress time and unrelated update time cannot hide newer book reading")
+local conflicting_recent = Mapper.shelf({
+    recentBooks = {
+        {bookId = "older", readUpdateTime = 1700000100},
+        {bookId = "newer", readUpdateTime = 1700000200},
+    },
+})
+eq("newer", conflicting_recent[1].remote_id,
+    "actual reading time takes priority over recent-list position")
 eq("b", books[2].remote_id, "nested bookInfo is mapped")
 eq(false, books[1].id == Mapper.book({ bookId = "a", title = "另一本" }, "other-account").id,
     "different accounts cannot share local reading identity")

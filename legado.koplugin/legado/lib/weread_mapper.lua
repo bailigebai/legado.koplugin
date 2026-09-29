@@ -2,6 +2,13 @@ local Identity = require("legado.lib.identity")
 
 local Mapper = {}
 
+function Mapper.readTime(value)
+    value = tonumber(value) or 0
+    if value >= 1e14 then value = value / 1000000
+    elseif value >= 1e11 then value = value / 1000 end
+    return math.max(0, value)
+end
+
 local function text(value)
     if type(value) ~= "string" and type(value) ~= "number" then return "" end
     return tostring(value):match("^%s*(.-)%s*$")
@@ -47,8 +54,8 @@ function Mapper.book(row, account_id)
         cover_url = cover, intro = text(source.intro or source.description or source.summary),
         kind = text(source.category),
         progress_percent = book_percent(source, row),
-        read_at = tonumber(source.updateTime or source.updatedAt or source.readTime
-            or row.updateTime or row.updatedAt or row.readTime) or 0,
+        read_at = math.max(Mapper.readTime(source.readUpdateTime), Mapper.readTime(row.readUpdateTime),
+            Mapper.readTime(source.readTime), Mapper.readTime(row.readTime)),
     }
 end
 
@@ -82,7 +89,8 @@ function Mapper.shelf(wire, account_id)
                         book.progress_percent = clamp_percent(state.progress or state.readProgress)
                     end
                     if finished(state) then book.progress_percent = 100 end
-                    book.read_at = tonumber(state.updateTime or state.updatedAt or state.readTime) or book.read_at
+                    book.read_at = math.max(book.read_at, Mapper.readTime(state.readUpdateTime
+                        or state.readTime or state.updateTime or state.updatedAt))
                 end
                 book._order = order
                 rows[#rows + 1] = book
@@ -94,14 +102,14 @@ function Mapper.shelf(wire, account_id)
     append(wire.finishReadBooks)
     append(type(wire.data) == "table" and wire.data.books or nil)
     table.sort(rows, function(a, b)
+        if a.read_at ~= b.read_at then return a.read_at > b.read_at end
         local ar, br = recent[a.remote_id], recent[b.remote_id]
         if ar ~= br then
             if ar == nil then return false end
             if br == nil then return true end
             return ar < br
         end
-        if a.read_at == b.read_at then return a._order < b._order end
-        return a.read_at > b.read_at
+        return a._order < b._order
     end)
     for _, book in ipairs(rows) do book._order = nil end
     return rows

@@ -1,6 +1,7 @@
 local A = require("assertions")
 local View = require("legado.ui.weread")
 local Mapper = require("legado.lib.weread_mapper")
+local Json = require("legado.lib.json_codec")
 local count = 0
 local function eq(expected, actual, message) count = count + 1; A.equal(expected, actual, message) end
 local saved, callback = nil, nil
@@ -29,9 +30,19 @@ eq(2, #view:page(3).items, "remaining covers stay reachable")
 eq(true, type(saved) == "string" and #saved > 0, "remote shelf is saved locally")
 local restarted = make_view()
 eq(19, #restarted.books, "offline restart restores the last synced shelf")
+eq(500, restarted.books[1].read_at, "a new shelf snapshot keeps its verified reading time")
 restarted:sync()
 callback(nil, "network offline")
 eq(19, #restarted.books, "network failure keeps the cached WeRead shelf")
+local current_saved = saved
+saved = Json.encode({account_id = "account-1", books = {
+    {id = "legacy-first", remote_id = "legacy-first", source_id = "weread", name = "先读", read_at = 100},
+    {id = "legacy-updated", remote_id = "legacy-updated", source_id = "weread", name = "只更新", read_at = 900},
+}})
+local legacy = make_view()
+eq("legacy-first", legacy:page(1).items[1].remote_id,
+    "a legacy shelf snapshot must not mistake book updates for newer reading")
+saved = current_saved
 
 do
     local pending, cancelled = {}, 0
