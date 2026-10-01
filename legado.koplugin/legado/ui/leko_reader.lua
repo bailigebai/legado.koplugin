@@ -263,6 +263,7 @@ function View:_setPage(page,direction,prepared_widgets)
     local widgets,err=prepared_widgets,nil
     if not widgets then widgets,err=self:_makeWidgets(page) end
     if not widgets then return nil,err end
+    self:clearSelection(false)
     local started=self.page_input_started or self:_now()
     if self.page_input_started then self:_timing('page_prepare',started) end
     self.page_input_started=nil
@@ -445,6 +446,7 @@ function View:replaceChapter(options,prepared,commit)
     end
     self:_finishAnimation(true)
     local previous_widgets=self.widgets
+    self:clearSelection(false)
     for _,key in ipairs{'book','chapter','index','count','catalog_complete','model','style','callbacks','source_id',
         'pagination_book','page_starts','page_total','chrome_heights','page','widgets','history','paused','go_last'} do
         self[key]=candidate[key]
@@ -468,7 +470,11 @@ function View:init()
     self.page_starts=self.initial_prepared and self.initial_prepared.page_starts or {}
     self.page_total=self.initial_prepared and self.initial_prepared.complete and #self.page_starts or nil
     self.ges_events={Tap={GestureRange:new{ges='tap',range=function() return self.dimen end}},Hold={GestureRange:new{ges='hold',range=function() return self.dimen end}},
-        Swipe={GestureRange:new{ges='swipe',range=function() return self.dimen end}}}
+        Swipe={GestureRange:new{ges='swipe',range=function() return self.dimen end}},
+        HoldPan={GestureRange:new{ges='hold_pan',rate=10,range=function() return self.dimen end}},
+        HoldRelease={GestureRange:new{ges='hold_release',range=function() return self.dimen end}},
+        Pan={GestureRange:new{ges='pan',rate=10,range=function() return self.dimen end}},
+        PanRelease={GestureRange:new{ges='pan_release',range=function() return self.dimen end}}}
     self.key_events={Close={{'Back'},{'Esc'}},ReaderMenu={{'Menu'}},PageForward={{'Right'},{'RPgFwd'},{'LPgFwd'},{'PgFwd'}},
         PageBackward={{'Left'},{'RPgBack'},{'LPgBack'},{'PgBack'}}}
     local position;position,self.go_last=initial_position(self,self.model)
@@ -521,6 +527,9 @@ function View:_paintTo(bb,x,y)
     bb:paintRect(x,y,self.dimen.w,self.dimen.h,BB.COLOR_WHITE)
     if self.background_widget then self.background_widget:paintTo(bb,x,y) end
     if self.background_painter then self.background_painter(self,bb,x,y) end
+    for _,rect in ipairs(self:getSelectionRects()) do
+        bb:paintRect(x+rect.x,y+rect.y,rect.w,rect.h,BB.COLOR_LIGHT_GRAY)
+    end
     for _,item in ipairs(self.widgets) do item.widget:paintTo(bb,x+item.x,y+item.y) end
     for _,target in ipairs(self:getCommentTargets()) do
         self:_paintLabel(bb,'评',x+target.x,y+target.y,target.w,'center',14)
@@ -771,6 +780,7 @@ function View:runAction(name,...)
 end
 function View:showMenu()
     if self.closed then return false end
+    self:clearSelection(false)
     if self.menu_dialog then return true end
     self:pauseReading()
     local buttons={}
@@ -807,6 +817,7 @@ function View:_closeDialog(key)
 end
 function View:showLayoutMenu()
     if self.closed then return false end
+    self:clearSelection(false)
     self:pauseReading();self:_closeDialog('layout_dialog')
     local swipe_preset=self.style.page_transition=='swipe_classic'
     local function update(changes)
@@ -891,6 +902,7 @@ function View:getCommentTargets()
 end
 function View:onTap(_,ges) return safe_event(self, function()
     local x=ges and ges.pos and ges.pos.x or self.dimen.w/2;local y=ges and ges.pos and ges.pos.y or self.dimen.h/2
+    if self.selection then self.selection:move{x=x,y=y};return self:showSelectionActions() end
     for _,target in ipairs(self:getCommentTargets()) do
         if x>=target.x and x<target.x+target.w and y>=target.y and y<target.y+target.h then
             return self:runAction('chapter_comments',target.range)
@@ -903,51 +915,100 @@ function View:onTap(_,ges) return safe_event(self, function()
     return self:nextPage()
 end) end
 function View:onSwipe(_,ges) return safe_event(self, function()
+    if self.selection then return true end
     self:_resumeIfVisible()
     if ges and ges.direction=='west' then return self:nextPage() end
     if ges and ges.direction=='east' then return self:previousPage() end
     return self:showMenu()
 end) end
-function View:onHold(_,ges) return safe_event(self,function()
-    local y=ges and ges.pos and tonumber(ges.pos.y)
-    if self.callbacks.ai and y and self.page and self.page.geometry then
-        local geometry=self.page.geometry
-        local top=geometry.body_top+geometry.header_height
-        for _,element in ipairs(self.page.elements or {}) do
-            if element.type=='gap' then top=top+element.height
-            else
-                top=top+(element.top_gap or 0)
-                if element.type=='line' and y>=top and y<top+element.height then
-                    local selected=tostring(element.text or ''):match('^%s*(.-)%s*$')
-                    if selected~='' then return self:_call('ai',selected) end
-                end
-                top=top+element.height+(element.bottom_gap or 0)
-            end
-        end
+function View:getSelectedText() return self.selection and self.selection:text() or '' end
+function View:getSelectionRects() return self.selection and self.selection:rects() or {} end
+function View:clearSelection(resume)
+    local had_selection=self.selection~=nil
+    self.selection=nil;self:_closeDialog('selection_dialog')
+    if had_selection and not self.closed then
+        self.ui:setDirty(self,'ui')
+        if resume then self:resumeReading() end
     end
-    return self:showMenu()
+    return true
+end
+function View:showSelectionActions()
+    local selection=self.selection
+    if not selection or self.closed then return false end
+    self:_closeDialog('selection_dialog')
+    local text=selection:text()
+    local preview,_,more=Text.utf8Window(text,1,120)
+    local function current() return not self.closed and self.selection==selection end
+    local function adjust(endpoint)
+        if not current() then return false end
+        self:_closeDialog('selection_dialog');selection.endpoint=endpoint
+        return true
+    end
+    self.selection_dialog=require('ui/widget/buttondialog'):new{
+        title='已选文字：'..preview..(more and '…' or ''),width=math.floor(self.dimen.w*.9),
+        buttons={{{text='AI 解释',callback=function()
+            if not current() then return false end
+            local selected=selection:text()
+            if selected=='' or #selected>4000 then
+                return self:_error({code='INVALID_INPUT',message='请选择不超过 4000 字节的文字；可调整选区缩短内容。'})
+            end
+            self:clearSelection(false)
+            local result,err=self:_call('ai',selected)
+            if result==false or err then self:resumeReading();return self:_error(err or 'AI 服务未能打开。') end
+            return result or true
+        end},{text='取消',callback=function() if current() then return self:clearSelection(true) end end}},
+        {{text='调整起点',callback=function() return adjust('anchor') end},
+            {text='调整终点',callback=function() return adjust('focus') end}}},
+        tap_close_callback=function() if current() then self:clearSelection(true) end end}
+    self.ui:setDirty(self,'ui');self.ui:show(self.selection_dialog)
+    return true
+end
+function View:onHold(_,ges) return safe_event(self,function()
+    if not self.callbacks.ai then return self:showMenu() end
+    if self.selection then
+        self:_closeDialog('selection_dialog');self.selection:move(ges and ges.pos)
+    else
+        local selection=require('legado.lib.leko_selection').new(self.page,self.widgets,ges and ges.pos,self.model)
+        if not selection then return self:showMenu() end
+        local paused,err=self:pauseReading();if not paused then return self:_error(err or '阅读进度保存失败。') end
+        self:_finishAnimation();self.selection=selection
+    end
+    self.ui:setDirty(self,'ui');return true
 end) end
+function View:onHoldPan(_,ges) return safe_event(self,function()
+    if not self.selection then return false end
+    self.selection:move(ges and ges.pos);self.ui:setDirty(self,'ui');return true
+end) end
+function View:onHoldRelease(_,ges) return safe_event(self,function()
+    if not self.selection then return false end
+    self.selection:move(ges and ges.pos);return self:showSelectionActions()
+end) end
+View.onPan=View.onHoldPan
+View.onPanRelease=View.onHoldRelease
 function View:onReaderMenu() return safe_event(self, function() return self:showMenu() end) end
-function View:onPageForward() return safe_event(self, function() self:_resumeIfVisible();return self:nextPage() end) end
-function View:onPageBackward() return safe_event(self, function() self:_resumeIfVisible();return self:previousPage() end) end
+function View:onPageForward() return safe_event(self, function() self:clearSelection(true);self:_resumeIfVisible();return self:nextPage() end) end
+function View:onPageBackward() return safe_event(self, function() self:clearSelection(true);self:_resumeIfVisible();return self:previousPage() end) end
 function View:onFlushSettings() return safe_event(self, function() return self:flushProgress() end) end
-function View:onSuspend() return safe_event(self, function() self:pauseReading(true);return self:flushProgress() end) end
+function View:onSuspend() return safe_event(self, function() self:clearSelection(false);self:pauseReading(true);return self:flushProgress() end) end
 function View:onResume() return safe_event(self, function() return self:_resumeIfVisible() end) end
 function View:onReadingPaused() return safe_event(self, function() return self:pauseReading() end) end
 function View:onReadingResumed() return safe_event(self, function() return self:_resumeIfVisible() end) end
 function View:onSetDimensions(dimen) return safe_event(self, function()
+    self:clearSelection(true)
     if dimen then self.dimen=Geom:new{x=0,y=0,w=dimen.w,h=dimen.h} end
     return self:refreshAppearance()
 end) end
-function View:onRotation() return safe_event(self, function() self:_finishAnimation();return false end) end
+function View:onRotation() return safe_event(self, function() self:clearSelection(true);self:_finishAnimation();return false end) end
 View.onIterateRotation=View.onRotation;View.onSwapRotation=View.onRotation;View.onInvertRotation=View.onRotation
 function View:onClose() return safe_event(self, function()
+    if self.selection then return self:clearSelection(true) end
     if self.menu_dialog then self:_closeDialog('menu_dialog');return self:resumeReading() end
     if self.callbacks.bookshelf then return self:runAction('bookshelf') end
     return self:close()
 end) end
 function View:_dispose()
     if self.closed then return false end
+    self:clearSelection(false)
     for key,method in pairs{last_position='getPosition',last_fraction='getProgressFraction',last_context='getReadingContext'} do
         local ok,value=pcall(self[method],self);if ok then self[key]=value end
     end

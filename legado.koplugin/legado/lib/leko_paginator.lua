@@ -497,6 +497,7 @@ function Paginator:makePage(book, requested_position, style, checkpoint)
                         height = geometry.body_line_height,
                         paragraph = paragraph_index,
                         start_char = content_char_index + math.max(0, line.offset - prefix_length - 1),
+                        prefix_chars = math.max(0, prefix_length - line.offset + 1),
                         next_char = next_char,
                         paragraph_end = is_last_line and not has_more,
                     })
