@@ -24,7 +24,7 @@ function TransparentTitle:paintTo(bb,x,y)
 end
 local defaults={body_font='cfont',title_font='cfont',body_font_size=27,title_font_size=34,
     line_spacing=.28,paragraph_spacing=10,margin_left=12,margin_right=12,indent=true,
-    show_header=true,show_footer=true,title_bold=true,layout_version=2,page_transition='side_ripple',
+    show_header=true,show_footer=true,title_bold=true,layout_version=2,page_transition='swipe_classic',
     chapter_clean_wave_enabled=false,swipe_refresh_mode='ui',swipe_portrait_delay_ms=20,swipe_landscape_delay_ms=10}
 local function copy(value)
     local result={};for key,item in pairs(value or {}) do result[key]=item end;return result

@@ -518,6 +518,20 @@ function ReaderSession:_open_cached(state, index, restore_fraction)
         self:_timing('progress_save',save_started,backend,state,{requested_index=index})
         if not saved then return nil,staged(err,'progress') end
     end
+    local weread = source_id(state.source,state.book)=='weread'
+    local has_image = weread and body:find('<img',1,true) ~= nil
+    local saved_progress
+    if weread then
+        local progress_error
+        saved_progress,progress_error=self.storage:getProgress(state.book.id)
+        if progress_error then return nil,staged(progress_error,'progress') end
+        if has_image or (saved_progress and saved_progress.contains_images==true) then
+            backend='native'
+            if restore_fraction==nil and saved_progress and saved_progress.chapter_uid==chapter.uid then
+                restore_fraction=clamp(saved_progress.fraction,0,1)
+            end
+        end
+    end
     if state.on_progress then state.on_progress(3,'整理章节') end
     local path,progress,write_error
     if backend=='immersive' then
@@ -529,6 +543,20 @@ function ReaderSession:_open_cached(state, index, restore_fraction)
         if not path then return nil,staged(write_error,'html_write') end
     end
     self.next_token = self.next_token + 1
+    local before_commit=state.before_commit
+    if has_image and not (saved_progress and saved_progress.contains_images==true) then
+        before_commit=function()
+            local current,read_error=self.storage:getProgress(state.book.id)
+            if read_error then return nil,read_error end
+            current=current or {book_id=state.book.id,source_id='weread',
+                chapter_uid=chapter.uid,chapter_index=index,fraction=0,updated_at=os.time()}
+            current.contains_images=true
+            local saved,save_error=self.storage:putProgress(current)
+            if not saved then return nil,save_error end
+            if state.before_commit then return state.before_commit() end
+            return true
+        end
+    end
     local candidate = {
         token = self.next_token, source = state.source, book = state.book, chapters = state.chapters,
         index = index, restore_fraction = restore_fraction, previous = self.active, active = false,
@@ -538,7 +566,9 @@ function ReaderSession:_open_cached(state, index, restore_fraction)
         prepared_html = state.prepared_html,
         reader_settings_book_id = state.reader_settings_book_id,
         statistics_book_id = state.statistics_book_id,
-        backend=backend, before_commit=state.before_commit, open_started=clock(), transition=state.transition,
+        backend=backend, before_commit=before_commit, open_started=clock(), transition=state.transition,
+        contains_images=weread and (has_image or saved_progress and saved_progress.contains_images==true) or false,
+        image_mode_switched=has_image and (state.backend or preferred_backend(self))=='immersive',
         on_progress = state.on_progress,
         is_current = state.is_current,
     }
@@ -1150,8 +1180,13 @@ end
 
 function ReaderSession:resume(source, book, chapters, callback, options)
     options = options or {}
+    local progress,progress_error = self.storage:getProgress(book.id)
+    if progress_error then
+        if type(callback)=='function' then pcall(callback,nil,progress_error) end
+        return nil,progress_error
+    end
     local backend = options.backend or preferred_backend(self)
-    local progress = self.storage:getProgress(book.id)
+    if source_id(source,book)=='weread' and progress and progress.contains_images==true then backend='native' end
     local index = 1
     if progress then index = self:recoverIndex(chapters, progress) end
     return self:open(source, book, chapters, index, {
@@ -1189,6 +1224,7 @@ function ReaderSession:openOffline(source, book, index, callback, options)
     if options.exact_progress and (progress_error or type(progress) ~= "table") then
         return fail_exact(progress_error or Errors.new(Errors.STORAGE_ERROR, "本地阅读进度不可用"))
     end
+    if source_id(source,book)=='weread' and progress and progress.contains_images==true then backend='native' end
     if progress then index = self:recoverIndex(chapters, progress) end
     local wanted = math.max(1, math.min(#chapters, tonumber(index) or 1))
     if options.exact_progress then

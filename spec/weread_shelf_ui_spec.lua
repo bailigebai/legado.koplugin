@@ -82,4 +82,15 @@ presenter:show(unreadable_history)
 eq('已登录 · 本地阅读记录不可用',shown[#shown].subtitle,
     'local progress failure is visible while remote covers remain usable')
 eq('离线封面',shown[#shown].items[1].title,'history failure does not hide the remote shelf')
+local notice_shown={}
+local notice_presenter=Presenter.new{app={startWeReadReading=function(_,_,callback)
+    callback({backend='native',reading_state={image_mode_switched=true}})
+end},ui_manager={show=function(_,widget) notice_shown[#notice_shown+1]=widget end}}
+local notice_view=View.new{auth=auth}
+notice_view.synced=true
+notice_view.books={{id='notice-book',remote_id='notice-remote',source_id='weread',name='图文书'}}
+notice_presenter:show(notice_view)
+notice_shown[#notice_shown].hero_action.callback()
+eq('本书含图片，已自动切换原生阅读模式。',notice_shown[#notice_shown].text,
+    'first image chapter explains the automatic reader mode change')
 return count

@@ -49,4 +49,56 @@ for _,route in ipairs{'explicit','resume','cached','network','offline','failure'
     eq('immersive',backend,'reentering from the shelf defaults to immersive again')
     session:close()
 end
+
+local image_progress, reject_image_flag, image_opened=nil,false,{}
+local image_book={id='weread-book',source_id='weread',name='图文书'}
+local image_chapters={{uid='text',title='文字章',index=1},{uid='image',title='图片章',index=2}}
+local image_storage={getProgress=function() return image_progress end,
+    putProgress=function(_,value)
+        if reject_image_flag and value.contains_images then
+            return nil,{code='STORAGE_ERROR',message='cannot save image flag'}
+        end
+        image_progress=value;return value
+    end}
+local function image_document(mode,callbacks)
+    image_opened[#image_opened+1]=mode
+    local document={backend=mode,getProgressFraction=function() return 0 end,
+        setProgressFraction=function() return true end,close=function() return true end}
+    callbacks.ready(document)
+    return document
+end
+local image_session=Session.new{storage=image_storage,cache={
+    readBody=function(_,_,_,chapter)
+        return chapter.uid=='image' and '<p>插图<img src="https://weread.qq.com/a.jpg"></p>' or '<p>纯文字</p>'
+    end,writeHtml=function() return 'image.html' end},
+    ui={openChapter=function(_,_,callbacks) return image_document('immersive',callbacks) end,
+        openDocument=function(_,_,callbacks) return image_document('native',callbacks) end},
+    settings={get=function(_,key) return key=='immersive_reader' and true or 0 end}}
+assert(image_session:open({id='weread'},image_book,image_chapters,1,{backend='immersive'}))
+eq('immersive',image_session.active.backend,'pure text starts in immersive mode')
+reject_image_flag=true
+local failed,flag_error=image_session:navigate(2,{})
+eq(nil,failed,'image chapter is not committed when its per-book flag cannot be saved')
+eq('STORAGE_ERROR',flag_error and flag_error.code,'image flag save failure is visible')
+eq(1,image_session.active.index,'failed image transition retains the previous chapter')
+reject_image_flag=false
+assert(image_session:navigate(2,{}))
+eq('native',image_session.active.backend,'later image chapter switches to native automatically')
+eq(true,image_progress.contains_images,'image mode is saved per book')
+image_session:close()
+image_progress.chapter_uid='text'
+image_progress.chapter_index=1
+assert(image_session:resume({id='weread'},image_book,image_chapters,function() end))
+eq('native',image_session.active.backend,'known image book reopens natively even on a text chapter')
+eq('text',image_session.active.chapters[image_session.active.index].uid,
+    'known image book can reopen its saved text chapter without losing position')
+local settings_writes=0
+local image_app=App.new{reader_session=image_session,settings={set=function()
+    settings_writes=settings_writes+1;return true
+end}}
+local rejected,image_mode_error=image_app:toggleImmersiveReader(image_session.active.document)
+eq(nil,rejected,'manual immersive switch is rejected for a known image book')
+eq('UNSUPPORTED_CONTENT',image_mode_error and image_mode_error.code,'image limitation is explained')
+eq(0,settings_writes,'image book does not change the global reading setting')
+
 return n

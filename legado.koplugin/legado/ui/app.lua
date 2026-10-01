@@ -80,6 +80,13 @@ function App:toggleImmersiveReader(document)
         return nil,{code='STORAGE_ERROR',message='无法取得当前阅读位置，已保留原阅读模式。'}
     end
     local enabled=document.backend~='immersive'
+    if enabled and state.book.source_id=='weread' then
+        local progress,read_error=session.storage:getProgress(state.book.id)
+        if read_error then return nil,read_error end
+        if state.contains_images or (progress and progress.contains_images==true) then
+            return nil,{code='UNSUPPORTED_CONTENT',message='本书含图片，已使用原生阅读模式显示完整内容。'}
+        end
+    end
     local request={document=document};self.reader_mode_request=request
     local completed,completion_result=false,nil
     local function complete(value,err)

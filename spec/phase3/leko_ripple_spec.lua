@@ -143,7 +143,7 @@ local options={book={id='ripple',name='水波纹'},chapter={uid='c1',title='第�
 local view=assert(Reader.new(options));h.ui:show(view);h:drain()
 eq(12,view.style.margin_left,'new book starts with 12 left margin')
 eq(12,view.style.margin_right,'new book starts with 12 right margin')
-eq('side_ripple',view.style.page_transition,'side ripple is the default')
+eq('swipe_classic',view.style.page_transition,'new books use the fixed Swipe preset by default')
 assert(view:applyStyle{page_transition='swipe'})
 view:showLayoutMenu()
 for _,row in ipairs(view.layout_dialog.buttons) do for _,button in ipairs(row) do
