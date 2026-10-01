@@ -24,10 +24,17 @@ local function action(label)
         if item.text == label then return item end
     end
 end
+local function open_reviews()
+    shown[#shown].header_action.callback()
+    for _,item in ipairs(shown[#shown].items) do
+        if item.text == '整本书评' then return item.callback() end
+    end
+    error('missing whole-book reviews')
+end
 
 presenter:show(view)
 shown[#shown].items[1].callback()
-action("阅读评论").callback()
+open_reviews()
 eq(1, #requests, "review page fetches only the first batch on open")
 eq(nil, requests[1].cursor, "first review batch has no cursor")
 requests[1].callback({reviews = {{review = {review = {book = {bookId = "remote-1"}, content = "第一页"}}}},
@@ -62,7 +69,7 @@ eq("微信读书 · 测试书", shown[#shown].title, "back returns to book detai
 requests[3].callback({reviews = {{review = {review = {book = {bookId = "remote-1"}, content = "迟到页"}}}}})
 eq("微信读书 · 测试书", shown[#shown].title, "late review page cannot reopen the review screen")
 
-action("阅读评论").callback()
+open_reviews()
 shown[#shown].on_next()
 shown[#shown].on_next()
 eq(4, #requests, "reopening reviews reuses loaded pages before requesting the next one")
@@ -90,7 +97,7 @@ html_view.synced = true
 html_view.books = view.books
 presenter:show(html_view)
 shown[#shown].items[1].callback()
-action("阅读评论").callback()
+open_reviews()
 local long_review = ("这是一段完整评论。"):rep(100)
 requests[#requests].callback({reviews = {{review = {review = {book = {bookId = "remote-1"},
     htmlContent = "<p>完整&nbsp;评论</p><p>第二段</p>"}}},

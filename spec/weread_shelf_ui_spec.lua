@@ -39,6 +39,8 @@ shown[#shown].items[1].callback()
 eq("微信读书 · 书1", shown[#shown].title, "remote book opens its own detail page")
 eq("detail", shown[#shown].mode, "remote detail shows cover and summary")
 eq("简介1", shown[#shown].items[1].intro, "remote detail keeps the full summary")
+eq(1, #shown[#shown].actions, "remote detail reserves its primary action for reading")
+eq("更多", shown[#shown].header_action.text, "remote detail places secondary actions in its header")
 local before_stale = #shown
 first_shelf.hero_action.callback()
 eq(1, #opened, "closed shelf hero cannot start another reading request")
@@ -55,7 +57,8 @@ for _, action in ipairs(shown[#shown].actions) do
 end
 eq("remote-1", opened[2], "book detail shares the same reading entry")
 local review_action
-for _, item in ipairs(shown[#shown].actions) do if item.text == "阅读评论" then review_action = item end end
+shown[#shown].header_action.callback()
+for _, item in ipairs(shown[#shown].items) do if item.text == "整本书评" then review_action = item end end
 eq("function", type(review_action and review_action.callback), "remote book exposes clickable reviews")
 review_action.callback()
 eq("评论正文", shown[#shown].items[1].text, "review list shows content")

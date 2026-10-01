@@ -47,7 +47,7 @@ local screen=shown[#shown]
 equal("library_screen",screen.kind,"populated Home uses LibraryScreen")
 equal(3,#screen.cells,"default shelf includes unread books")
 equal(1,#screen.layout[2],"recent-reading hero has its own focus row")
-equal(130,screen.cells[1].cover:getSize().w,"recent-reading hero has a larger cover")
+truthy(screen.cells[1].cover:getSize().w>=230,"recent-reading hero has a large cover")
 equal("简介甲",screen.cells[1].intro_widget.text,"recent-reading hero shows the summary")
 equal("cached.jpg",screen.cells[2].cover[1].file,"synchronous cached cover reaches ImageWidget")
 local old_height=screen:getSize().h

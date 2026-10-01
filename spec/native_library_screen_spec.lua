@@ -166,14 +166,22 @@ local function books(amount)
 end
 local hero_items=books(5)
 hero_items[1].hero=true
+local hero_intro=string.rep("最近阅读的完整简介应该可以向下滚动查看。",30)
+hero_items[1].intro=hero_intro
 local hero_screen=LibraryScreen.new{title="最近阅读",items=hero_items,mode="shelf_hero",compact=true,
     hero_action={text="继续阅读",callback=noop},actions={{text="找书",callback=noop},
         {text="整理书架",callback=noop},{text="书源与下载",callback=noop},{text="更多",callback=noop}}}
 equal(5,#hero_screen.cells,"homepage keeps one large card and four cover cards")
 equal(1,#hero_screen.layout[2],"large card owns its focus row")
 equal(4,#hero_screen.layout[4],"four remaining covers share one row")
-equal(130,hero_screen.cells[1].cover:getSize().w,"homepage cover is visibly larger")
-equal("Intro 1",hero_screen.cells[1].intro_widget.text,"homepage summary is visible")
+truthy(hero_screen.cells[1].cover:getSize().w>=230,"homepage main cover is at least 230 pixels wide")
+truthy(hero_screen.cells[1].cover:getSize().h>=320,"homepage main cover is at least 320 pixels tall")
+equal(hero_intro,hero_screen.cells[1].intro_widget.text,"homepage keeps the complete summary")
+truthy(hero_screen.cells[1].intro_widget.ges_events.ScrollText~=nil,"homepage summary scrolls by touch")
+truthy(hero_screen.cells[1].intro_widget.text_widget:getAllLineCount()
+    >hero_screen.cells[1].intro_widget.text_widget:getVisLineCount(),"long homepage summary has hidden scrollable lines")
+truthy(hero_screen:getSize().h<=800,"homepage with long summary and four covers fits the screen")
+truthy(hero_screen.cells[5].cover:getSize().h>0,"fourth small cover is visible")
 equal(hero_screen.content_height,hero_screen.content:getSize().h,"hero page fits its fixed screen height")
 local categories={{text="全部",active=true,callback=noop},{text="在读",callback=noop},
     {text="未读",callback=noop},{text="分类",callback=noop}}

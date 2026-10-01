@@ -56,22 +56,26 @@ shown[#shown].items[1].callback()
 local detail_count = #shown
 results.items[1].callback()
 eq(detail_count, #shown, "old search-result cover cannot reopen a closed result page")
+shown[#shown].header_action.callback()
 local add_action
-for _, action in ipairs(shown[#shown].actions or {}) do
+for _, action in ipairs(shown[#shown].items or {}) do
     if action.text == "加入微信书架" then add_action = action end
 end
 eq("function", type(add_action and add_action.callback), "store book can be added to the WeRead shelf")
 add_action.callback()
 eq("store-1", added, "the selected book is sent to the remote shelf")
 eq(1, synced, "successful addition refreshes the WeRead shelf")
-eq("已在微信书架", shown[#shown].actions[2].text, "added book cannot be added twice")
+shown[#shown].header_action.callback()
+eq("已在微信书架", shown[#shown].items[1].text, "added book cannot be added twice")
+shown[#shown].on_back()
 local finished_detail = shown[#shown]
 finished_detail.on_back()
 local returned_results = shown[#shown]
 eq("微信书城 · 科幻", returned_results.title, "book detail returns to the store results")
 for _, old_action in ipairs(finished_detail.actions) do
-    if old_action.text == "开始阅读" or old_action.text == "阅读评论" then old_action.callback() end
+    if old_action.text == "开始阅读" then old_action.callback() end
 end
+finished_detail.header_action.callback()
 eq(returned_results, shown[#shown], "old book-detail actions cannot replace the store results")
 eq(0, review_requests, "old book-detail comments do not start a network request")
 local failed_view = View.new{auth = auth, client = client, path = "weread-shelf.json",
@@ -88,7 +92,8 @@ for _, item in ipairs(shown[#shown].items) do
 end
 shown[#shown].items[1].callback()
 local failed_add
-for _, action in ipairs(shown[#shown].actions) do
+shown[#shown].header_action.callback()
+for _, action in ipairs(shown[#shown].items) do
     if action.text == "加入微信书架" then failed_add = action end
 end
 failed_add.callback()

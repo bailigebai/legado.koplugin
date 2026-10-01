@@ -690,34 +690,52 @@ function Presenter:_wereadBook(view, book, expected_account_id)
     local item = { book = book, title = book.name, subtitle = book.author,
         intro = book.intro, cover_url = book.cover_url }
     local detail_page = "weread_book_detail:" .. book.remote_id
-    local widget
+    local more_page = "weread_book_more:" .. book.remote_id
+    local widget, more_widget
     local function current_detail()
         if not widget or not weread_page_active(self, view, detail_page) or self.library_widget ~= widget then return false end
         if not same_account() then return false end
         return true
     end
-    widget = self:_library(view, { title = "微信读书 · " .. book.name, subpage = detail_page,
-        items = { item }, mode = "detail",grouped_actions=true,
-        subtitle = "阅读进度：" .. tostring(math.floor(tonumber(book.progress_percent) or 0)) .. "%",
-        actions = {
-            {text='开始阅读',callback=function()
-                if not current_detail() then return false end
-                return self:_startWeReadReading(view,book,account_id)
-            end},
+    local function current_more()
+        if not more_widget or not weread_page_active(self, view, more_page)
+            or self.library_widget ~= more_widget then return false end
+        return same_account()
+    end
+    local function show_more()
+        if not current_detail() then return false end
+        local more_actions = {
             view:hasBook(book) and {text='已在微信书架',enabled=false}
                 or {text='加入微信书架',callback=function()
-                    if not current_detail() then return false end
+                    if not current_more() then return false end
                     return view:addToShelf(book,function(added,err)
-                        if not current_detail() then return end
+                        if not current_more() then return end
                         if not added then return self:_info(err or '加入微信书架失败','微信读书') end
                         self:_wereadBook(view,book,account_id)
                         if err then return self:_info(err, '微信读书') end
                     end)
                 end},
-            { text = "阅读评论", callback = function()
+            {text='整本书评',callback=function()
+                if not current_more() then return false end
+                return self:_wereadReviews(view,book)
+            end},
+        }
+        more_widget = self:_library(view,{title='微信书籍操作',subpage=more_page,
+            items=more_actions,secondary=true,on_back=function()
+                if not same_account() then return false end
+                return self:_wereadBook(view,book,account_id)
+            end})
+        return more_widget
+    end
+    widget = self:_library(view, { title = "微信读书 · " .. book.name, subpage = detail_page,
+        items = { item }, mode = "detail",grouped_actions=true,
+        subtitle = "阅读进度：" .. tostring(math.floor(tonumber(book.progress_percent) or 0)) .. "%",
+        header_action={text='更多',callback=show_more},
+        actions = {
+            {text='开始阅读',callback=function()
                 if not current_detail() then return false end
-                return self:_wereadReviews(view, book)
-            end },
+                return self:_startWeReadReading(view,book,account_id)
+            end},
         },
         on_back = function()
             if not same_account() then return false end

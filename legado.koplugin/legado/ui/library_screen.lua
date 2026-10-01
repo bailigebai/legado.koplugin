@@ -137,7 +137,10 @@ function LibraryScreen.new(options)
 
     local function make_book_cell(item)
         local hero = mode == "shelf_hero" and item.hero == true
-        local item_cover_width, item_cover_height = hero and scale(130) or cover_width, hero and scale(180) or cover_height
+        local hero_height = math.floor(height * .4)
+        local hero_width = math.min(math.floor(hero_height * 23 / 32), math.floor(content_width * .45))
+        local item_cover_width, item_cover_height = hero and hero_width or cover_width,
+            hero and hero_height or cover_height
         local item_cell_width = hero and content_width or cell_width
         local cover = book_cover(nil, item, item_cover_width, item_cover_height)
         local visual, title, replace_cover
@@ -145,7 +148,9 @@ function LibraryScreen.new(options)
         if hero then
             local text_width = item_cell_width - 2 * (scale(4) + scale(1)) - item_cover_width - gap
             title = label(item.title or "未命名", 18, text_width, true)
-            intro = paragraph(present(item.intro, "暂无简介"), 14, text_width, scale(110), 5)
+            intro = deps.scrolltext:new{ text = present(item.intro, "暂无简介"), face = face(14),
+                width = text_width, height = math.max(scale(80), item_cover_height - scale(45)),
+                scroll_by_pan = true, dialog = {} }
             visual = deps.horizontal:new{ cover, deps.hspan:new{ width = gap }, deps.vertical:new{
                 title, label(present(item.subtitle, "未知作者"), 13, text_width),
                 deps.vspan:new{ width = scale(6) }, intro,
