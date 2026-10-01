@@ -387,6 +387,29 @@ function Adapter:openDocument(path, callbacks)
             for _,tab in ipairs(reader.menu.tab_item_table or {}) do remember(tab,{'callback'}) end
         end
         self:_attachMenu(reader, proxy, callbacks)
+        local native_comments
+        if self.on_chapter_comments and callbacks and callbacks.weread then
+            native_comments=require('legado.lib.weread_native_comments').new(reader,proxy,
+                function(range) if not proxy.closed then return self.on_chapter_comments(proxy,range) end end)
+            if native_comments then
+                proxy.setChapterComments=function(_,rows) return native_comments:setRows(rows) end
+                rollbacks[#rollbacks+1]=function() native_comments:close() end
+            end
+            if reader.highlight and reader.highlight.addToHighlightDialog then
+                reader.highlight:addToHighlightDialog('12_legado_comments',function(highlight)
+                    return {text='对应评论',callback=function()
+                        if proxy.closed then return false end
+                        local selected=highlight.selected_text and highlight.selected_text.text
+                        local range=native_comments and native_comments:rangesForSelection(selected)
+                        if highlight.onClose then highlight:onClose() end
+                        return self.on_chapter_comments(proxy,range or {})
+                    end}
+                end)
+                rollbacks[#rollbacks+1]=function()
+                    if reader.highlight.removeFromHighlightDialog then reader.highlight:removeFromHighlightDialog('12_legado_comments') end
+                end
+            end
+        end
         if self.on_ai and reader.highlight and type(reader.highlight.addToHighlightDialog)=='function' then
             reader.highlight:addToHighlightDialog('11_legado_ai', function(highlight)
                 return {text='AI 解释',callback=function()
@@ -464,6 +487,10 @@ function Adapter:openDocument(path, callbacks)
             reader.onClose = function(instance, ...)
                 if proxy.closed then return end
                 proxy.closed = true
+                if native_comments then native_comments:close() end
+                if callbacks and callbacks.weread and reader.highlight and reader.highlight.removeFromHighlightDialog then
+                    reader.highlight:removeFromHighlightDialog('12_legado_comments')
+                end
                 if self.on_ai and reader.highlight and type(reader.highlight.removeFromHighlightDialog)=='function' then
                     reader.highlight:removeFromHighlightDialog('11_legado_ai')
                 end

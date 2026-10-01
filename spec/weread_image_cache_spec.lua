@@ -23,8 +23,15 @@ end,rename=function(from,to) files[to]=files[from];files[from]=nil;return true e
     remove=function(path) files[path]=nil;return true end}
 local cache=CacheStore.new{fs=fs,root='image-cache'}
 local chapter={uid='chapter-one'}
-local png='\137PNG\r\n\26\n'..string.rep('p',50)
-local jpg='\255\216\255'..string.rep('j',50)
+local fixtures=require('fixtures.chapter_images')
+local png,jpg=fixtures.png,fixtures.gif
+local decoded,freed=0,0
+package.loaded['ui/renderimage']={renderImageData=function(_,value)
+    decoded=decoded+1
+    if value~=png and value~=jpg then return nil end
+    return {getWidth=function() return 1 end,getHeight=function() return 1 end,
+        free=function() freed=freed+1 end}
+end}
 local fetched={}
 local client={fetchResource=function(_,url,callback)
     fetched[#fetched+1]=url
@@ -36,9 +43,9 @@ local html='<p><img src="https://res.weread.qq.com/wrepub/first"><img src="/wrep
 local result,failure
 images:prepare('book-one',chapter.uid,html,function(value,err) result,failure=value,err end,chapter)
 eq(nil,failure,'trusted WeRead images prepare without error')
-yes(result and result:find('src="../images/chapter%-one_1.png"')~=nil,
+yes(result and result:find('src="../images/chapter%-one_1_[%w_-]+.png"')~=nil,
     'absolute image URL becomes a local chapter image reference')
-yes(result and result:find('src="../images/chapter%-one_2.jpg"')~=nil,
+yes(result and result:find('src="../images/chapter%-one_2_[%w_-]+.gif"')~=nil,
     'relative image URL becomes a local chapter image reference')
 eq('https://res.weread.qq.com/wrepub/second',fetched[2],
     'relative WeRead image resolves against the trusted resource host')
@@ -46,7 +53,7 @@ eq(png,cache:readImage('weread','book-one',chapter,1),
     'image cache stores the real binary bytes')
 eq(true,cache:verifyChapterImages('weread','book-one',chapter,result),
     'localized chapter validates every referenced image')
-local upper_body='<IMG SRC="../images/chapter-one_1.png">'
+local upper_body=result:gsub('<img','<IMG'):gsub('src=','SRC=')
 eq(true,cache:verifyChapterImages('weread','book-one',chapter,upper_body),
     'uppercase image markup receives the same cache validation')
 local fetched_before=#fetched
@@ -54,12 +61,49 @@ result,failure=nil,nil
 images:prepare('book-one',chapter.uid,html,function(value,err) result,failure=value,err end,chapter)
 eq(nil,failure,'offline revisit uses verified local images')
 eq(fetched_before,#fetched,'offline revisit does not issue image requests')
+local old_body=result
+local broken_refresh=Images.new{cache=cache,client={fetchResource=function(_,url,callback)
+    if url:find('replacement',1,true) then callback(jpg) else callback(nil,'download failed') end
+end}}
+local refresh_error
+broken_refresh:prepare('book-one',chapter.uid,
+    '<img src="https://res.weread.qq.com/replacement"><img src="https://res.weread.qq.com/failure">',
+    function(_,err) refresh_error=err end,chapter)
+eq('NETWORK_ERROR',refresh_error and refresh_error.code,'partial image refresh reports failure')
+eq(true,cache:verifyChapterImages('weread','book-one',chapter,old_body),
+    'partial image refresh preserves every asset referenced by the old readable chapter')
+local store=cache._store
+cache._store=function(self,path,...)
+    if path:match('%.json$') then return nil,{code='STORAGE_ERROR',message='metadata save failed'} end
+    return store(self,path,...)
+end
+local failed_write,failed_error=cache:writeImage('weread','book-one',chapter,1,png,'https://res.weread.qq.com/new')
+cache._store=store
+eq(nil,failed_write,'metadata save failure does not pretend the new image committed')
+eq('STORAGE_ERROR',failed_error.code,'metadata failure stays visible')
+eq(true,cache:verifyChapterImages('weread','book-one',chapter,old_body),
+    'metadata failure leaves the previous immutable image references readable')
+local fake_image=Images.new{cache=cache,client={fetchResource=function(_,_,callback) callback('\137PNG\r\n\26\n') end}}
+local invalid_body,invalid_error
+fake_image:prepare('book-one','fake','<img src="https://res.weread.qq.com/fake">',
+    function(value,err) invalid_body,invalid_error=value,err end)
+eq(nil,invalid_body,'an image signature alone cannot complete a readable chapter')
+eq('INVALID_INPUT',invalid_error and invalid_error.code,'decoder failure produces an actionable error')
+eq(true,decoded>0 and decoded==freed,'successful decode buffers are freed and failed decode has no buffer')
+local truncated=png:sub(1,32)
+eq(nil,cache:writeImage('weread','book-one',{uid='truncated'},1,truncated,'https://res.weread.qq.com/truncated'),
+    'a plausible PNG header with a truncated body is rejected by the host decoder')
+local bad_dimensions=png:sub(1,16)..'\0\0\255\255'..png:sub(21)
+local before_decode=decoded
+eq(nil,cache:writeImage('weread','book-one',{uid='huge-pixels'},1,bad_dimensions,'https://res.weread.qq.com/huge'),
+    'oversized pixel dimensions cannot enter the decoder')
+eq(before_decode,decoded,'pixel limit is enforced before native allocation')
 
 local changed_html='<img src="https://res.weread.qq.com/wrepub/replaced">'
 local changed_result
 images:prepare('book-one',chapter.uid,changed_html,function(value) changed_result=value end,chapter)
 eq(fetched_before+1,#fetched,'changed chapter image URL triggers a fresh resource request')
-yes(changed_result and changed_result:find('../images/chapter%-one_1.png')~=nil,
+yes(changed_result and changed_result:find('../images/chapter%-one_1_[%w_-]+.png')~=nil,
     'changed chapter image still receives a local reference')
 local trusted_fetches=#fetched
 
@@ -88,7 +132,7 @@ end,{uid='large'})
 eq(nil,too_large,'oversized image does not complete a chapter')
 eq('RESPONSE_TOO_LARGE',limit_error and limit_error.code,'image size limit is visible')
 
-local asset_path=assert(cache:imagePath('weread','book-one',chapter,1,'png'))
+local _,asset_path=cache:readImage('weread','book-one',chapter,1)
 files[asset_path]='damaged'
 local verified,corrupt_error=cache:verifyChapterImages('weread','book-one',chapter,result)
 eq(nil,verified,'damaged local asset is not treated as a valid offline chapter')
@@ -124,7 +168,7 @@ tar_images:prepare('book-one','tar-chapter','<img src="https://res.weread.qq.com
     {uid='tar-chapter',resource_tar='https://res.weread.qq.com/wrco/tar_42_7'})
 eq(nil,tar_error,'chapter resource package supplies its referenced image')
 eq(1,#tar_calls,'resource package avoids a second direct image request')
-yes(tar_result and tar_result:find('../images/tar%-chapter_1.png')~=nil,
+yes(tar_result and tar_result:find('../images/tar%-chapter_1_[%w_-]+.png')~=nil,
     'image extracted from resource package is referenced locally')
 
 local service=Service.new({chapterContent=function(_,_,_,callback)
@@ -133,7 +177,7 @@ end},images)
 local chapter_content
 service:getContent({id='weread'},{id='book-one',remote_id='remote-one'},
     {uid=chapter.uid,remote_uid='remote-chapter'},function(value) chapter_content=value end)
-yes(chapter_content and chapter_content.content:find('../images/chapter%-one_1.png')~=nil,
+yes(chapter_content and chapter_content.content:find('../images/chapter%-one_1_[%w_-]+.png')~=nil,
     'WeRead content service returns local image references to the reader session')
 local uppercase_content
 local uppercase_service=Service.new({chapterContent=function(_,_,_,callback)
@@ -141,7 +185,7 @@ local uppercase_service=Service.new({chapterContent=function(_,_,_,callback)
 end},images)
 uppercase_service:getContent(nil,{id='book-one',remote_id='remote-one'},
     {uid=chapter.uid,remote_uid='remote-chapter'},function(value) uppercase_content=value end)
-yes(uppercase_content and uppercase_content.content:find('../images/chapter%-one_1.png')~=nil,
+yes(uppercase_content and uppercase_content.content:find('../images/chapter%-one_1_[%w_-]+.png')~=nil,
     'uppercase image markup is localized before rendering')
 
 local native_calls=0
@@ -171,7 +215,7 @@ local reading_session=ReaderSession.new{cache=cache,storage=reading_storage,serv
         callbacks.ready(document);return document
     end}}
 assert(reading_session:open({id='weread'},reading_book,{reading_chapter},1,{}))
-yes(rendered_html and rendered_html:find('../images/chapter%-one_1.png')~=nil,
+yes(rendered_html and rendered_html:find('../images/chapter%-one_1_[%w_-]+.png')~=nil,
     'native reader receives HTML that refers to cached local image files')
 eq(nil,rendered_html:find('https://res.weread.qq.com',1,true),
     'native reader HTML has no authenticated remote image URL')

@@ -426,6 +426,7 @@ function App:prepareChapterComments(document)
         end,
         on_change=function(value)
             if document.widget and document.widget.setChapterComments then document.widget:setChapterComments(value.rows) end
+            if document.setChapterComments then document:setChapterComments(value.rows) end
         end}
     document.chapter_comments,self.chapter_comments=comments,comments
     comments.account_id=account_id

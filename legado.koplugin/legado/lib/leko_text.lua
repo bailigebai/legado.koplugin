@@ -108,9 +108,9 @@ local function normalized_quote(value)
     return table.concat(chars),positions
 end
 
--- Remote ranges refer to a different original-text coordinate system. Keep
--- that range as identity and verify its quoted text against the exact model
--- used for display. Ambiguous/revised text has no marker, only a list entry.
+-- A quote alone cannot identify its original occurrence after an edit. Accept
+-- a marker only when its zero-based, end-exclusive range also matches the
+-- reconstructed original-text map. Other coordinate variants stay list-only.
 function Text.locateQuote(model,quote,range)
     local first,last
     if type(range)=='string' then first,last=range:match('^(%d+)%-(%d+)$') end
@@ -136,7 +136,10 @@ function Text.locateQuote(model,quote,range)
                 original_last=original and original.first+positions[end_char]-1}
         end
     end
-    return found
+    if found and found.original_first==tonumber(first)+1 and found.original_last==tonumber(last) then
+        return found
+    end
+    return nil
 end
 function Text.metrics(model)
     if model.metrics then return model.metrics end

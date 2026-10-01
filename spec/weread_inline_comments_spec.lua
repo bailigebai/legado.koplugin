@@ -59,8 +59,8 @@ eq(2,model.source_positions and model.source_positions[1].first,
 eq(9,model.source_positions and model.source_positions[2].first,
     'HTML block boundaries and Chinese characters are represented in the source map')
 local rows=Mapper.inlineComments({reviews={
-    {id='r1',range='0-4',abstract='庄周梦蝶',content='第一条'},
-    {id='r2',range='10-19',abstract='白日 依山尽，黄河入海流',content='第二条'},
+    {id='r1',range='1-5',abstract='庄周梦蝶',content='第一条'},
+    {id='r2',range='8-21',abstract='白日 依山尽，黄河入海流',content='第二条'},
     {id='r3',range='20-24',abstract='不同版本',content='保留列表'},
 }},'book-one','7',model)
 eq(3,#rows,'all current-chapter comments remain in the list')
@@ -73,6 +73,9 @@ eq(nil,rows[3].position,'version mismatch never creates a body marker')
 local duplicate=assert(Text.parse('<p>重复句子</p><p>重复句子</p>','章'))
 eq(nil,Text.locateQuote(duplicate,'重复句子','0-4'),'ambiguous quotes are kept out of body markers')
 eq(nil,Text.locateQuote(model,'庄周梦蝶','bad-range'),'unverified ranges never become inline markers')
+eq(nil,Text.locateQuote(model,'庄周梦蝶','999999-1000000'),'out of bounds range never locates a unique quote')
+local revised=assert(Text.parse('<p>前段已经改写。</p><p>庄周梦蝶。</p>','章',true))
+eq(nil,Text.locateQuote(revised,'庄周梦蝶','0-4'),'old early range cannot mark the same quote in a later paragraph')
 local Comments=require('legado.lib.weread_comments')
 local pending,updates,cancels={},0,0
 local active=true
@@ -85,7 +88,7 @@ local comments=Comments.new{book_id='book-one',chapter_uid='7',model=model,
 eq(true,comments:load(),'first chapter comment page starts asynchronously')
 eq(true,comments.loading,'comment loading status is visible')
 eq(0,#comments.rows,'loading does not supply fake comments')
-pending[1].callback({reviews={{id='r1',range='0-4',abstract='庄周梦蝶',content='可读'}},
+pending[1].callback({reviews={{id='r1',range='1-5',abstract='庄周梦蝶',content='可读'}},
     has_more=true,next_cursor=cursor})
 eq(1,#comments.rows,'verified comments reach the reading model')
 eq(1,comments.rows[1].position.paragraph,'controller carries the verified marker position')

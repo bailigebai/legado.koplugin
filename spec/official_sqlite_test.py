@@ -162,7 +162,7 @@ def native_runtime():
     runtime = LuaRuntime(unpack_returned_tuples=True)
     runtime.globals().plugin_path = (ROOT / "legado.koplugin/?.lua").as_posix()
     runtime.globals().sqlite_library = (
-        str(Path(sys.executable).parent / "DLLs/sqlite3.dll") if sys.platform == "win32" else "sqlite3"
+        str(Path(sys.base_prefix) / "DLLs/sqlite3.dll") if sys.platform == "win32" else "sqlite3"
     )
     with ZipFile(ARCHIVE) as archive:
         runtime.globals().driver_source = archive.read("koreader/common/lua-ljsqlite3/init.lua").decode()

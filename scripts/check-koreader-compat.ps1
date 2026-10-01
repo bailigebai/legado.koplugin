@@ -1,11 +1,11 @@
-param([switch]$Offline)
+param([switch]$Offline, [string]$CacheRoot)
 
 $ErrorActionPreference = "Stop"
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
-$toolsRoot = Join-Path $repositoryRoot ".tools"
+$toolsRoot = if ($CacheRoot) { [System.IO.Path]::GetFullPath($CacheRoot) } else { Join-Path $repositoryRoot ".tools" }
 $sourceRoot = Join-Path $toolsRoot "koreader"
 $archivePath = Join-Path $toolsRoot "koreader-kindlehf-v2026.07.1.zip"
-$python = Join-Path $toolsRoot "python\Scripts\python.exe"
+$python = Join-Path $repositoryRoot ".tools\python\Scripts\python.exe"
 $tag = "v2026.07.1"
 $expectedCommit = "9192014d8bd82a91dc1012473be0f238dedfdb54"
 $archiveUrl = "https://github.com/koreader/koreader/releases/download/v2026.07.1/koreader-kindlehf-v2026.07.1.zip"

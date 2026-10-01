@@ -109,13 +109,13 @@ function Images:prepare(book_id,chapter_uid,html,callback,chapter)
     local function next_image(index)
         if cancelled or finished then return end
         if index>#urls then return finish_html() end
-        local cached,_,extension=self.cache:readImage('weread',book_id,chapter_ref,index,urls[index])
+        local cached,cached_path=self.cache:readImage('weread',book_id,chapter_ref,index,urls[index])
         if cached then
             total=total+#cached
             if total>self.MAX_TOTAL_BYTES then
                 return done(nil,failure('RESPONSE_TOO_LARGE','章节图片总量超过限制'))
             end
-            references[index]='../images/'..chapter_uid..'_'..index..'.'..extension
+            references[index]='../images/'..cached_path:match('([^/\\]+)$')
             return next_image(index+1)
         end
         local function received(bytes,err)
@@ -130,7 +130,7 @@ function Images:prepare(book_id,chapter_uid,html,callback,chapter)
             local path,kind=self.cache:writeImage('weread',book_id,chapter_ref,index,bytes,urls[index])
             if not path then return done(nil,kind or failure('STORAGE_ERROR','微信图片缓存失败')) end
             total=total+#bytes
-            references[index]='../images/'..chapter_uid..'_'..index..'.'..kind
+            references[index]='../images/'..path:match('([^/\\]+)$')
             next_image(index+1)
         end
         local path=urls[index]:match('^https://[^/]+(/[^?#]*)')

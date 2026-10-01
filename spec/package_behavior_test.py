@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import re
 import stat
 import shutil
 import subprocess
@@ -44,9 +45,11 @@ def main() -> int:
     powershell = shutil.which("powershell") or "powershell"
     package = root / "scripts" / "package.ps1"
     verify = root / "scripts" / "verify-package.ps1"
-    artifact = root / "dist" / "legado.koplugin-v0.10.38.zip"
+    version = re.search(rb'\bversion\s*=\s*"([\d.]+)"',
+                        (root / "legado.koplugin" / "_meta.lua").read_bytes()).group(1).decode("ascii")
+    artifact = root / "dist" / f"legado.koplugin-v{version}.zip"
 
-    build = [powershell, "-ExecutionPolicy", "Bypass", "-File", str(package), "-Version", "0.10.38", "-SkipTests"]
+    build = [powershell, "-ExecutionPolicy", "Bypass", "-File", str(package), "-Version", version, "-SkipTests"]
     run(build, True, "package succeeds")
     with zipfile.ZipFile(artifact) as release:
         if any(name.endswith("default_sources.json") for name in release.namelist()):
@@ -123,7 +126,7 @@ def main() -> int:
         raise AssertionError("valid package entries do not exactly match the reviewed release manifest")
 
     def verify_command(path: Path) -> list[str]:
-        return [powershell, "-ExecutionPolicy", "Bypass", "-File", str(verify), "-Archive", str(path), "-Version", "0.10.38"]
+        return [powershell, "-ExecutionPolicy", "Bypass", "-File", str(verify), "-Archive", str(path), "-Version", version]
     run(verify_command(artifact), True, "valid package verifies")
 
     with tempfile.TemporaryDirectory(prefix="legado-package-test-") as temporary:
@@ -172,7 +175,7 @@ def main() -> int:
         mismatch = temporary_path / "mismatch.zip"
         def change_version(name: str, data: bytes):
             if name == "legado.koplugin/_meta.lua":
-                data = data.replace(b'version = "0.10.38"', b'version = "9.9.9"')
+                data = data.replace(f'version = "{version}"'.encode(), b'version = "9.9.9"')
             return name, data
         rewrite(artifact, mismatch, change_version)
         run(verify_command(mismatch), False, "version mismatch is rejected")

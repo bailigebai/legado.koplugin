@@ -8,6 +8,6 @@ assertx.equal("legado", meta.name, "plugin name")
 assertx.equal("不亦阅乎", meta.fullname, "Chinese full name")
 assertx.type("string", meta.description, "description type")
 assertx.truthy(#meta.description > 0, "description is present")
-assertx.equal("0.10.38", meta.version, "version")
+assertx.equal("0.10.39", meta.version, "version")
 
 return 6
