@@ -51,6 +51,9 @@ eq('待读',local_book.custom_categories[1],'local book receives category')
 last().close_callback()
 eq(true,last().batch_select,'return from category editor preserves current batch mode')
 last().header_action.callback()
+for _,item in ipairs(last().items) do
+    if item.text=='书源书架' then item.callback();break end
+end
 eq('sources',last().storage and presenter.library_view.source_mode,'header switches to source shelf')
 eq(false,last().batch_select,'switching shelves exits batch mode')
 eq(nil,last().selected_books['local-1'],'switching shelves clears hidden local selection')

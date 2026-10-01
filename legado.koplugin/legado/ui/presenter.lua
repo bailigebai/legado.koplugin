@@ -504,6 +504,9 @@ end
 
 function Presenter:_weread(view)
     local model = view:page(view.display_page)
+    view.display_page = model.page
+    self.shelf_context = self.shelf_context or {}
+    self.shelf_context.weread = {page=model.page}
     local account_id = view.account_id
     local widget
     local function current_shelf()
@@ -560,6 +563,10 @@ function Presenter:_weread(view)
     local has_books = model.total > 0
     widget = self:_library(view, { title = "微信读书", subpage = "weread_shelf", subtitle = subtitle,
         items = items, mode = has_books and model.mode or "list", grouped_actions = true,
+        header_action = {text='切换书架',callback=function()
+            if not current_shelf() then return false end
+            return self:_shelfModeMenu(view,'weread',function() return self:_weread(view) end)
+        end},
         hero_action = has_books and model.page == 1 and { text = "继续阅读", callback = function()
             if not current_shelf() then return false end
             return self:_startWeReadReading(view,model.items[1],account_id)
@@ -882,9 +889,52 @@ function Presenter:_wereadReviews(view, book, page)
     return self.library_widget or widget
 end
 
+function Presenter:_switchShelf(origin, mode)
+    if not self.app then return false end
+    local context = self.shelf_context or {}
+    if mode == 'weread' then
+        local previous = origin and (origin.kind == 'weread' and 'sources' or origin.source_mode) or 'sources'
+        previous = previous or 'sources'
+        return self.app:openWeRead(function() return self:_switchShelf(nil,previous) end,context.weread)
+    end
+    return self.app:openBookshelf(mode,context[mode])
+end
+
+function Presenter:_shelfModeMenu(view, current_mode, on_back, retry)
+    local widget
+    local function active()
+        return view.alive ~= false and self.library_view == view
+            and self.library_widget == widget and self.library_subpage == 'shelf_modes'
+    end
+    local choices = {
+        {mode='sources',label='书源书架'},
+        {mode='weread',label='微信读书'},
+        {mode='local',label='本地书架'},
+    }
+    local items = {}
+    for _,choice in ipairs(choices) do
+        local selected = choice.mode == current_mode
+        items[#items+1] = {text=(selected and '✓ ' or '')..choice.label, callback=function()
+            if not active() then return false end
+            if selected then return on_back() end
+            return self:_switchShelf(view,choice.mode)
+        end}
+    end
+    if retry then items[#items+1]={text='重新读取',callback=function()
+        if not active() then return false end
+        return retry()
+    end} end
+    widget = self:_library(view,{title='切换书架',subpage='shelf_modes',items=items,
+        secondary=true,on_back=on_back})
+    return widget
+end
+
 function Presenter:_shelf(view, page)
     -- The screen owns cover requests; shelf storage remains the plugin's SQLite library.
     local model = view:page(page or 1, "hero")
+    self.shelf_context = self.shelf_context or {}
+    self.shelf_context[view.source_mode or 'sources'] = {page=model.page,
+        reading_state=view.reading_state,category=view.category}
     local items = {}
     for index,item in ipairs(model.items or {}) do
         local book_item=self:_bookItem(item.book, {item.book}, function() return self:_shelf(view,model.page) end)
@@ -919,19 +969,20 @@ function Presenter:_shelf(view, page)
             return self:_startReading(function(complete,progress) return detail:startReading(complete,progress) end,detail)
         end}
     end
-    local header_action = (model.load_error or model.progress_error) and {text='重新读取',callback=function() return self:_shelf(view,model.page) end}
-        or {text=local_mode and '书源书架' or '本地书架',callback=function()
-            view.source_mode=local_mode and 'sources' or 'local'; view:setFilter('all',nil)
-            view.batch_select, view.selected_books = false, {}
-            return self:_shelf(view,1)
-        end}
+    local widget
+    local header_action = {text='切换书架',callback=function()
+        if self.library_view ~= view or self.library_widget ~= widget or self.library_subpage ~= nil then return false end
+        return self:_shelfModeMenu(view,local_mode and 'local' or 'sources',
+            function() return self:_shelf(view,model.page) end,
+            (model.load_error or model.progress_error) and function() return self:_shelf(view,model.page) end or nil)
+    end}
     local empty_text
-    if model.load_error then empty_text='书架读取失败。请点击右上角“重新读取”重试；收藏数据未被更改。'
+    if model.load_error then empty_text='书架读取失败。请点击右上角“切换书架 → 重新读取”重试；收藏数据未被更改。'
     elseif local_mode then empty_text='还没有本地书籍，可在“更多 → 设置”添加书籍目录。'
     elseif model.category or (model.reading_state and model.reading_state~='all') then
         empty_text='这个分类还没有书，可在“整理书架”切换分类或去“找书”。'
     else empty_text='书架还是空的，点击“找书”收藏第一本书。' end
-    return self:_library(view,{title=local_mode and '本地书架' or '书架',brand_logo=true,
+    widget=self:_library(view,{title=local_mode and '本地书架' or '书架',brand_logo=true,
         subtitle=subtitle,items=items,
         mode=model.mode=="text" and "list" or model.mode=="hero" and model.page==1 and "shelf_hero" or "grid",
         hero_action=hero_action,
@@ -943,6 +994,7 @@ function Presenter:_shelf(view, page)
         on_prev=model.page>1 and function() return self:_shelf(view,model.page-1) end or nil,
         on_next=model.page<model.page_count and function() return self:_shelf(view,model.page+1) end or nil,
         empty_text=empty_text})
+    return widget
 end
 
 function Presenter:_search_results(view)

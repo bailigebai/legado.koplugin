@@ -69,10 +69,13 @@ do
         "shelf explains that recent reading order is temporarily unavailable")
     eq("打开阅读", displayed[#displayed].hero_action.text,
         "unknown progress is not presented as a new or continued book")
-    eq("重新读取", displayed[#displayed].header_action.text,
-        "progress failure offers a retry without hiding books")
+    eq("切换书架", displayed[#displayed].header_action.text,
+        "progress failure retains the mode switch")
     progress_failed = false
     displayed[#displayed].header_action.callback()
+    eq('重新读取', displayed[#displayed].items[4].text,
+        'progress failure offers retry in the switch menu')
+    displayed[#displayed].items[4].callback()
     eq("recent", displayed[#displayed].items[1].book.id,
         "retry restores the most recently read book to the front")
     eq("继续阅读", displayed[#displayed].hero_action.text,
@@ -118,10 +121,13 @@ do
     app:openHome()
     eq(true, displayed[#displayed].subtitle:find("书架读取失败", 1, true) ~= nil,
         "shelf screen reports the storage failure")
-    eq("重新读取", displayed[#displayed].header_action.text,
-        "failed shelf offers a direct retry without changing the four action groups")
+    eq("切换书架", displayed[#displayed].header_action.text,
+        "failed shelf retains the three-mode switch")
     failed = false
     displayed[#displayed].header_action.callback()
+    eq('重新读取', displayed[#displayed].items[4].text,
+        'failed shelf offers retry without changing the four action groups')
+    displayed[#displayed].items[4].callback()
     eq("restored", displayed[#displayed].items[1].book.id,
         "retry reads the recovered shelf without reopening the plugin")
 end
@@ -176,12 +182,29 @@ eq(3,last().page_count,"screen sees true storage page count")
 eq(0,#last().categories,"category controls live in shelf management")
 eq(4,#last().actions,"shelf exposes four functional groups")
 eq(0,#last().navigation,"the footer does not duplicate destinations")
+local old_shelf_page=last()
 last().on_next()
 eq(2,last().page,"next page indicator advances")
 eq(true,last().brand_logo,"later bookshelf pages retain the logo")
 eq("grid",last().mode,"later shelf pages use a twelve-cover grid")
 eq(12,#last().items,"later shelf pages contain twelve covers")
 eq("b6",last().items[1].book.id,"second shelf page follows the four homepage covers")
+local current_shelf_page=last()
+old_shelf_page.header_action.callback()
+eq(current_shelf_page,last(),'an old shelf header cannot replace the current page')
+eq('切换书架',last().header_action.text,'bookshelf exposes one switch entry')
+last().header_action.callback()
+eq('切换书架',last().title,'switch entry opens the mode menu')
+eq('✓ 书源书架',last().items[1].text,'current source mode is selected')
+eq('微信读书',last().items[2].text,'WeRead mode is directly available')
+eq('本地书架',last().items[3].text,'local mode is directly available')
+last().items[2].callback()
+eq('微信读书',last().title,'switch menu opens WeRead without login')
+last().header_action.callback()
+eq('切换书架',last().title,'WeRead shelf shares the switch entry')
+last().items[1].callback()
+eq(2,last().page,'source mode restores its page after visiting WeRead')
+eq('b6',last().items[1].book.id,'source page identity survives visiting WeRead')
 last().items[1].callback()
 eq("detail",last().mode,"grid tap opens independent book detail")
 eq("完整简介6",last().items[1].intro,"detail receives full introduction")
@@ -207,9 +230,12 @@ app:openHome()
 eq(0,#last().items,"empty shelf does not manufacture a book tile")
 eq("找书",last().actions[1].text,"empty shelf keeps the grouped search action")
 last().header_action.callback()
-eq("本地书架",last().title,"header switches to the local shelf")
+eq('切换书架',last().title,'source shelf opens mode menu')
+last().items[3].callback()
+eq("本地书架",last().title,"mode menu switches to local shelf")
 eq(true,last().brand_logo,"the local bookshelf also carries the logo")
 last().header_action.callback()
+last().items[1].callback()
 local failing_detail={kind="book_detail",book={id="failure",name="失败的书"},info={},alternatives={},
     startReading=function(_,callback)
         callback(nil,{code="STORAGE_ERROR",details={stage="reader_open",cause="https://user:secret@private.test"}})

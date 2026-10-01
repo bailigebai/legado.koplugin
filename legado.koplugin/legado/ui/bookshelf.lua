@@ -20,6 +20,7 @@ function Shelf.new(options)
         settings = options.settings,
         source_mode = options.source_mode or "sources", local_library = options.local_library,
         reading_state = "all", category = nil,
+        batch_select = false, selected_books = {},
         alive = true, generation = 0, cover_handles = {},
         navigation = Navigation.new({ count = 0, columns = 1 }),
     }, Shelf)

@@ -304,10 +304,11 @@ function App:openDownloads(back, start_picker)
     view.start_picker = start_picker == true
     return self:_present(view)
 end
-function App:openWeRead(back)
+function App:openWeRead(back, restore)
     local view = WeRead.new({ auth = self.weread_auth, client = self.weread_client,
         fs = self.fs, path = self.weread_shelf_path, scheduler = self.scheduler, storage = self.storage })
     view._back = back
+    if restore then view.display_page = restore.page end
     return self:_present(view)
 end
 function App:startWeReadReading(book,callback)
