@@ -75,6 +75,17 @@ do
 end
 
 do
+    local _, scheduler, transport, callbacks = run_fallback({
+        { status = 302, headers = { location = "http://cdn.test/image" }, chunks = {} },
+        { status = 200, chunks = { "unsafe" } },
+    }, { url = "https://books.test/image", https_only = true })
+    scheduler:runAll()
+    equal("NETWORK_ERROR", callbacks[1].err.code, "HTTPS-only resource rejects a downgraded redirect")
+    equal("redirect_scheme", callbacks[1].err.details.reason, "HTTPS downgrade has a diagnostic reason")
+    equal(1, #transport.requests, "HTTP redirect target is never requested")
+end
+
+do
     local engine, scheduler, transport, callbacks = run_fallback({
         { status = 200, chunks = { "json" } },
         { status = 200, chunks = { "form" } },

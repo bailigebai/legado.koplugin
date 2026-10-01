@@ -306,4 +306,28 @@ do
     eq("微信读书账号已切换", second_error,
         "old-account read reports a switch that happens during renewal fanout")
 end
+
+do
+    local sent,resource,resource_error={},nil,nil
+    local resource_client=Client.new{requests={execute=function(_,spec,callback)
+        sent[#sent+1]={spec=spec,callback=callback}
+        return {cancel=function() end}
+    end},auth={session=function() return {vid='account',access_token='private-token'} end}}
+    resource_client:fetchResource('https://evil.test/secret',function(value,err)
+        resource,resource_error=value,err
+    end)
+    eq(nil,resource,'untrusted resource host cannot fetch image bytes')
+    eq(0,#sent,'untrusted resource URL never reaches transport')
+    resource_client:fetchResource('https://res.weread.qq.com/wrepub/a',function(value,err)
+        resource,resource_error=value,err
+    end)
+    eq(true,sent[1].spec.binary,'resource response is kept as binary data')
+    eq(true,sent[1].spec.https_only,'resource request never follows an HTTP downgrade')
+    eq('weread-image',sent[1].spec.source_id,'resource cookies use a separate jar from account API cookies')
+    eq(nil,sent[1].spec.headers['X-Skey'],'resource request avoids session headers that could cross redirects')
+    eq('wr_vid=account; wr_skey=private-token; wr_ql=0',sent[1].spec.headers.Cookie,
+        'trusted WeRead host receives only the required web cookie')
+    sent[1].callback({status=200,body='\137PNG\r\n\26\nbytes'})
+    eq('\137PNG\r\n\26\nbytes',resource,'binary resource reaches the image cache layer')
+end
 return count

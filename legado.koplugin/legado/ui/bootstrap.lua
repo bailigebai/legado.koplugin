@@ -114,6 +114,10 @@ function Bootstrap.build(plugin, options)
             local ReaderSession = require("legado.lib.reader_session")
             local ReaderUIAdapter = require("legado.lib.koreader_reader_ui")
             local cache = CacheStore.new({ fs = fs, root = root .. "/cache", settings = settings, scheduler = UIManager })
+            if weread_service and weread_client then
+                weread_service.images=require('legado.lib.weread_images').new{
+                    cache=cache,client=weread_client}
+            end
             local offline_root = require("legado.lib.download_cache_path").resolve(
                 settings:get("download_cache_dir"), default_download_cache_dir)
             if offline_root then

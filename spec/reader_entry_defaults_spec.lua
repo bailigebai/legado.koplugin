@@ -69,8 +69,8 @@ local function image_document(mode,callbacks)
 end
 local image_session=Session.new{storage=image_storage,cache={
     readBody=function(_,_,_,chapter)
-        return chapter.uid=='image' and '<p>插图<img src="https://weread.qq.com/a.jpg"></p>' or '<p>纯文字</p>'
-    end,writeHtml=function() return 'image.html' end},
+        return chapter.uid=='image' and '<p>插图<img src="../images/image_1.png"></p>' or '<p>纯文字</p>'
+    end,verifyChapterImages=function() return true end,writeHtml=function() return 'image.html' end},
     ui={openChapter=function(_,_,callbacks) return image_document('immersive',callbacks) end,
         openDocument=function(_,_,callbacks) return image_document('native',callbacks) end},
     settings={get=function(_,key) return key=='immersive_reader' and true or 0 end}}

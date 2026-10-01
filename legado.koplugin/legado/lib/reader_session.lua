@@ -510,6 +510,16 @@ function ReaderSession:_open_cached(state, index, restore_fraction)
     local body, error_value = read_body(self, source_id(state.source, state.book), state.book.id, chapter)
     self:_timing(body and 'cache_hit' or 'cache_miss',started,state.backend,state,{requested_index=index})
     if not body then return nil, staged(error_value, "cache_read") end
+    if source_id(state.source,state.book)=='weread' and body:lower():find('<img',1,true) then
+        local verified,image_error
+        if self.cache.verifyChapterImages then
+            verified,image_error=self.cache:verifyChapterImages('weread',state.book.id,chapter,body)
+        end
+        if not verified then
+            return nil,staged(image_error or Errors.new(Errors.STORAGE_ERROR,'微信章节图片尚未缓存'),
+                'cache_read')
+        end
+    end
     local backend=state.backend or preferred_backend(self)
     local previous=self.active
     if previous and (previous.active or previous.pending_progress) then
@@ -519,7 +529,7 @@ function ReaderSession:_open_cached(state, index, restore_fraction)
         if not saved then return nil,staged(err,'progress') end
     end
     local weread = source_id(state.source,state.book)=='weread'
-    local has_image = weread and body:find('<img',1,true) ~= nil
+    local has_image = weread and body:lower():find('<img',1,true) ~= nil
     local saved_progress
     if weread then
         local progress_error

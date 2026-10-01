@@ -390,7 +390,8 @@ function RequestEngine:_perform(request, deadline)
             end
             local target = SafeFunctions.resolve_url(current.url, tostring(location))
             local target_scheme = target:match("^([%a][%w+.-]*):")
-            if not target_scheme or (target_scheme:lower() ~= "http" and target_scheme:lower() ~= "https") then
+            if not target_scheme or (target_scheme:lower() ~= "http" and target_scheme:lower() ~= "https")
+                or (current.https_only and target_scheme:lower() ~= "https") then
                 return outcome({ error = Errors.new(Errors.NETWORK_ERROR, "redirect target is unsupported", {
                     reason = "redirect_scheme", status = status,
                 }) })

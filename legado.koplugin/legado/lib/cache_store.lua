@@ -7,6 +7,15 @@ local CacheStore = {}; CacheStore.__index = CacheStore
 CacheStore.VERSION, CacheStore.MAX_BODY_BYTES = 2, 4 * 1024 * 1024
 local extensions = { chapters = ".body", html = ".html", catalog = ".json", cover = ".img" }
 local function safe_id(v) return type(v) == "string" and v:match("^[%w_-]+$") and v or nil end
+local image_extensions={png=true,jpg=true,gif=true,webp=true}
+local function image_extension(value)
+    if type(value)~='string' then return nil end
+    if value:sub(1,8)=='\137PNG\r\n\26\n' then return 'png' end
+    if value:sub(1,3)=='\255\216\255' then return 'jpg' end
+    if value:sub(1,6)=='GIF87a' or value:sub(1,6)=='GIF89a' then return 'gif' end
+    if value:sub(1,4)=='RIFF' and value:sub(9,12)=='WEBP' then return 'webp' end
+end
+CacheStore.imageExtension=image_extension
 local function utf8(v)
     local i, n = 1, #v
     while i <= n do
@@ -57,6 +66,7 @@ function CacheStore:_scan()
                 elseif attr and attr.mode=='file' and (
                     rel:match('^[%w_-]+/[%w_-]+/chapters/[%w_-]+%.body$') or
                     rel:match('^[%w_-]+/[%w_-]+/html/[%w_-]+%.html$') or
+                    rel:match('^[%w_-]+/[%w_-]+/images/[%w_-]+%.[%a]+$') or
                     rel:match('^[%w_-]+/[%w_-]+/cover%.img$') or
                     rel:match('^[%w_-]+/[%w_-]+/catalog%.json$')) then
                     files[#files+1]={path=child,relative=rel,size=tonumber(attr.size) or 0,mtime=tonumber(attr.modification) or 0,
@@ -271,6 +281,78 @@ function CacheStore:readHtml(s,b,c)
     return value,path
 end
 function CacheStore:writeCover(s,b,v) return self:_write(s,b,"cover",nil,v) end; function CacheStore:readCover(s,b) return self:_read(s,b,"cover",nil) end
+function CacheStore:imagePath(s,b,chapter,index,extension)
+    s,b=safe_id(s),safe_id(b)
+    local uid=safe_id(type(chapter)=='table' and chapter.uid or chapter)
+    index=tonumber(index)
+    if not s or not b or not uid or not index or index%1~=0 or index<1 or index>20
+        or not image_extensions[extension] and extension~='json' then
+        return nil,Errors.new(Errors.INVALID_INPUT,'invalid chapter image path')
+    end
+    local path,err=self.fs:join(self.root,s,b,'images',uid..'_'..index)
+    if not path then return nil,err end
+    path=path..'.'..extension
+    local valid,path_error=self:_validatePath(path)
+    if not valid then return nil,path_error end
+    return path
+end
+function CacheStore:writeImage(s,b,chapter,index,value,source_url)
+    local extension=image_extension(value)
+    if not extension then return nil,Errors.new(Errors.INVALID_INPUT,'image format is unsupported') end
+    if #value>4*1024*1024 then return nil,Errors.new(Errors.RESPONSE_TOO_LARGE,'chapter image exceeds limit') end
+    local path,err=self:imagePath(s,b,chapter,index,extension)
+    if not path then return nil,err end
+    local meta_path,meta_error=self:imagePath(s,b,chapter,index,'json')
+    if not meta_path then return nil,meta_error end
+    local existing=self:readImage(s,b,chapter,index,source_url)
+    if existing==value then return path,extension end
+    local written,write_error=self:_store(path,value,s,b)
+    if not written then return nil,write_error end
+    local metadata=Json.encode{extension=extension,bytes=#value,checksum=Identity.hash(value),source_url=source_url}
+    local saved,save_error=self:_store(meta_path,metadata,s,b)
+    if not saved then return nil,save_error end
+    return path,extension
+end
+function CacheStore:readImage(s,b,chapter,index,source_url)
+    local meta_path,err=self:imagePath(s,b,chapter,index,'json')
+    if not meta_path then return nil,err end
+    local raw=self.fs:readBounded(meta_path,2048)
+    if not raw then return nil,Errors.new(Errors.STORAGE_ERROR,'chapter image metadata missing') end
+    local ok,meta=pcall(Json.decode,raw)
+    if not ok or type(meta)~='table' or not image_extensions[meta.extension]
+        or type(meta.bytes)~='number' or meta.bytes<1 or meta.bytes>4*1024*1024
+        or type(meta.checksum)~='string' or (source_url and meta.source_url~=source_url) then
+        return nil,Errors.new(Errors.STORAGE_ERROR,'chapter image metadata is invalid')
+    end
+    local path,path_error=self:imagePath(s,b,chapter,index,meta.extension)
+    if not path then return nil,path_error end
+    local value=self.fs:readBounded(path,4*1024*1024)
+    if not value or #value~=meta.bytes or Identity.hash(value)~=meta.checksum
+        or image_extension(value)~=meta.extension then
+        return nil,Errors.new(Errors.STORAGE_ERROR,'chapter image failed integrity validation')
+    end
+    return value,path,meta.extension
+end
+function CacheStore:verifyChapterImages(s,b,chapter,body)
+    for tag in tostring(body or ''):gmatch('<[iI][mM][gG][^>]*>') do
+        local src=tag:match('[sS][rR][cC]%s*=%s*"([^"]+)"')
+            or tag:match("[sS][rR][cC]%s*=%s*'([^']+)'")
+        local prefix='../images/'..chapter.uid..'_'
+        local index,extension
+        if src and src:sub(1,#prefix)==prefix then
+            index,extension=src:sub(#prefix+1):match('^(%d+)%.([%a]+)$')
+        end
+        if not index or not image_extensions[extension] then
+            return nil,Errors.new(Errors.STORAGE_ERROR,'chapter image is not localized')
+        end
+        local value,err,actual_extension=self:readImage(s,b,chapter,tonumber(index))
+        if not value then return nil,err end
+        if actual_extension~=extension then
+            return nil,Errors.new(Errors.STORAGE_ERROR,'chapter image reference does not match cache')
+        end
+    end
+    return true
+end
 function CacheStore:clear(keep,include_catalog)
     self.known_bytes=nil
     local files,err=self:_scan();if not files then return nil,err end

@@ -8,12 +8,15 @@ local function eq(expected,actual,message) count=count+1;A.equal(expected,actual
 local book={id='book-local',remote_id='remote-1',source_id='weread',name='测试书'}
 local chapters=Mapper.chapters({data={{bookId='remote-1',updated={
     {chapterUid=22,chapterIdx=2,title='第二章',wordCount=20},
-    {chapterUid=11,chapterIdx=1,title='第一章',wordCount=30},
+    {chapterUid=11,chapterIdx=1,title='第一章',wordCount=30,
+        tar='https://res.weread.qq.com/wrco/tar_11'},
     {chapterUid=0,chapterIdx=0,title='封面',wordCount=0},
 }}}},book)
 eq(2,#chapters,'remote catalog creates two readable chapters')
 eq('11',chapters[1].remote_uid,'catalog follows source chapter order')
 eq('book-local',chapters[1].book_id,'chapter identity belongs to local book')
+eq('https://res.weread.qq.com/wrco/tar_11',chapters[1].resource_tar,
+    'catalog preserves the per-chapter image resource package')
 local index,fraction=Mapper.progress({book={chapterUid=22,chapterOffset=2500}},chapters)
 eq(2,index,'cloud progress chooses the matching chapter')
 eq(0.25,fraction,'cloud offset resumes at chapter fraction')

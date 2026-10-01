@@ -227,6 +227,41 @@ function Client:chapterInfos(book_id, callback)
         { idempotent = true })
 end
 
+function Client:fetchResource(url,callback,max_bytes)
+    url=tostring(url or '')
+    local host=url:match('^https://([^/%?#]+)')
+    if not host or not ({['res.weread.qq.com']=true,['cdn.weread.qq.com']=true,
+        ['weread.qq.com']=true})[host:lower()] or url:find('[%c%s]') then
+        callback(nil,'微信图片地址无效')
+        return nil
+    end
+    local session=self.auth:session()
+    local vid=session and cookie_value(session.vid)
+    local token=session and cookie_value(session.access_token)
+    if not vid or not token then callback(nil,'微信读书会话无效，请重新扫码登录');return nil end
+    local cancelled,finished=false,false
+    local request=self.requests:execute({url=url,method='GET',source_id='weread-image',binary=true,
+        https_only=true,
+        max_bytes=math.min(16*1024*1024,math.max(1,tonumber(max_bytes) or 4*1024*1024)),timeout=90,
+        headers={Cookie='wr_vid='..vid..'; wr_skey='..token..'; wr_ql=0',
+            Referer=WEB..'/', ['User-Agent']=BROWSER_AGENT}},function(response,err)
+        if cancelled or finished then return end
+        finished=true
+        local current=self.auth:session()
+        if not current or current.vid~=session.vid then return callback(nil,'微信读书账号已切换') end
+        if err or not response or type(response.body)~='string' then
+            return callback(nil,'微信图片获取失败，请重试')
+        end
+        callback(response.body)
+    end)
+    return {cancel=function()
+        if cancelled or finished then return false end
+        cancelled=true
+        if request and request.cancel then request:cancel() end
+        return true
+    end}
+end
+
 function Client:getProgress(book_id, callback)
     return self:_call("GET", "/web/book/getProgress?bookId=" .. Url(tostring(book_id or "")), nil, false, callback)
 end

@@ -131,7 +131,8 @@ function Mapper.chapters(wire, book)
         if type(chapter)=='table' and tonumber(chapter.wordCount or 1)>0 and chapter.title~='封面' then
             local uid=tostring(chapter.chapterUid or chapter.uid or '')
             if uid~='' then rows[#rows+1]={remote_uid=uid,source_index=tonumber(chapter.chapterIdx or chapter.idx) or #rows+1,
-                title=tostring(chapter.title or ''),paid=chapter.paid==1,price=tonumber(chapter.price) or 0} end
+                title=tostring(chapter.title or ''),paid=chapter.paid==1,price=tonumber(chapter.price) or 0,
+                resource_tar=type(chapter.tar)=='string' and chapter.tar or nil} end
         end
     end
     table.sort(rows,function(a,b) return a.source_index<b.source_index end)
@@ -140,7 +141,8 @@ function Mapper.chapters(wire, book)
         chapters[index]={uid=Identity.chapter(book.id,row.remote_uid,index),index=index,
             source_id='weread',book_id=book.id,title=row.title~='' and row.title or ('第'..index..'章'),
             url='weread://book/'..book.remote_id..'/chapter/'..row.remote_uid,
-            remote_uid=row.remote_uid,source_index=row.source_index,paid=row.paid,price=row.price}
+            remote_uid=row.remote_uid,source_index=row.source_index,paid=row.paid,price=row.price,
+            resource_tar=row.resource_tar}
     end
     if #chapters==0 then return nil,'微信读书目录为空' end
     return chapters
