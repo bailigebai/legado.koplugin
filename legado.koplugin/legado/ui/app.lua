@@ -394,6 +394,52 @@ function App:explainSelection(text, document)
     end
     return self.ai_service:explain(text, nil, function() end)
 end
+function App:prepareChapterComments(document)
+    local state=document and document.reading_state
+    if not state or document.closed or not self.weread_client or state.book.source_id~='weread' then
+        if self.chapter_comments then self.chapter_comments:close();self.chapter_comments=nil end
+        return false
+    end
+    local auth=self.weread_auth or self.weread_client.auth
+    local account=auth and auth:session()
+    local account_id=account and account.vid
+    if (document.chapter_comments and document.chapter_comments.account_id~=account_id)
+        or (state.book.weread_account_id and state.book.weread_account_id~=''
+            and state.book.weread_account_id~=account_id) then
+        if document.chapter_comments then document.chapter_comments:close() end
+        return false
+    end
+    if document.chapter_comments and document.chapter_comments:current() then return document.chapter_comments end
+    if self.chapter_comments then self.chapter_comments:close() end
+    local chapter=state.chapters[state.index]
+    local model=document.widget and document.widget.model
+    if not model and self.reader_session.cache then
+        local body=self.reader_session.cache:readBody('weread',state.book.id,chapter)
+        if body then model=require('legado.lib.leko_text').parse(body:gsub('<[iI][mM][gG][^>]*>',''),chapter.title,true) end
+    end
+    local comments=require('legado.lib.weread_comments').new{
+        client=self.weread_client,book_id=state.book.remote_id,chapter_uid=chapter.remote_uid,model=model,
+        is_current=function()
+            local latest=auth and auth:session()
+            return not document.closed and self.reader_session.active==state and state.document==document
+                and (not auth or latest and latest.vid==account_id)
+        end,
+        on_change=function(value)
+            if document.widget and document.widget.setChapterComments then document.widget:setChapterComments(value.rows) end
+        end}
+    document.chapter_comments,self.chapter_comments=comments,comments
+    comments.account_id=account_id
+    if state.offline then comments.error='当前离线，无法加载公开随文评论。联网后可重试。'
+    else comments:load() end
+    return comments
+end
+function App:openChapterComments(document,range)
+    if not document or document.closed then return false end
+    local comments=self:prepareChapterComments(document)
+    if not comments or not comments:current() or not self.presenter then return false end
+    if not comments.loaded and not comments.loading and not comments.error then comments:load() end
+    return self.presenter:showChapterComments(comments,document,range)
+end
 function App:openSettings(document, chrome_only, back, section)
     local independent=document and type(document.refreshAppearance)=='function'
     local function refresh()

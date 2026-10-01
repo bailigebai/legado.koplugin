@@ -369,11 +369,13 @@ function ReaderSession:_committed(state, document)
         self:_schedulePrefetch(state)
         self:_scheduleBackgroundCatalog(state)
     end
+    if self.ui.on_reading_committed then pcall(self.ui.on_reading_committed,document) end
     return true
 end
 
 function ReaderSession:_callbacks(state)
     return {
+        weread=source_id(state.source,state.book)=='weread',
         now = clock,
         timing = function(stage, started, details) self:_timing(stage, started, state.backend, state, details) end,
         can_open = function() return self.pending == state and not state.cancelled and self:_isCurrent(state) end,
@@ -454,6 +456,7 @@ function ReaderSession:_callbacks(state)
             end
         end,
         close = function(document)
+            if document.chapter_comments then document.chapter_comments:close() end
             if self.active == state and state.active and document == state.document then
                 local replacing=self.pending and self.pending.previous==state
                 -- _open_cached already saved this chapter before replacement.

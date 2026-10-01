@@ -1994,6 +1994,63 @@ function Presenter:_cacheSettings(view)
     return widget
 end
 
+function Presenter:showChapterComments(comments,document,range)
+    if not comments:current() then return false end
+    local state=document.reading_state
+    local chapter=state.chapters[state.index]
+    local render
+    local function close_panel()
+        local widget=comments.panel_widget
+        comments.panel_widget,comments.panel_changed,comments.panel_close=nil,nil,nil
+        comments:cancelLoad()
+        if widget then self:_closeWidget(widget) end
+        return true
+    end
+    render=function(page)
+        if not comments:current() then return false end
+        local old=comments.panel_widget
+        if old then self:_closeWidget(old) end
+        local rows=comments:list(range)
+        local size=6
+        page=math.max(1,math.min(tonumber(page) or 1,math.max(1,math.ceil(#rows/size))))
+        local widget,items,actions=nil,{},{}
+        local function current() return comments:current() and comments.panel_widget==widget end
+        for index=(page-1)*size+1,math.min(page*size,#rows) do
+            local row=rows[index]
+            local quote=row.abstract~='' and ('原文：'..row.abstract..'\n') or '未提供可定位原文\n'
+            items[#items+1]={text=quote..row.content,callback=function()
+                if not current() then return false end
+                return self:_info(quote..(row.author~='' and ('读者：'..row.author..'\n\n') or '\n')..row.content,
+                    '公开随文评论',560)
+            end}
+        end
+        if not comments.loading and (comments.error or comments.next_cursor) then
+            actions[#actions+1]={text=comments.error and '重试' or '加载更多评论',callback=function()
+                if not current() then return false end
+                return comments:load()
+            end}
+        end
+        if range then actions[#actions+1]={text='全部本章评论',callback=function()
+            if not current() then return false end
+            range=nil;return render(1)
+        end} end
+        local status=comments.loading and '正在加载公开随文评论…' or comments.error
+            or (#rows==0 and (range and '这段暂无已加载的评论。' or '本章暂无可用的公开随文评论。'))
+            or '公开随文评论 · 原文核对成功后显示正文标记'
+        widget=self.library_screen_factory{title='本章评论 · '..tostring(chapter.title or ''),
+            subtitle=status,empty_text=status,items=items,actions=actions,mode='list',grid_columns=1,
+            already_paginated=true,page=page,page_count=math.max(1,math.ceil(#rows/size)),
+            on_prev=page>1 and function() if current() then return render(page-1) end end or nil,
+            on_next=page*size<#rows and function() if current() then return render(page+1) end end or nil,
+            on_back=close_panel,ui_manager=self.ui_manager}
+        comments.panel_widget=widget
+        comments.panel_close=close_panel
+        comments.panel_changed=function() if comments.panel_widget then return render(page) end end
+        return self:_show(widget)
+    end
+    return render(1)
+end
+
 function Presenter:explainSelection(service, selected_text, document)
     if type(selected_text) ~= 'string' or selected_text == '' or #selected_text > 4000 then
         return self:_info('请选择不超过 4000 字节的阅读内容。', 'AI 解释')

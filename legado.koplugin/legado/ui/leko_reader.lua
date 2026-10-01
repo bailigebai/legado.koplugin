@@ -102,6 +102,10 @@ function View:_layoutStyle(style)
     local value=copy(style)
     local screen=Device.screen
     local scale=screen:scaleBySize(1000)/1000
+    if self.source_id=='weread' then
+        value.comment_gutter=math.max(36,screen:scaleBySize(36))
+        value.margin_right=style.margin_right+value.comment_gutter/scale
+    end
     -- The paginator takes logical heights; its rounding must still reserve
     -- every physical pixel measured by the native text widget.
     local function logicalHeight(pixels)
@@ -176,10 +180,10 @@ function Reader.prepare(options,previous)
     local style,err=normalized_style(options.style);if not style then return nil,err end
     local identity=chapter_identity(options)
     local model=previous and previous.identity==identity and previous.body==options.body and previous.model
-    if not model then model,err=Text.parse(options.body,options.chapter.title);if not model then return nil,err end end
+    if not model then model,err=Text.parse(options.body,options.chapter.title,options.source_id=='weread');if not model then return nil,err end end
     local key=identity..'\n'..model.checksum
     Text.metrics(model)
-    local context=setmetatable({settings=options.settings,chrome_heights=options.chrome_heights},{__index=View})
+    local context=setmetatable({settings=options.settings,chrome_heights=options.chrome_heights,source_id=options.source_id},{__index=View})
     local layout=context:_layoutStyle(style)
     local fingerprint=layout_key(layout)
     if previous and previous.key==key and previous.layout_key==fingerprint then return previous end
@@ -230,7 +234,7 @@ function View:_makeWidgets(page)
                 local options={text=element.text,face=element.face or g.body_face,padding=0,lang='zh-CN',bold=element.bold or false,
                     width=g.content_width,height=element.height,line_height=element.line_height or self.style.line_spacing,alignment='left',alignment_strict=true}
                 local widget=element.type=='title' and TransparentTitle:new(options) or TextWidget:new(options)
-                widgets[#widgets+1]={widget=widget,x=g.left,y=y}
+                widgets[#widgets+1]={widget=widget,x=g.left,y=y,element=element}
                 widget:getSize()
                 y=y+element.height+(element.bottom_gap or 0)
             end
@@ -446,6 +450,7 @@ function View:replaceChapter(options,prepared,commit)
         self[key]=candidate[key]
     end
     self.chapter_generation=(self.chapter_generation or 0)+1
+    self.chapter_comments={}
     self.chapter_request,self.chapter_pending,self.previous_target=nil,nil,nil
     free(previous_widgets)
     local scheduled,cause=pcall(self._startPagination,self,prepared)
@@ -517,6 +522,9 @@ function View:_paintTo(bb,x,y)
     if self.background_widget then self.background_widget:paintTo(bb,x,y) end
     if self.background_painter then self.background_painter(self,bb,x,y) end
     for _,item in ipairs(self.widgets) do item.widget:paintTo(bb,x+item.x,y+item.y) end
+    for _,target in ipairs(self:getCommentTargets()) do
+        self:_paintLabel(bb,'评',x+target.x,y+target.y,target.w,'center',14)
+    end
     local g=self.page.geometry;local layout=self.page.style._chrome_layout;local context=self:getReadingContext()
     local values={time=os.date('%H:%M'),title=self.book.name or self.book.title or '',chapter=self.chapter.title or '',off='',
         chapter_page=(context.chapter_page or '—')..'/'..(context.chapter_pages or '—'),
@@ -749,7 +757,7 @@ function View:refreshAppearance()
     local page,err=self:_makePage(self.page.start_position);if not page then return nil,err end
     local ok;ok,err=self:_setPage(page);if ok then self:_startPagination() end;return ok,err
 end
-function View:runAction(name)
+function View:runAction(name,...)
     if self.closed then return false end
     if name=='previous_chapter' then return self:requestChapter(self.index-1,false) end
     if name=='next_chapter' then return self:requestChapter(self.index+1,false) end
@@ -757,7 +765,7 @@ function View:runAction(name)
     if not self.callbacks[name] then return self:_error('功能接口未连接：'..name) end
     local paused,pause_error=self:pauseReading()
     if not paused then return self:_error(pause_error or '阅读进度保存失败。') end
-    local result,err=self:_call(name)
+    local result,err=self:_call(name,...)
     if result==false or err then self:resumeReading();return self:_error(err or '操作未完成。') end
     return result or true
 end
@@ -783,6 +791,9 @@ function View:showMenu()
         if #cells>0 then buttons[#buttons+1]=cells end
     end
     if self.callbacks.add_to_shelf then buttons[#buttons+1]={{text='加入书架',callback=function() self:_closeDialog('menu_dialog');self:runAction('add_to_shelf') end}} end
+    if self.callbacks.chapter_comments then buttons[#buttons+1]={{text='本章评论',callback=function()
+        self:_closeDialog('menu_dialog');return self:runAction('chapter_comments')
+    end}} end
     buttons[#buttons+1]={{text='继续阅读',callback=function() self:_closeDialog('menu_dialog');self:resumeReading() end}}
     self.menu_dialog=require('ui/widget/buttondialog'):new{title=self.book.name or self.book.title or '阅读',buttons=buttons,
         tap_close_callback=function() self.menu_dialog=nil;self:resumeReading() end}
@@ -850,8 +861,41 @@ function View:showLayoutMenu()
     if not ok then self.layout_dialog=nil;return self:_error(err) end
     return true
 end
+function View:setChapterComments(rows)
+    if self.closed then return false end
+    self.chapter_comments=rows or {}
+    self.ui:setDirty(self,'ui')
+    return true
+end
+function View:getCommentTargets()
+    local targets={}
+    if self.closed or not self.page or not self.page.style.comment_gutter or not self.callbacks.chapter_comments then return targets end
+    local geometry=self.page.geometry
+    for _,item in ipairs(self.widgets or {}) do
+        local line=item.element
+        if line and line.type=='line' then
+            local ranges,seen={},{}
+            for _,row in ipairs(self.chapter_comments or {}) do
+                local position=row.position
+                if position and position.paragraph==line.paragraph and position.char>=line.start_char
+                    and position.char<line.next_char and not seen[row.range] then
+                    ranges[#ranges+1]=row.range;seen[row.range]=true
+                end
+            end
+            if #ranges>0 then targets[#targets+1]={x=geometry.left+geometry.content_width,
+                y=item.y,w=self.page.style.comment_gutter,h=math.max(36,line.height),
+                range=#ranges==1 and ranges[1] or ranges} end
+        end
+    end
+    return targets
+end
 function View:onTap(_,ges) return safe_event(self, function()
     local x=ges and ges.pos and ges.pos.x or self.dimen.w/2;local y=ges and ges.pos and ges.pos.y or self.dimen.h/2
+    for _,target in ipairs(self:getCommentTargets()) do
+        if x>=target.x and x<target.x+target.w and y>=target.y and y<target.y+target.h then
+            return self:runAction('chapter_comments',target.range)
+        end
+    end
     if self.callbacks.toc and require('legado.ui.side_toc').isActivationTap(x,y,self.dimen.w,self.dimen.h) then return self:runAction('toc') end
     if y<=self.dimen.h*.12 or (x>=self.dimen.w*.38 and x<=self.dimen.w*.62 and y>=self.dimen.h*.36 and y<=self.dimen.h*.64) then return self:showMenu() end
     self:_resumeIfVisible()

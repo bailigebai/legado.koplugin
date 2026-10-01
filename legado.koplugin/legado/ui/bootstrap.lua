@@ -248,6 +248,20 @@ function Bootstrap.build(plugin, options)
         reader_session.ui.on_book_info = function(doc) return app:openReaderBookInfo(doc) end
         reader_session.ui.on_add_to_shelf = function(doc) return app:addReaderToShelf(doc) end
         reader_session.ui.on_ai = function(text, doc) return app:explainSelection(text, doc) end
+        reader_session.ui.on_chapter_comments = function(doc,range) return app:openChapterComments(doc,range) end
+        reader_session.ui.on_reading_committed = function(doc)
+            if app.chapter_comments then app.chapter_comments:close() end
+            if app.comment_prepare_job then UIManager:unschedule(app.comment_prepare_job) end
+            local job
+            job=function()
+                if app.comment_prepare_job~=job then return end
+                app.comment_prepare_job=nil
+                if not doc.closed and reader_session.active and reader_session.active.document==doc then
+                    app:prepareChapterComments(doc)
+                end
+            end
+            app.comment_prepare_job=job;UIManager:scheduleIn(.2,job)
+        end
     end
     if shared then Bootstrap.active_app=app end
     return app

@@ -49,6 +49,7 @@ function Mapper.book(row, account_id)
     return {
         id = Identity.book("weread:" .. text(account_id), remote_id),
         source_id = "weread", source_name = "微信读书", remote_id = remote_id,
+        weread_account_id = text(account_id),
         name = text(source.title or source.bookName or source.name),
         author = text(source.author or source.authors),
         cover_url = cover, intro = text(source.intro or source.description or source.summary),
@@ -159,6 +160,24 @@ function Mapper.progress(wire,chapters)
         if chapter.remote_uid==uid then return index,fraction end
     end
     return nil
+end
+
+function Mapper.inlineComments(wire,book_id,chapter_uid,model)
+    local Text=require('legado.lib.leko_text')
+    local rows={}
+    for _,row in ipairs(type(wire)=='table' and wire.reviews or {}) do
+        if type(row)=='table' and (not row.book_id or row.book_id==book_id)
+            and (not row.chapter_uid or tostring(row.chapter_uid)==tostring(chapter_uid)) then
+            local content=Text.plainText(row.htmlContent)
+            if content=='' then content=Text.plainText(row.content) end
+            local abstract=Text.plainText(row.abstract)
+            local author=type(row.author)=='table' and text(row.author.name or row.author.nickname) or ''
+            rows[#rows+1]={id=tostring(row.id or ''),range=row.range,abstract=abstract,
+                content=content~='' and content or '无文字评论',author=author,
+                position=model and Text.locateQuote(model,abstract,row.range) or nil}
+        end
+    end
+    return rows
 end
 
 return Mapper

@@ -50,7 +50,7 @@ function Text.positionLess(a,b)
     if a.paragraph~=b.paragraph then return a.paragraph<b.paragraph end
     return a.char<b.char
 end
-function Text.parse(body,title)
+function Text.parse(body,title,map_positions)
     if type(body)~='string' or #body>8*1024*1024 or body=='' then
         return nil,{code='INVALID_INPUT',message='章节正文为空或超过 8 MB。'}
     end
@@ -66,14 +66,77 @@ function Text.parse(body,title)
         return (({p=true,div=true,br=true,li=true,blockquote=true,pre=true})[tag] or tag:match('^h[1-6]$')) and '\n' or ''
     end)
     value=require('legado.lib.safe_functions').functions.htmldecode(value):gsub('\r\n','\n'):gsub('\r','\n')
-    local paragraphs={}
+    local paragraphs,source_positions={},map_positions and {} or nil
+    local original_char=1
     for line in (value..'\n'):gmatch('(.-)\n') do
-        line=line:match('^%s*(.-)%s*$')
-        if line~='' then paragraphs[#paragraphs+1]=line end
+        local trimmed=line:match('^%s*(.-)%s*$')
+        if trimmed~='' then
+            paragraphs[#paragraphs+1]=trimmed
+            if source_positions then
+                local leading=line:find('%S') or 1
+                local first=original_char+Text.utf8Length(line:sub(1,leading-1))
+                source_positions[#source_positions+1]={first=first,last=first+Text.utf8Length(trimmed)-1}
+            end
+        end
+        if source_positions then original_char=original_char+Text.utf8Length(line)+1 end
     end
-    if paragraphs[1]==title and #paragraphs>1 then table.remove(paragraphs,1) end
+    if paragraphs[1]==title and #paragraphs>1 then
+        table.remove(paragraphs,1);if source_positions then table.remove(source_positions,1) end
+    end
     if #paragraphs==0 then return nil,{code='PARSE_ERROR',message='本章没有可显示的文字。'} end
-    return {title=tostring(title or ''),paragraphs=paragraphs,checksum=require('legado.lib.identity').hash(body)}
+    return {title=tostring(title or ''),paragraphs=paragraphs,source_positions=source_positions,
+        checksum=require('legado.lib.identity').hash(body)}
+end
+
+function Text.plainText(value)
+    if type(value)~='string' then return '' end
+    value=value:gsub('<[sS][cC][rR][iI][pP][tT][^>]*>.-</[sS][cC][rR][iI][pP][tT]%s*>','')
+        :gsub('<[sS][tT][yY][lL][eE][^>]*>.-</[sS][tT][yY][lL][eE]%s*>','')
+        :gsub('<[^>]*>','')
+    return require('legado.lib.safe_functions').functions.htmldecode(value):match('^%s*(.-)%s*$')
+end
+
+local function normalized_quote(value)
+    local chars,positions={},{}
+    local index=0
+    for char in tostring(value):gmatch('[%z\1-\127\194-\244][\128-\191]*') do
+        index=index+1
+        if not char:match('^%s$') and char~='　' and char~=' ' then
+            chars[#chars+1]=char;positions[#positions+1]=index
+        end
+    end
+    return table.concat(chars),positions
+end
+
+-- Remote ranges refer to a different original-text coordinate system. Keep
+-- that range as identity and verify its quoted text against the exact model
+-- used for display. Ambiguous/revised text has no marker, only a list entry.
+function Text.locateQuote(model,quote,range)
+    local first,last
+    if type(range)=='string' then first,last=range:match('^(%d+)%-(%d+)$') end
+    if not first or not last or tonumber(first)>=tonumber(last) then return nil end
+    quote=Text.plainText(quote)
+    if #quote>32768 or not valid_utf8(quote) then return nil end
+    local wanted=normalized_quote(quote)
+    if wanted=='' then return nil end
+    local found
+    model.comment_text=model.comment_text or {}
+    for paragraph,value in ipairs(model.paragraphs or {}) do
+        local normalized=model.comment_text[paragraph]
+        if not normalized then normalized=normalized_quote(value);model.comment_text[paragraph]=normalized end
+        local at,ending=normalized:find(wanted,1,true)
+        if at then
+            if found or normalized:find(wanted,at+1,true) then return nil end
+            local start_char=Text.utf8Length(normalized:sub(1,at-1))+1
+            local end_char=Text.utf8Length(normalized:sub(1,ending))
+            local _,positions=normalized_quote(value)
+            local original=model.source_positions and model.source_positions[paragraph]
+            found={paragraph=paragraph,char=positions[start_char],last_char=positions[end_char],source_range=range,
+                original_first=original and original.first+positions[start_char]-1,
+                original_last=original and original.first+positions[end_char]-1}
+        end
+    end
+    return found
 end
 function Text.metrics(model)
     if model.metrics then return model.metrics end

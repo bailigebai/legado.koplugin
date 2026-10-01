@@ -244,6 +244,12 @@ function Adapter.open(owner,payload,callbacks)
             return owner.on_ai(selected,proxy)
         end
     end
+    if source_id(state)=='weread' and type(owner.on_chapter_comments)=='function' then
+        core.chapter_comments=function(_,range)
+            if proxy.closed or not accepted then return false end
+            return owner.on_chapter_comments(proxy,range)
+        end
+    end
     -- An explicit mode-switch fraction is newer than a prior immersive cursor.
     local fraction=state.restore_fraction
     if fraction==nil and progress.chapter_uid==chapter.uid then fraction=progress.fraction end

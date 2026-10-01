@@ -21,6 +21,8 @@ function Adapter.new(options)
         on_chrome_settings = options.on_chrome_settings,
         on_receipt=options.on_receipt,on_statistics=options.on_statistics,
         on_ai=options.on_ai,
+        on_chapter_comments=options.on_chapter_comments,
+        on_reading_committed=options.on_reading_committed,
         on_toggle_reader=options.on_toggle_reader,on_book_info=options.on_book_info,on_add_to_shelf=options.on_add_to_shelf,
         ui_manager=options.ui_manager,
         settings = options.settings }, Adapter)
@@ -171,6 +173,11 @@ function Adapter:_attachMenu(reader, proxy, callbacks)
         if self.on_toggle_reader and callbacks and callbacks.end_of_book then
             entries[#entries+1]={text='无感阅读：启用',callback=function()
                 close_menu();return self.on_toggle_reader(proxy)
+            end}
+        end
+        if self.on_chapter_comments and callbacks and callbacks.weread then
+            entries[#entries+1]={text='本章评论',callback=function()
+                close_menu();return self.on_chapter_comments(proxy)
             end}
         end
         return entries

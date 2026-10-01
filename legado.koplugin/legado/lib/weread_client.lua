@@ -312,4 +312,134 @@ function Client:bookReviews(book_id, callback, cursor)
     end)
 end
 
+local function comment_range(value)
+    if type(value)~='string' or #value>32 then return nil end
+    local first,last=value:match('^(%d+)%-(%d+)$')
+    first,last=tonumber(first),tonumber(last)
+    if first and last and first<last and last<=8*1024*1024 then return value end
+end
+
+local function comment_owner_matches(value,book_id,chapter_uid)
+    if type(value)~='table' then return false end
+    return not wrong_review_book(value,book_id)
+        and (value.chapterUid==nil or tostring(value.chapterUid)==chapter_uid)
+end
+
+-- The Web reader uses GET underlines then a read-only POST readReviews.
+-- A cursor owns its book/chapter and per-range positions; one call loads at
+-- most ten ranges, with twenty comments per range. No eager whole-book fetch.
+function Client:chapterComments(book_id,chapter_uid,callback,cursor)
+    book_id,chapter_uid=tostring(book_id or ''),tostring(chapter_uid or '')
+    if book_id=='' or chapter_uid=='' then callback(nil,'书籍或章节标识无效');return nil end
+    local session=self.auth:session()
+    if not session then callback(nil,'请先扫码登录微信读书');return nil end
+    local account=session.vid
+    local cancelled,finished,active=false,false,nil
+    local function finish(value,err)
+        if cancelled or finished then return end
+        finished=true
+        callback(value,err)
+    end
+    local function current()
+        if cancelled or finished then return false end
+        local latest=self.auth:session()
+        if not latest or latest.vid~=account then finish(nil,'微信读书账号已切换');return false end
+        return true
+    end
+    local function stage(method,path,body,done)
+        if not current() then return end
+        local delivered=false
+        local handle=self:_call(method,path,body,false,function(value,err)
+            delivered=true;active=nil
+            if current() then done(value,err) end
+        end,{idempotent=true,max_bytes=2*1024*1024})
+        if not delivered then active=handle end
+    end
+    local function load_ranges(ranges)
+        if #ranges==0 then return finish({reviews={},has_more=false}) end
+        local batch,remaining,requested={},{},{}
+        for i,row in ipairs(ranges) do
+            if i<=10 then batch[#batch+1]=row;requested[row.range]=row
+            else remaining[#remaining+1]=row end
+        end
+        stage('POST','/web/book/readReviews',{bookId=book_id,chapterUid=tonumber(chapter_uid) or chapter_uid,
+            reviews=batch},function(data,err)
+            if not data then return finish(nil,err) end
+            if not comment_owner_matches(data,book_id,chapter_uid) or type(data.reviews)~='table' then
+                return finish(nil,'微信本章评论返回的书籍或章节不匹配')
+            end
+            local reviews={}
+            for _,group in ipairs(data.reviews) do
+                local request=type(group)=='table' and requested[group.range]
+                if request and comment_owner_matches(group,book_id,chapter_uid) then
+                    local pages=type(group.pageReviews)=='table' and group.pageReviews or {}
+                    for i,row in ipairs(pages) do
+                        if i>20 then break end
+                        local review=type(row)=='table' and (row.review or row)
+                        if type(review)=='table' and type(review.review)=='table' then review=review.review end
+                        if type(review)=='table' and comment_owner_matches(row,book_id,chapter_uid)
+                            and comment_owner_matches(review,book_id,chapter_uid)
+                            and (review.range==nil or review.range==group.range) then
+                            reviews[#reviews+1]={id=tostring(review.reviewId or row.reviewId or (group.range..':'..(request.maxIdx+i))),
+                                range=group.range,abstract=review.abstract,content=review.content,
+                                htmlContent=review.htmlContent,author=review.author,createTime=review.createTime,
+                                book_id=book_id,chapter_uid=chapter_uid}
+                        end
+                    end
+                    local next_idx=review_cursor_number(group.maxIdx)
+                    if next_idx and next_idx<=request.maxIdx then next_idx=nil end
+                    if not next_idx and #pages>0 then
+                        next_idx=review_cursor_number(pages[#pages].idx) or (request.maxIdx+#pages)
+                    end
+                    if (group.hasMore==1 or group.hasMore==true) and next_idx and next_idx>request.maxIdx then
+                        remaining[#remaining+1]={range=group.range,maxIdx=next_idx,count=20,
+                            synckey=review_cursor_number(group.synckey) or 0}
+                    end
+                end
+            end
+            local next_cursor=#remaining>0 and {book_id=book_id,chapter_uid=chapter_uid,ranges=remaining} or nil
+            finish({reviews=reviews,next_cursor=next_cursor,has_more=next_cursor~=nil})
+        end)
+    end
+    if cursor then
+        if type(cursor)~='table' or cursor.book_id~=book_id or cursor.chapter_uid~=chapter_uid
+            or type(cursor.ranges)~='table' or #cursor.ranges>1000 then
+            finish(nil,'本章评论续页参数无效')
+        else
+            local ranges={}
+            for _,row in ipairs(cursor.ranges) do
+                if type(row)~='table' or not comment_range(row.range)
+                    or not review_cursor_number(row.maxIdx) or not review_cursor_number(row.synckey) then
+                    finish(nil,'本章评论续页范围无效');break
+                end
+                ranges[#ranges+1]={range=row.range,maxIdx=row.maxIdx,count=20,synckey=row.synckey}
+            end
+            if not finished then load_ranges(ranges) end
+        end
+    else
+        stage('GET','/web/book/underlines?bookId='..Url(book_id)..'&chapterUid='..Url(chapter_uid),nil,
+            function(data,err)
+                if not data then return finish(nil,err) end
+                if not comment_owner_matches(data,book_id,chapter_uid) or type(data.underlines)~='table' then
+                    return finish(nil,'微信本章划线返回的书籍或章节不匹配')
+                end
+                if #data.underlines>1000 then return finish(nil,'本章划线过多，暂不能加载评论') end
+                local ranges,seen={},{}
+                for _,row in ipairs(data.underlines) do
+                    local range=type(row)=='table' and comment_range(row.range)
+                    if range and not seen[range] and comment_owner_matches(row,book_id,chapter_uid) then
+                        seen[range]=true;ranges[#ranges+1]={range=range,maxIdx=0,count=20,synckey=0}
+                    end
+                end
+                load_ranges(ranges)
+            end)
+    end
+    return {cancel=function()
+        if cancelled or finished then return false end
+        cancelled=true
+        if active and active.cancel then active:cancel() end
+        return true
+    end}
+end
+
 return Client
