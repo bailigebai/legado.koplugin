@@ -1,11 +1,15 @@
 # 不亦阅乎：KOReader 书源阅读插件
 
 
-升级无需重新激活：同一 Kindle 已成功激活后，覆盖更新插件代码即可，原短密钥和离线授权继续有效。请保留 KOReader 的用户数据和 settings 目录，不要删除 legado.json 或 legado-license.json；它们不在插件安装包中。v0.10.39 安装包已更新到本仓库 downloads；GitHub Releases 当前仍为 v0.10.36。
+升级无需重新激活：同一 Kindle 已成功激活后，覆盖更新插件代码即可，原短密钥和离线授权继续有效。请保留 KOReader 的用户数据和 settings 目录，不要删除 legado.json 或 legado-license.json；它们不在插件安装包中。v0.10.40 安装包已更新到本仓库 downloads；GitHub Releases 当前仍为 v0.10.36。
 
-[下载 v0.10.39 安装包](https://github.com/bailigebai/legado.koplugin/raw/refs/heads/main/downloads/legado.koplugin-v0.10.39-20261001.zip) · [本版说明与校验](downloads/README.md) · [查看 Releases](https://github.com/bailigebai/legado.koplugin/releases)
+[下载 v0.10.40 安装包](https://github.com/bailigebai/legado.koplugin/raw/refs/heads/main/downloads/legado.koplugin-v0.10.40-20261002.zip) · [本版说明与校验](downloads/README.md) · [查看 Releases](https://github.com/bailigebai/legado.koplugin/releases)
 
-v0.10.39 请使用上方安装包链接升级，完成后重启 KOReader；应用商店自动下载仍以已发布版本为准。
+v0.10.40 请使用上方安装包链接升级，完成后重启 KOReader；应用商店自动下载仍以已发布版本为准。
+
+## v0.10.40：章节末尾失败后的重试恢复
+
+修复原生阅读异步打开失败后翻章限制未解除，以及无感阅读补齐目录后切章失败未结束等待。两项故障已复现并通过回归，允许在旧章节再次翻页重试。设备已安装并完整回读 145 个文件，实机偶发情况是否完全消失仍需继续阅读确认。[修复记录](docs/chapter-end-recovery-0.10.40.md)
 
 ## v0.10.36：最近阅读排序与缓存维护优化
 
@@ -93,7 +97,7 @@ Swipe 操作：阅读菜单 → 阅读设置 → 动画效果 → Swipe动画，
 ## 安装
 
 1. 安装并确认 KOReader 能在 Kindle 上正常启动。
-2. 解压 `legado.koplugin-v0.10.39-20261001.zip`；压缩包只有一个顶层目录 `legado.koplugin/`。升级前退出 KOReader，保留数据目录，只替换旧插件代码目录。
+2. 解压 `legado.koplugin-v0.10.40-20261002.zip`；压缩包只有一个顶层目录 `legado.koplugin/`。升级前退出 KOReader，保留数据目录，只替换旧插件代码目录。
 3. 将该目录完整复制到 KOReader 的 `koreader/plugins/` 下，最终应存在 `koreader/plugins/legado.koplugin/main.lua`。
 4. 完全退出并重新启动 KOReader，点屏幕顶部打开菜单，进入“工具 → 不亦阅乎”。文件浏览界面和书籍阅读界面均可打开书架、搜索、发现或书源管理。
 
