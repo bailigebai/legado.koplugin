@@ -1,11 +1,11 @@
 # 不亦阅乎：KOReader 书源阅读插件
 
 
-升级无需重新激活：同一 Kindle 已成功激活后，覆盖更新插件代码即可，原短密钥和离线授权继续有效。请保留 KOReader 的用户数据和 settings 目录，不要删除 legado.json 或 legado-license.json；它们不在插件安装包中。最新安装包以 GitHub Releases 的最新版本为准。
+升级无需重新激活：同一 Kindle 已成功激活后，覆盖更新插件代码即可，原短密钥和离线授权继续有效。请保留 KOReader 的用户数据和 settings 目录，不要删除 legado.json 或 legado-license.json；它们不在插件安装包中。v0.10.39 安装包已更新到本仓库 downloads；GitHub Releases 当前仍为 v0.10.36。
 
-[下载最新安装包](https://github.com/bailigebai/legado.koplugin/releases/latest) · [下载 v0.10.36 ZIP](https://github.com/bailigebai/legado.koplugin/releases/download/v0.10.36/legado.koplugin-v0.10.36-20260928.zip)
+[下载 v0.10.39 安装包](https://github.com/bailigebai/legado.koplugin/raw/refs/heads/main/downloads/legado.koplugin-v0.10.39-20261001.zip) · [本版说明与校验](downloads/README.md) · [查看 Releases](https://github.com/bailigebai/legado.koplugin/releases)
 
-应用商店：刷新仓库列表，打开 `bailigebai/legado.koplugin`，选择“下载插件”并安装最新正式版，完成后重启 KOReader。
+v0.10.39 请使用上方安装包链接升级，完成后重启 KOReader；应用商店自动下载仍以已发布版本为准。
 
 ## v0.10.36：最近阅读排序与缓存维护优化
 
@@ -93,7 +93,7 @@ Swipe 操作：阅读菜单 → 阅读设置 → 动画效果 → Swipe动画，
 ## 安装
 
 1. 安装并确认 KOReader 能在 Kindle 上正常启动。
-2. 解压 `legado.koplugin-v0.10.36-20260928.zip`；压缩包只有一个顶层目录 `legado.koplugin/`。升级前退出 KOReader，保留数据目录，只替换旧插件代码目录。
+2. 解压 `legado.koplugin-v0.10.39-20261001.zip`；压缩包只有一个顶层目录 `legado.koplugin/`。升级前退出 KOReader，保留数据目录，只替换旧插件代码目录。
 3. 将该目录完整复制到 KOReader 的 `koreader/plugins/` 下，最终应存在 `koreader/plugins/legado.koplugin/main.lua`。
 4. 完全退出并重新启动 KOReader，点屏幕顶部打开菜单，进入“工具 → 不亦阅乎”。文件浏览界面和书籍阅读界面均可打开书架、搜索、发现或书源管理。
 
