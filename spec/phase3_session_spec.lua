@@ -471,5 +471,29 @@ if os.getenv('LEGADO_SOAK')=='1' then
     eq(0,#h.tasks,'soak close releases every scheduled job')
     eq(1,#h.ui._window_stack,'soak close releases every plugin widget')
 end
+-- A streamed catalog may arrive after the widget has subscribed to its next
+-- chapter. A synchronous error in that continuation must settle the widget's
+-- request, rather than leave every subsequent page turn deduplicated forever.
+session:close()
+local catalog_reply
+service.getChapters=function(_,_,_,callback)
+    catalog_reply=callback;return {cancel=noop}
+end
+cache.writeCatalog=function() return 'catalog.json' end
+session=new_session()
+local partial=assert(session:open(site,book,{chapters[1]},1,{backend='immersive',catalog_complete=false}))
+h:drain()
+partial.widget:requestChapter(2,false)
+eq(2,partial.widget.chapter_pending and partial.widget.chapter_pending.index,'next chapter waits for the catalog')
+local put_progress=store.putProgress
+store.putProgress=function() return nil,{code='STORAGE_ERROR',message='temporary progress save failure'} end
+catalog_reply(chapters,nil,{catalog_complete=true})
+eq(nil,partial.widget.chapter_pending,'catalog continuation error releases the real widget chapter request')
+eq(partial,current(),'catalog continuation failure preserves the current reading document')
+store.putProgress=put_progress
+partial.widget:requestChapter(2,false);h:drain()
+eq(2,session.active.index,'real widget can retry the same chapter after catalog continuation error')
+session:close()
+
 assert(#failures==0,table.concat(failures,'\n'))
 return count

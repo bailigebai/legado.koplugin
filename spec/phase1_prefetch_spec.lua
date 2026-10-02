@@ -302,6 +302,43 @@ do
     f.session:close()
 end
 
+-- Native opening is asynchronous. A failed candidate must release the old
+-- chapter's end guard, otherwise every later EndOfBook event is ignored.
+do
+    local f=fixture(); f.open(); f.next(); f.delay_ready=true
+    f.finish(1,'<p>Next</p>')
+    local previous=f.opened[1]
+    local candidate=f.opened[#f.opened]
+    candidate.callbacks.failure({code='READER_ERROR',message='temporary reader failure'})
+    eq(previous.document,f.session.active.document,'failed native opening restores the old reader')
+    eq(false,f.session.active.end_handled,'asynchronous native failure releases chapter-end retry')
+    f.delay_ready=false
+    previous.callbacks.end_of_book(previous.document)
+    eq(2,f.session.active.index,'page turn retries the cached next chapter after asynchronous failure')
+    f.session:close()
+end
+
+-- A catalog continuation must report both return-only errors and errors that
+-- navigate already delivered through its callback, exactly once in either case.
+for _,failure in ipairs({'progress','no_handle','reader_open'}) do
+    local f=fixture({prefetch=0});f.open({chapters[1]},1,{catalog_complete=false})
+    if failure~='no_handle' then f.bodies.c2='<p>Cached successor</p>' end
+    local completions,last_error=0,nil
+    f.session:navigate(2,{on_complete=function(_,err) completions=completions+1;last_error=err end})
+    if failure=='progress' then
+        f.session.storage.putProgress=function() return nil,{code='STORAGE_ERROR',message='temporary write failure'} end
+    elseif failure=='no_handle' then
+        f.service.getContent=function() return nil,{code='NETWORK_ERROR',message='request could not start'} end
+    else
+        f.session.ui.openDocument=function() return nil,{code='READER_ERROR',message='temporary engine failure'} end
+    end
+    f.catalog_requests[1].callback(chapters,nil,{catalog_complete=true})
+    eq(1,completions,failure..' catalog continuation notifies once')
+    eq(true,last_error and last_error.code~=nil,failure..' catalog continuation preserves the error')
+    eq(1,f.session.active.index,failure..' catalog continuation keeps the current chapter')
+    f.session:close()
+end
+
 for _, failure in ipairs({ 'throw', 'no_handle' }) do
     local f = fixture()
     f.service.getChapters = function()

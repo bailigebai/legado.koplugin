@@ -239,7 +239,7 @@ function ReaderSession:_fail_candidate(state, error_value)
     state.error = self:_reader_error("KOReader could not activate generated chapter", error_value, "reader_open")
     local previous = state.previous
     if previous and previous.document and previous.document.closed ~= true then
-        previous.active = true
+        previous.active, previous.end_handled = true, false
         self.active = previous
     else
         if previous then previous.active = false end
@@ -771,12 +771,23 @@ function ReaderSession:navigate(index, request)
             if err then
                 self.diagnostics('read',err)
                 if request.on_complete then request.on_complete(nil,err) end
-            elseif bookmark then
+            elseif bookmark or index<=#active.chapters then
+                -- This continuation has already returned a catalog subscription
+                -- to the view. Settle it even when navigate fails synchronously,
+                -- and avoid a second notification if navigate called back first.
+                local completed=false
                 local next_request={};for key,value in pairs(request)do next_request[key]=value end
-                next_request.bookmark_attempts=(request.bookmark_attempts or 0)+1
+                next_request.on_complete=function(document,failure)
+                    if completed then return end
+                    completed=true
+                    if request.on_complete then request.on_complete(document,failure) end
+                end
+                if bookmark then next_request.bookmark_attempts=(request.bookmark_attempts or 0)+1 end
                 local _,failure=self:navigate(index,next_request)
-                if failure and request.on_complete then request.on_complete(nil,failure) end
-            elseif index<=#active.chapters then self:navigate(index,request)
+                if failure and not completed then
+                    self.diagnostics('read',failure)
+                    next_request.on_complete(nil,failure)
+                end
             else
                 local missing=Errors.new(Errors.INVALID_INPUT,'没有后续章节')
                 self.diagnostics('read',missing)
