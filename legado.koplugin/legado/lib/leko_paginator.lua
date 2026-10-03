@@ -200,6 +200,7 @@ end
 
 
 local function paragraphLength(model, paragraph_index)
+    if model.images and model.images[paragraph_index] then return 1 end
     model._utf8_lengths = model._utf8_lengths or {}
     local cached = model._utf8_lengths[paragraph_index]
     if cached ~= nil then return cached end
@@ -433,6 +434,27 @@ function Paginator:makePage(book, requested_position, style, checkpoint)
     model._utf8_hints = model._utf8_hints or {}
 
     while chapter_index == position.chapter and paragraph_index <= #model.paragraphs do
+        local image = model.images and model.images[paragraph_index]
+        if image then
+            local factor = math.min(1, geometry.content_width / image.width, geometry.content_height / image.height)
+            local width = math.max(1, math.floor(image.width * factor))
+            local height = math.max(1, math.floor(image.height * factor))
+            if height > remaining_height then
+                if added_line then
+                    page.next_position = makePosition(book, chapter_index, paragraph_index, 1)
+                    return finishPage(book, model, page)
+                end
+                -- A large opening image must advance: omit the decorative
+                -- title opening when it leaves insufficient room for content.
+                page.elements, page.used_height = {}, 0
+                remaining_height = geometry.content_height
+            end
+            page.elements[#page.elements + 1] = { type = 'image', path = image.path,
+                width = width, height = height, paragraph = paragraph_index }
+            page.used_height = page.used_height + height
+            remaining_height = remaining_height - height
+            added_line = true
+        else
         local paragraph = model.paragraphs[paragraph_index]
         local paragraph_length = paragraphLength(model, paragraph_index)
         local paragraph_done = false
@@ -525,6 +547,7 @@ function Paginator:makePage(book, requested_position, style, checkpoint)
             else
                 paragraph_done = true
             end
+        end
         end
 
         paragraph_index = paragraph_index + 1

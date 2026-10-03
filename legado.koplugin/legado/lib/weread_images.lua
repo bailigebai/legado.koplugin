@@ -8,9 +8,20 @@ Images.MAX_TOTAL_BYTES=16*1024*1024
 
 local function failure(code,message) return {code=code,message=message} end
 
-local function trusted_url(value)
+local function trusted_url(value,remote_book_id)
     if type(value)~='string' or value=='' or #value>8192 or value:find('[%c%s]') then return nil end
     value=value:gsub('&amp;','&')
+    local relative=value:match('^%.%./[iI][mM][aA][gG][eE][sS]/(.+)$')
+    if relative then
+        -- Matches the official reader's EPUB image rewrite. The local book
+        -- hash is not the server's book id; never resolve against the host root.
+        local extension=relative:match('%.([%a]+)$')
+        if type(remote_book_id)~='string' or #remote_book_id>128 or not remote_book_id:match('^[%w_-]+$')
+            or not relative:match('^[%w_./-]+$') or relative:find('..',1,true)
+            or relative:sub(1,1)=='/' or relative:find('//',1,true)
+            or not ({png=true,jpg=true,jpeg=true,gif=true})[extension and extension:lower()] then return nil end
+        value='https://res.weread.qq.com/wrepub/web/'..remote_book_id..'/'..relative
+    end
     if value:find('../',1,true) or value:find('\\',1,true) then return nil end
     if value:sub(1,2)=='//' then value='https:'..value
     elseif value:sub(1,1)=='/' then value='https://res.weread.qq.com'..value
@@ -21,6 +32,20 @@ local function trusted_url(value)
     if not host or not ({['res.weread.qq.com']=true,['cdn.weread.qq.com']=true,
         ['weread.qq.com']=true})[host:lower()] then return nil end
     return value
+end
+
+local function legacy_notes(html)
+    return html:gsub('<[iI][mM][gG][^>]*>',function(tag)
+        local src=tag:match('%s+[sS][rR][cC]%s*=%s*"([^"]+)"') or tag:match("%s+[sS][rR][cC]%s*=%s*'([^']+)'")
+        if not src or src:lower()~='../images/note.png' then return tag end
+        local alt=tag:match('%s+[aA][lL][tT]%s*=%s*"([^"]+)"') or tag:match("%s+[aA][lL][tT]%s*=%s*'([^']+)'")
+        if not alt or #alt>32768 or not alt:match('%S') then return tag end
+        -- Older EPUBs use a missing note.png icon with the citation in alt,
+        -- without the newer qqreader-footnote marker. Keep that text readable.
+        alt=require('legado.lib.safe_functions').functions.htmldecode(alt)
+        alt=require('legado.lib.xml_text').escape(alt)
+        return '<span>〔注：'..alt..'〕</span>'
+    end)
 end
 
 local function image_sources(html)
@@ -62,17 +87,18 @@ function Images.new(options)
     return setmetatable({cache=options.cache,client=options.client},Images)
 end
 
-function Images:prepare(book_id,chapter_uid,html,callback,chapter)
+function Images:prepare(book_id,chapter_uid,html,callback,chapter,remote_book_id)
     callback=callback or function() end
     if type(html)~='string' or type(book_id)~='string' or type(chapter_uid)~='string' then
         callback(nil,failure('INVALID_INPUT','微信图片章节参数无效'))
         return nil
     end
+    html=legacy_notes(html)
     local sources=image_sources(html)
     if not sources then callback(nil,failure('INVALID_INPUT','微信图片标签或数量无效'));return nil end
     local urls={}
     for index,src in ipairs(sources) do
-        urls[index]=trusted_url(src)
+        urls[index]=trusted_url(src,remote_book_id)
         if not urls[index] then
             callback(nil,failure('INVALID_INPUT','微信图片地址不受信任'))
             return nil

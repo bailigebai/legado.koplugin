@@ -237,8 +237,8 @@ local function reading_setting_keys(reader)
     return keys
 end
 
-function Adapter:prepareChapter(state,chapter,body)
-    return require('legado.lib.leko_reader_ui').prepare(self,state,chapter,body)
+function Adapter:prepareChapter(state,chapter,body,images)
+    return require('legado.lib.leko_reader_ui').prepare(self,state,chapter,body,images)
 end
 function Adapter:getPreparedChapterStatus(state)
     return require('legado.lib.leko_reader_ui').preparedStatus(self,state)

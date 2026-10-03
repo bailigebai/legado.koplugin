@@ -84,13 +84,13 @@ eq('已登录 · 本地阅读记录不可用',shown[#shown].subtitle,
 eq('离线封面',shown[#shown].items[1].title,'history failure does not hide the remote shelf')
 local notice_shown={}
 local notice_presenter=Presenter.new{app={startWeReadReading=function(_,_,callback)
-    callback({backend='native',reading_state={image_mode_switched=true}})
+    callback({backend='immersive',reading_state={contains_images=true}})
 end},ui_manager={show=function(_,widget) notice_shown[#notice_shown+1]=widget end}}
 local notice_view=View.new{auth=auth}
 notice_view.synced=true
 notice_view.books={{id='notice-book',remote_id='notice-remote',source_id='weread',name='图文书'}}
 notice_presenter:show(notice_view)
+local before_read=#notice_shown
 notice_shown[#notice_shown].hero_action.callback()
-eq('本书含图片，已自动切换原生阅读模式。',notice_shown[#notice_shown].text,
-    'first image chapter explains the automatic reader mode change')
+eq(before_read,#notice_shown,'opening an image book does not show an obsolete mode-switch notice')
 return count

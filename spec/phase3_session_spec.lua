@@ -235,10 +235,10 @@ eq(false,doc.widget.paused,'failed pause save leaves widget reading active')
 eq(false,session.active.paused==true,'failed pause save leaves Session reading active')
 fail_write=false
 doc:resumeReading()
-bodies[cache_key(book.id,chapters[2])]='<p>图片章节<img src="cover.png"></p>'
+bodies[cache_key(book.id,chapters[2])]='<p>'..string.char(0xC0,0xAF)..'</p>'
 no,err=session:open(site,book,chapters,2,{backend='immersive'})
-eq(nil,no,'unsupported candidate construction rejects the switch')
-eq('UNSUPPORTED_CONTENT',err.code,'candidate failure retains its specific error code')
+eq(nil,no,'invalid UTF-8 candidate construction rejects the switch')
+eq('ENCODING_ERROR',err.code,'candidate failure retains its specific error code')
 eq(doc,current(),'construction failure preserves the old active document')
 eq(doc,owner.current_document,'construction failure preserves owner current_document')
 bodies[cache_key(book.id,chapters[2])]=nil

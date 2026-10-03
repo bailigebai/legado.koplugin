@@ -10,7 +10,7 @@ eq('甲&乙',parsed.paragraphs[1],'entities decoded after structural conversion'
 eq('末尾😀。　',parsed.paragraphs[3],'unicode numeric entities keep their code point')
 local absent,err=T.parse('<p>图示</p><img src="page.png"/>','图片章')
 eq(nil,absent,'image chapters do not silently discard content')
-eq('UNSUPPORTED_CONTENT',err.code,'image limit is actionable')
+eq('STORAGE_ERROR',err.code,'missing image cache is actionable')
 local malformed,encoding_error=T.parse('<p>'..string.char(0xC0,0xAF)..'</p>','坏编码')
 eq(nil,malformed,'malformed UTF-8 cannot enter the native text shaper')
 eq('ENCODING_ERROR',encoding_error.code,'encoding failure has an explicit result')

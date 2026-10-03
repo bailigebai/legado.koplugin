@@ -171,6 +171,16 @@ local function chapter_identity(options)
     return table.concat({tostring(options.source_id or ''),tostring(options.book.id or ''),
         tostring(options.chapter.uid or options.chapter.url or ''),tostring(options.chapter.title or '')},'\n')
 end
+local function same_images(left,right)
+    if left==right then return true end
+    left,right=left or {},right or {}
+    for src,image in pairs(left) do
+        local other=right[src]
+        if not other or image.path~=other.path or image.width~=other.width or image.height~=other.height then return false end
+    end
+    for src in pairs(right) do if not left[src] then return false end end
+    return true
+end
 -- Preparation holds one text model and one page description, never widgets,
 -- framebuffers, menus or scheduled work. Native faces remain owned by Font.
 function Reader.prepare(options,previous)
@@ -179,9 +189,9 @@ function Reader.prepare(options,previous)
     end
     local style,err=normalized_style(options.style);if not style then return nil,err end
     local identity=chapter_identity(options)
-    local model=previous and previous.identity==identity and previous.body==options.body and previous.model
-    if not model then model,err=Text.parse(options.body,options.chapter.title,options.source_id=='weread');if not model then return nil,err end end
-    local key=identity..'\n'..model.checksum
+    local model=previous and previous.identity==identity and previous.body==options.body and same_images(previous.images,options.images) and previous.model
+    if not model then model,err=Text.parse(options.body,options.chapter.title,options.source_id=='weread',options.images);if not model then return nil,err end end
+    local key=identity..'\n'..model.checksum..(model.image_key or '')
     Text.metrics(model)
     local context=setmetatable({settings=options.settings,chrome_heights=options.chrome_heights,source_id=options.source_id},{__index=View})
     local layout=context:_layoutStyle(style)
@@ -190,7 +200,7 @@ function Reader.prepare(options,previous)
     local pagination_book={chapters={{id=options.chapter.uid or options.chapter.url or tostring(options.index)}},models={model}}
     local page;page,err=Paginator:makePage(pagination_book,{chapter=1,paragraph=1,char=1},layout)
     if not page then return nil,error_value(err) end
-    return {key=key,identity=identity,body=options.body,layout_key=fingerprint,model=model,page=page,chrome_heights=context.chrome_heights,
+    return {key=key,identity=identity,body=options.body,images=options.images,layout_key=fingerprint,model=model,page=page,chrome_heights=context.chrome_heights,
         pagination_book=pagination_book,layout=layout,input_bytes=#options.body,
         page_starts={Text.positionCopy(page.start_position)},pagination_position=Text.positionCopy(page.next_position),complete=page.at_end==true}
 end
@@ -229,6 +239,19 @@ function View:_makeWidgets(page)
     local ok,err=pcall(function()
         for _,element in ipairs(page.elements) do
             if element.type=='gap' then y=y+element.height
+            elseif element.type=='image' then
+                -- ImageWidget's file path quietly falls back to a checkerboard
+                -- on nil decode. Validate the decode before accepting a page;
+                -- the widget then owns this pre-fitted, disposable buffer.
+                local ImageWidget=require('ui/widget/imagewidget')
+                local buffer=require('ui/renderimage'):renderImageFile(element.path,false,element.width,element.height)
+                if not buffer then error('章节图片读取失败，请联网刷新章节。',0) end
+                local made,widget=pcall(ImageWidget.new,ImageWidget,{image=buffer,image_disposable=true,alpha=true,
+                    width=element.width,height=element.height})
+                if not made then buffer:free();error(widget,0) end
+                widgets[#widgets+1]={widget=widget,x=g.left+math.floor((g.content_width-element.width)/2),y=y,element=element}
+                widget:getSize()
+                y=y+element.height
             else
                 y=y+(element.top_gap or 0)
                 local options={text=element.text,face=element.face or g.body_face,padding=0,lang='zh-CN',bold=element.bold or false,
@@ -406,7 +429,7 @@ local function initial_position(options,model)
     if type(saved)=='table' and saved.content_checksum==model.checksum and saved.chapter_uid==options.chapter.uid then
         local paragraph,char=tonumber(saved.paragraph),tonumber(saved.char)
         if finite(paragraph) and paragraph%1==0 and paragraph>=1 and paragraph<=#model.paragraphs
-            and finite(char) and char%1==0 and char>=1 and char<=Text.utf8Length(model.paragraphs[paragraph]) then
+            and finite(char) and char%1==0 and char>=1 and char<=Text.positionLength(model,paragraph) then
             position={chapter=1,paragraph=paragraph,char=char};last=nil
         end
     end
@@ -609,7 +632,7 @@ function View:getPosition()
     return {chapter_uid=self.chapter.uid,paragraph=p.paragraph,char=p.char,content_checksum=self.model.checksum}
 end
 function View:getPaginationSnapshot()
-    return {key=chapter_identity(self)..'\n'..self.model.checksum,layout_key=layout_key(self:_layoutStyle(self.style)),
+    return {key=chapter_identity(self)..'\n'..self.model.checksum..(self.model.image_key or ''),layout_key=layout_key(self:_layoutStyle(self.style)),
         page_starts=self.page_starts,pagination_position=self.pagination_position,complete=self.page_total~=nil,
         last_page=self.page.at_end and self:getPosition() or nil}
 end

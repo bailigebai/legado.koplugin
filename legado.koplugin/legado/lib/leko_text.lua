@@ -50,41 +50,70 @@ function Text.positionLess(a,b)
     if a.paragraph~=b.paragraph then return a.paragraph<b.paragraph end
     return a.char<b.char
 end
-function Text.parse(body,title,map_positions)
+function Text.positionLength(model,index)
+    if model.images and model.images[index] then return 1 end
+    return Text.utf8Length(model.paragraphs[index] or '')
+end
+function Text.parse(body,title,map_positions,assets)
     if type(body)~='string' or #body>8*1024*1024 or body=='' then
         return nil,{code='INVALID_INPUT',message='章节正文为空或超过 8 MB。'}
     end
     if not valid_utf8(body) then return nil,{code='ENCODING_ERROR',message='章节正文不是有效的 UTF-8 文本。'} end
-    -- Images carry content that the Leko text renderer cannot reproduce.
-    if body:lower():find('<%s*img[%s/>]') then
-        return nil,{code='UNSUPPORTED_CONTENT',message='本章包含图片，请关闭无感阅读后使用原生阅读器查看完整内容。'}
-    end
     local value=body:gsub('<[sS][cC][rR][iI][pP][tT][^>]*>.-</[sS][cC][rR][iI][pP][tT]%s*>','')
         :gsub('<[sS][tT][yY][lL][eE][^>]*>.-</[sS][tT][yY][lL][eE]%s*>','')
     value=value:gsub('<%s*/?%s*([%a%d]+)[^>]*>',function(tag)
         tag=tag:lower()
+        if tag=='img' then return nil end -- Keep image tags for the bounded block scan below.
         return (({p=true,div=true,br=true,li=true,blockquote=true,pre=true})[tag] or tag:match('^h[1-6]$')) and '\n' or ''
     end)
-    value=require('legado.lib.safe_functions').functions.htmldecode(value):gsub('\r\n','\n'):gsub('\r','\n')
-    local paragraphs,source_positions={},map_positions and {} or nil
+    local decode=require('legado.lib.safe_functions').functions.htmldecode
+    local paragraphs,images,source_positions={},{},map_positions and {} or nil
     local original_char=1
-    for line in (value..'\n'):gmatch('(.-)\n') do
-        local trimmed=line:match('^%s*(.-)%s*$')
-        if trimmed~='' then
-            paragraphs[#paragraphs+1]=trimmed
-            if source_positions then
-                local leading=line:find('%S') or 1
-                local first=original_char+Text.utf8Length(line:sub(1,leading-1))
-                source_positions[#source_positions+1]={first=first,last=first+Text.utf8Length(trimmed)-1}
+    local function text_chunk(chunk)
+        chunk=decode(chunk):gsub('\r\n','\n'):gsub('\r','\n')
+        local cursor=1
+        repeat
+            local ending=chunk:find('\n',cursor,true)
+            local line=chunk:sub(cursor,ending and ending-1 or #chunk)
+            local trimmed=line:match('^%s*(.-)%s*$')
+            if trimmed~='' then
+                local index=#paragraphs+1;paragraphs[index]=trimmed
+                if source_positions then
+                    local leading=line:find('%S') or 1
+                    local first=original_char+Text.utf8Length(line:sub(1,leading-1))
+                    source_positions[index]={first=first,last=first+Text.utf8Length(trimmed)-1}
+                end
             end
-        end
-        if source_positions then original_char=original_char+Text.utf8Length(line)+1 end
+            original_char=original_char+Text.utf8Length(line)+(ending and 1 or 0)
+            cursor=ending and ending+1 or nil
+        until not cursor
     end
-    if paragraphs[1]==title and #paragraphs>1 then
+    local cursor,count=1,0
+    while true do
+        local first,last=value:find('<%s*[iI][mM][gG][^>]*>',cursor)
+        if not first then text_chunk(value:sub(cursor));break end
+        text_chunk(value:sub(cursor,first-1))
+        local tag=value:sub(first,last)
+        local src=tag:match('%s+[sS][rR][cC]%s*=%s*"([^"]+)"') or tag:match("%s+[sS][rR][cC]%s*=%s*'([^']+)'")
+        local asset=src and assets and assets[src]
+        count=count+1
+        if not asset or count>20 then return nil,{code='STORAGE_ERROR',message='本章图片未完成缓存校验，请联网刷新章节。'} end
+        local index=#paragraphs+1;paragraphs[index]='';images[index]=asset
+        if source_positions then source_positions[index]=false end
+        cursor=last+1
+    end
+    if not images[1] and paragraphs[1]==title and #paragraphs>1 then
         table.remove(paragraphs,1);if source_positions then table.remove(source_positions,1) end
+        local shifted={};for index,asset in pairs(images) do shifted[index-1]=asset end;images=shifted
     end
-    if #paragraphs==0 then return nil,{code='PARSE_ERROR',message='本章没有可显示的文字。'} end
-    return {title=tostring(title or ''),paragraphs=paragraphs,source_positions=source_positions,
+    if #paragraphs==0 then return nil,{code='PARSE_ERROR',message='本章没有可显示的内容。'} end
+    local paths={}
+    for index=1,#paragraphs do
+        local image=images[index]
+        if image then paths[#paths+1]=table.concat({index,image.path,image.width,image.height},'\n') end
+    end
+    local image_key=#paths>0 and '\n'..require('legado.lib.identity').hash(table.concat(paths,'\n')) or ''
+    return {title=tostring(title or ''),paragraphs=paragraphs,images=images,image_key=image_key,source_positions=source_positions,
         checksum=require('legado.lib.identity').hash(body)}
 end
 
@@ -144,7 +173,7 @@ end
 function Text.metrics(model)
     if model.metrics then return model.metrics end
     local m={prefixes={},lengths={},total=0}
-    for i,p in ipairs(model.paragraphs) do m.prefixes[i]=m.total;m.lengths[i]=Text.utf8Length(p);m.total=m.total+m.lengths[i] end
+    for i in ipairs(model.paragraphs) do m.prefixes[i]=m.total;m.lengths[i]=Text.positionLength(model,i);m.total=m.total+m.lengths[i] end
     model.metrics=m;return m
 end
 function Text.fraction(model,position)

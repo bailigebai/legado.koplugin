@@ -414,10 +414,14 @@ function CacheStore:readImage(s,b,chapter,index,source_url,version)
     if not valid then return nil,validation_error end
     return value,path,meta.extension,meta.version
 end
-function CacheStore:verifyChapterImages(s,b,chapter,body)
+function CacheStore:chapterImages(s,b,chapter,body)
+    if type(chapter)~='table' or not safe_id(chapter.uid) then
+        return nil,Errors.new(Errors.INVALID_INPUT,'invalid chapter image identity')
+    end
+    local images={}
     for tag in tostring(body or ''):gmatch('<[iI][mM][gG][^>]*>') do
-        local src=tag:match('[sS][rR][cC]%s*=%s*"([^"]+)"')
-            or tag:match("[sS][rR][cC]%s*=%s*'([^']+)'")
+        local src=tag:match('%s+[sS][rR][cC]%s*=%s*"([^"]+)"')
+            or tag:match("%s+[sS][rR][cC]%s*=%s*'([^']+)'")
         local prefix='../images/'..chapter.uid..'_'
         local index,extension,version
         if src and src:sub(1,#prefix)==prefix then
@@ -427,12 +431,19 @@ function CacheStore:verifyChapterImages(s,b,chapter,body)
         if not index or not image_extensions[extension] then
             return nil,Errors.new(Errors.STORAGE_ERROR,'chapter image is not localized')
         end
-        local value,err,actual_extension=self:readImage(s,b,chapter,tonumber(index),nil,version)
-        if not value then return nil,err end
+        local value,path,actual_extension=self:readImage(s,b,chapter,tonumber(index),nil,version)
+        if not value then return nil,path end
         if actual_extension~=extension then
             return nil,Errors.new(Errors.STORAGE_ERROR,'chapter image reference does not match cache')
         end
+        local width,height=image_dimensions(value,actual_extension)
+        images[src]={path=path,width=width,height=height}
     end
+    return images
+end
+function CacheStore:verifyChapterImages(s,b,chapter,body)
+    local images,err=self:chapterImages(s,b,chapter,body)
+    if not images then return nil,err end
     return true
 end
 function CacheStore:clear(keep,include_catalog)

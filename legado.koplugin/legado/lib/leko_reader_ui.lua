@@ -59,7 +59,7 @@ local function schedule_preparation(owner)
             for _,record in ipairs(owner.prepared_chapters or {}) do
                 if record.prepared.layout_key~=fingerprint and record.failed_layout_key~=fingerprint then
                     local ok,prepared,err=pcall(Reader.prepare,{source_id=record.source_id,book=document.book,
-                        chapter=document.reading_state.chapters[record.index],body=record.prepared.body,style=view.style,
+                        chapter=document.reading_state.chapters[record.index],body=record.prepared.body,images=record.prepared.images,style=view.style,
                         settings=owner.settings,chrome_heights=view.chrome_heights},record.prepared)
                     if not ok or not prepared then record.failed=failure(not ok and prepared or err);record.failed_layout_key=fingerprint
                     else record.prepared=prepared;record.failed,record.failed_layout_key=nil,nil end
@@ -84,7 +84,7 @@ local function schedule_preparation(owner)
     owner.preparation_job=batch;view.ui:scheduleIn(.01,batch)
 end
 
-function Adapter.prepare(owner,state,chapter,body)
+function Adapter.prepare(owner,state,chapter,body,images)
     local document=owner and owner.current_document
     local view=document and document.backend=='immersive' and not document.closed and document.widget
     if not view or document.reading_state~=state then return false end
@@ -99,9 +99,9 @@ function Adapter.prepare(owner,state,chapter,body)
         -- bounded text now; the existing preparation job parses it when idle.
         ok=true
         prepared=previous and previous.prepared.body==body and previous.prepared
-            or {body=body,input_bytes=#body,page_starts={}}
+            or {body=body,images=images,input_bytes=#body,page_starts={}}
     else
-        ok,prepared,err=pcall(Reader.prepare,{source_id=source_id(state),book=state.book,chapter=chapter,body=body,
+        ok,prepared,err=pcall(Reader.prepare,{source_id=source_id(state),book=state.book,chapter=chapter,body=body,images=images,
             style=view.style,settings=owner.settings,chrome_heights=view.chrome_heights},previous and previous.prepared)
     end
     if not ok or not prepared then return nil,failure(not ok and prepared or err) end
@@ -259,7 +259,7 @@ function Adapter.open(owner,payload,callbacks)
         if record.source_id==source_id(state) and record.book_id==state.book.id and record.chapter_uid==chapter.uid then prepared=record.prepared;break end
     end
     local options={book=state.book,chapter=chapter,index=state.index,count=#state.chapters,
-        catalog_complete=state.catalog_complete,body=payload.body,settings=owner.settings,ui_manager=owner.ui_manager,
+        catalog_complete=state.catalog_complete,body=payload.body,images=payload.images,settings=owner.settings,ui_manager=owner.ui_manager,
         style=progress.immersive_style,position=state.restore_fraction==nil and progress.immersive_position or nil,
         fraction=fraction,background=payload.background,callbacks=core,source_id=source_id(state),prepared=prepared,defer_tasks=true}
     local previous_state=previous and previous.reading_state

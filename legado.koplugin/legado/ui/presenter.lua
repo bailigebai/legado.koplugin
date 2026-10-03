@@ -496,8 +496,6 @@ function Presenter:_startWeReadReading(view,book,expected_account_id)
         if err and weread_page_active(self,view,subpage)
             and self.library_widget and self.library_widget.page==page then
             self:_info(err.message or '微信读书章节打开失败','微信读书')
-        elseif document and document.reading_state and document.reading_state.image_mode_switched then
-            self:_info('本书含图片，已自动切换原生阅读模式。','微信读书')
         end
     end)
     if not finished then view.reading_request=request end

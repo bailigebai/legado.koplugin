@@ -416,7 +416,7 @@ do
         end}}
     local document,err=session:openOffline({id='source'},{id='book',source_id='source'},2)
     equal(nil,document,'offline image chapter does not silently open an earlier text chapter')
-    equal('UNSUPPORTED_CONTENT',err.code,'offline unsupported content retains its actionable error')
+    equal('STORAGE_ERROR',err.code,'offline missing image cache retains its actionable error')
     equal(1,attempts,'render failure stops fallback while missing cache can still recover earlier chapters')
 end
 

@@ -64,9 +64,27 @@ end
 local function read_body(self, source, book, chapter)
     if self.offline_cache then
         local body = self.offline_cache:readBody(source, book, chapter)
-        if type(body) == "string" and body ~= "" then return body end
+        if type(body) == "string" and body ~= "" then return body,nil,self.offline_cache end
     end
-    return self.cache:readBody(source, book, chapter)
+    local body,err=self.cache:readBody(source, book, chapter)
+    return body,err,self.cache
+end
+
+function ReaderSession:_chapterImages(state,chapter,body,owner)
+    -- Only WeRead currently localizes chapter images with this manifest.
+    -- Other sources keep their existing native HTML path.
+    if source_id(state.source,state.book)~='weread' then return nil,nil,self.cache end
+    if not body:lower():find('<img',1,true) then return nil,nil,owner or self.cache end
+    local first=owner or self.cache
+    local second=first==self.cache and self.offline_cache or self.cache
+    local assets,err
+    for _,store in ipairs{first,second} do
+        if store and store.chapterImages then
+            assets,err=store:chapterImages(source_id(state.source,state.book),state.book.id,chapter,body)
+            if assets then return assets,nil,store end
+        end
+    end
+    return nil,err or Errors.new(Errors.STORAGE_ERROR,'章节图片尚未完成缓存校验')
 end
 
 local function read_catalog(self, source, book)
@@ -487,20 +505,21 @@ function ReaderSession:_callbacks(state)
     }
 end
 
-function ReaderSession:_prepareHtml(state, chapter, body)
+function ReaderSession:_prepareHtml(state, chapter, body,owner)
+    owner=owner or self.cache
     local started=clock()
     state.prepared_html = state.prepared_html or {}
     local checksum = Identity.hash(body)
     local prepared = state.prepared_html[chapter.uid]
-    if prepared and prepared.checksum == checksum and prepared.title == chapter.title then
-        if not self.cache.readHtml or self.cache:readHtml(source_id(state.source, state.book), state.book.id, chapter) then
+    if prepared and prepared.owner==owner and prepared.checksum == checksum and prepared.title == chapter.title then
+        if not owner.readHtml or owner:readHtml(source_id(state.source, state.book), state.book.id, chapter) then
             self:_timing('html_reused',started,'native',state,{requested_index=chapter.index})
             return prepared.path
         end
     end
-    local path, err = self.cache:writeHtml(source_id(state.source, state.book), state.book.id, chapter, html_document(chapter.title, body))
+    local path, err = owner:writeHtml(source_id(state.source, state.book), state.book.id, chapter, html_document(chapter.title, body))
     if not path then return nil, staged(err, 'html_write') end
-    state.prepared_html[chapter.uid] = { path = path, checksum = checksum, title = chapter.title }
+    state.prepared_html[chapter.uid] = { path = path, checksum = checksum, title = chapter.title,owner=owner }
     self:_timing('html_write',started,'native',state,{requested_index=chapter.index})
     return path
 end
@@ -510,19 +529,11 @@ function ReaderSession:_open_cached(state, index, restore_fraction)
     if not state.transition then self:_beginTransition(state) end
     local chapter = state.chapters[index]
     local started=clock()
-    local body, error_value = read_body(self, source_id(state.source, state.book), state.book.id, chapter)
+    local body, error_value,body_cache = read_body(self, source_id(state.source, state.book), state.book.id, chapter)
     self:_timing(body and 'cache_hit' or 'cache_miss',started,state.backend,state,{requested_index=index})
     if not body then return nil, staged(error_value, "cache_read") end
-    if source_id(state.source,state.book)=='weread' and body:lower():find('<img',1,true) then
-        local verified,image_error
-        if self.cache.verifyChapterImages then
-            verified,image_error=self.cache:verifyChapterImages('weread',state.book.id,chapter,body)
-        end
-        if not verified then
-            return nil,staged(image_error or Errors.new(Errors.STORAGE_ERROR,'微信章节图片尚未缓存'),
-                'cache_read')
-        end
-    end
+    local images,image_error,image_cache=self:_chapterImages(state,chapter,body,body_cache)
+    if image_error then return nil,staged(image_error,'cache_read') end
     local backend=state.backend or preferred_backend(self)
     local previous=self.active
     if previous and (previous.active or previous.pending_progress) then
@@ -538,12 +549,6 @@ function ReaderSession:_open_cached(state, index, restore_fraction)
         local progress_error
         saved_progress,progress_error=self.storage:getProgress(state.book.id)
         if progress_error then return nil,staged(progress_error,'progress') end
-        if has_image or (saved_progress and saved_progress.contains_images==true) then
-            backend='native'
-            if restore_fraction==nil and saved_progress and saved_progress.chapter_uid==chapter.uid then
-                restore_fraction=clamp(saved_progress.fraction,0,1)
-            end
-        end
     end
     if state.on_progress then state.on_progress(3,'整理章节') end
     local path,progress,write_error
@@ -552,7 +557,7 @@ function ReaderSession:_open_cached(state, index, restore_fraction)
         progress,write_error=self.storage:getProgress(state.reader_settings_book_id or state.book.id)
         if write_error then return nil,staged(write_error,'progress') end
     else
-        path,write_error=self:_prepareHtml(state,chapter,body)
+        path,write_error=self:_prepareHtml(state,chapter,body,image_cache)
         if not path then return nil,staged(write_error,'html_write') end
     end
     self.next_token = self.next_token + 1
@@ -581,7 +586,6 @@ function ReaderSession:_open_cached(state, index, restore_fraction)
         statistics_book_id = state.statistics_book_id,
         backend=backend, before_commit=before_commit, open_started=clock(), transition=state.transition,
         contains_images=weread and (has_image or saved_progress and saved_progress.contains_images==true) or false,
-        image_mode_switched=has_image and (state.backend or preferred_backend(self))=='immersive',
         on_progress = state.on_progress,
         is_current = state.is_current,
     }
@@ -590,7 +594,7 @@ function ReaderSession:_open_cached(state, index, restore_fraction)
     if state.on_progress then state.on_progress(4,'打开阅读器') end
     local ok, document, open_error
     if backend=='immersive' then
-        ok,document,open_error=pcall(self.ui.openChapter,self.ui,{state=candidate,body=body,progress=progress},self:_callbacks(candidate))
+        ok,document,open_error=pcall(self.ui.openChapter,self.ui,{state=candidate,body=body,images=images,progress=progress},self:_callbacks(candidate))
     else
         ok,document,open_error=pcall(self.ui.openDocument,self.ui,path,self:_callbacks(candidate))
     end
@@ -1043,10 +1047,12 @@ function ReaderSession:_preparePrefetched(state, index, body)
     state.prefetch_ready[chapter.uid] = true
     state.prefetch_failures[chapter.uid] = nil
     local err
+    local images,image_error,image_cache=self:_chapterImages(state,chapter,body,self.cache)
+    if image_error then self.diagnostics('prefetch',image_error);return image_error end
     if state.backend ~= 'immersive' then
-        local path; path, err = self:_prepareHtml(state, chapter, body)
+        local path; path, err = self:_prepareHtml(state, chapter, body,image_cache)
     elseif index <= state.index + 3 and self.ui.prepareChapter then
-        local ok, _, prepare_error = pcall(self.ui.prepareChapter, self.ui, state, chapter, body)
+        local ok, _, prepare_error = pcall(self.ui.prepareChapter, self.ui, state, chapter, body,images)
         if not ok or prepare_error then
             self.diagnostics('prefetch', prepare_error or self:_reader_error('chapter preparation failed'))
         end
@@ -1210,7 +1216,6 @@ function ReaderSession:resume(source, book, chapters, callback, options)
         return nil,progress_error
     end
     local backend = options.backend or preferred_backend(self)
-    if source_id(source,book)=='weread' and progress and progress.contains_images==true then backend='native' end
     local index = 1
     if progress then index = self:recoverIndex(chapters, progress) end
     return self:open(source, book, chapters, index, {
@@ -1248,7 +1253,6 @@ function ReaderSession:openOffline(source, book, index, callback, options)
     if options.exact_progress and (progress_error or type(progress) ~= "table") then
         return fail_exact(progress_error or Errors.new(Errors.STORAGE_ERROR, "本地阅读进度不可用"))
     end
-    if source_id(source,book)=='weread' and progress and progress.contains_images==true then backend='native' end
     if progress then index = self:recoverIndex(chapters, progress) end
     local wanted = math.max(1, math.min(#chapters, tonumber(index) or 1))
     if options.exact_progress then

@@ -125,7 +125,7 @@ eq(0,#h.tasks,'rejected candidate is disposed without leaked jobs')
 eq(before_calls,#calls,'failed candidate never exits to bookshelf')
 local no,err=Adapter.open(owner,{state=state,body='<p>正文<img src="a"></p>'}, {ready=function() error('unsupported chapter cannot become ready') end,
     failure=function() counts.failure=counts.failure+1 end})
-eq(nil,no,'unsupported content fails construction');eq('UNSUPPORTED_CONTENT',err.code,'construction error is preserved')
+eq(nil,no,'unprepared image fails construction');eq('STORAGE_ERROR',err.code,'missing image cache error is preserved')
 eq(1,counts.failure,'construction failure is reported once')
 eq(old,owner.current_document,'construction failure preserves the old owner')
 local allocated=#h.buffers

@@ -38,7 +38,7 @@ function Service:getContent(_,book,chapter,callback)
             active=nil
             if not local_body then return deliver(nil,image_error) end
             deliver({content=local_body})
-        end,chapter)
+        end,chapter,book.remote_id)
         if not prepared then active=image_handle end
     end)
     if not delivered then active=handle end

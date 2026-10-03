@@ -53,6 +53,18 @@ eq(png,cache:readImage('weread','book-one',chapter,1),
     'image cache stores the real binary bytes')
 eq(true,cache:verifyChapterImages('weread','book-one',chapter,result),
     'localized chapter validates every referenced image')
+local assets,assets_error=cache:chapterImages('weread','book-one',chapter,result)
+eq(nil,assets_error,'image descriptors reuse verified cache')
+local localized=result:match('src="([^"]+)"')
+local lazy_tag='<img data-src="../private.png" src="'..localized..'">'
+eq(true,cache:verifyChapterImages('weread','book-one',chapter,lazy_tag),'cache validates the real src attribute, not data-src')
+eq(nil,cache:chapterImages('weread','book-one',chapter,'<img data-src="'..localized..'" src="https://evil.test/x">'),
+    'a verified data-src cannot disguise an unlocalized real src')
+eq(select(2,cache:readImage('weread','book-one',chapter,1)),assets[localized].path,'descriptor path is verified immutable image')
+eq(1,assets[localized].width,'descriptor retains validated width')
+eq(1,assets[localized].height,'descriptor retains validated height')
+local unsafe=cache:chapterImages('weread','book-one',chapter,'<img src="../../private.png">')
+eq(nil,unsafe,'unlocalized image cannot provide a renderer file path')
 local upper_body=result:gsub('<img','<IMG'):gsub('src=','SRC=')
 eq(true,cache:verifyChapterImages('weread','book-one',chapter,upper_body),
     'uppercase image markup receives the same cache validation')
@@ -62,6 +74,29 @@ images:prepare('book-one',chapter.uid,html,function(value,err) result,failure=va
 eq(nil,failure,'offline revisit uses verified local images')
 eq(fetched_before,#fetched,'offline revisit does not issue image requests')
 local old_body=result
+local relative_html='<p>前文<img src="../Images/figure-1.png">后文</p>'
+local relative_body,relative_error
+images:prepare('book-relative','relative-chapter',relative_html,function(value,err) relative_body,relative_error=value,err end,
+    {},'855812')
+eq(nil,relative_error,'official EPUB relative image form is accepted')
+eq('https://res.weread.qq.com/wrepub/web/855812/figure-1.png',fetched[#fetched],'relative image resolves inside the remote book resource directory')
+yes(relative_body and relative_body:find('../images/relative%-chapter_1_')~=nil,'relative EPUB image becomes verified local content')
+local note_body,note_error;local before_note=#fetched
+images:prepare('book-notes','note-chapter','<p>正文<img alt="引文 &amp; &lt;script&gt;test&lt;/script&gt;" src="../Images/note.png">后文</p>',
+    function(value,err) note_body,note_error=value,err end,{},'855812')
+eq(nil,note_error,'legacy note icon with citation text does not abort the chapter')
+yes(note_body and note_body:find('引文 &amp; &lt;script&gt;test&lt;/script&gt;',1,true)~=nil,'note icon preserves escaped citation text')
+eq(nil,note_body:find('<img',1,true),'note icon is represented by its actual citation instead of a missing image')
+eq(before_note,#fetched,'missing legacy note icon does not trigger a doomed image request')
+for _,bad_src in ipairs{'../Images/../../private.png','../Images/%2e%2e/private.png','../Other/private.png'} do
+    local blocked
+    images:prepare('book-relative','relative-chapter','<img src="'..bad_src..'">',function(_,err) blocked=err end,{},'855812')
+    eq('INVALID_INPUT',blocked and blocked.code,'relative resource conversion cannot escape the book directory')
+end
+local blocked
+images:prepare('book-relative','relative-chapter',relative_html,function(_,err) blocked=err end,{},'../private')
+eq('INVALID_INPUT',blocked and blocked.code,'untrusted remote book id cannot enter the relative resource path')
+fetched_before=#fetched
 local broken_refresh=Images.new{cache=cache,client={fetchResource=function(_,url,callback)
     if url:find('replacement',1,true) then callback(jpg) else callback(nil,'download failed') end
 end}}
@@ -190,8 +225,8 @@ yes(uppercase_content and uppercase_content.content:find('../images/chapter%-one
 
 local native_calls=0
 local guard_session=ReaderSession.new{cache={readBody=function() return html end,
-    verifyChapterImages=function(_,source,book,selected,body)
-        return cache:verifyChapterImages(source,book,selected,body)
+    chapterImages=function(_,source,book,selected,body)
+        return cache:chapterImages(source,book,selected,body)
     end},storage={getProgress=function() return nil end},
     ui={openDocument=function() native_calls=native_calls+1 end},
     settings={get=function() return false end}}
@@ -214,11 +249,57 @@ local reading_session=ReaderSession.new{cache=cache,storage=reading_storage,serv
             setProgressFraction=function() return true end,close=function() return true end}
         callbacks.ready(document);return document
     end}}
-assert(reading_session:open({id='weread'},reading_book,{reading_chapter},1,{}))
+assert(reading_session:open({id='weread'},reading_book,{reading_chapter},1,{backend='native'}))
 yes(rendered_html and rendered_html:find('../images/chapter%-one_1_[%w_-]+.png')~=nil,
     'native reader receives HTML that refers to cached local image files')
 eq(nil,rendered_html:find('https://res.weread.qq.com',1,true),
     'native reader HTML has no authenticated remote image URL')
 eq(true,reading_progress.contains_images,'only opened image chapter marks its book as containing images')
+
+local offline=CacheStore.new{fs=fs,root='offline-images'}
+local offline_path=assert(offline:writeImage('weread','book-one',reading_chapter,1,png,'https://res.weread.qq.com/offline'))
+local offline_body='<p>离线图<img src="../images/'..offline_path:match('([^/]+)$')..'"></p>'
+assert(offline:writeBody('weread','book-one',reading_chapter,offline_body))
+local opened_path,opened_assets
+local offline_session=ReaderSession.new{cache=cache,offline_cache=offline,storage=reading_storage,
+    ui={openDocument=function(_,path,callbacks)
+        opened_path=path
+        local document={backend='native',getProgressFraction=function() return 0 end,close=function() return true end}
+        callbacks.ready(document);return document
+    end,openChapter=function(_,payload,callbacks)
+        opened_assets=payload.images
+        local document={backend='immersive',getProgressFraction=function() return 0 end,close=function() return true end}
+        callbacks.ready(document);return document
+    end}}
+assert(offline_session:open({id='weread'},reading_book,{reading_chapter},1,{backend='native'}))
+yes(opened_path:find('offline-images/',1,true)==1,'native offline chapter HTML lives with its own image directory')
+assert(offline_session:open({id='weread'},reading_book,{reading_chapter},1,{backend='immersive'}))
+eq(offline_path,opened_assets[offline_body:match('src="([^"]+)"')].path,'immersive reads the verified offline image, not the reading cache image')
+
+local ordinary_chapter={uid='ordinary',index=1,title='普通书源图文'}
+assert(cache:writeBody('ordinary','ordinary-book',ordinary_chapter,'<p>正文<img src="https://books.test/picture.png">后文</p>'))
+local ordinary_opened=0
+local ordinary_session=ReaderSession.new{cache=cache,storage={getProgress=function() end,putProgress=function() return true end},
+    ui={openDocument=function(_,_,callbacks)
+        ordinary_opened=ordinary_opened+1
+        local document={backend='native',getProgressFraction=function() return 0 end,close=function() return true end}
+        callbacks.ready(document);return document
+    end}}
+local ordinary_document=ordinary_session:open({id='ordinary'},{id='ordinary-book',source_id='ordinary'},{ordinary_chapter},1,{backend='native'})
+yes(ordinary_document,'ordinary native image chapter retains its existing reader path')
+eq(1,ordinary_opened,'WeRead image cache protocol does not block other source native chapters')
+
+local mixed_service=Service.new({chapterContent=function(_,remote,_,callback)
+    eq('855812',remote,'service retains the remote book identity')
+    callback('<p>前文<img src="../Images/figure.png"><img alt="参考文献" src="../Images/note.png">'
+        ..'<img src="https://res.weread.qq.com/wrepub/second"><img src="https://res.weread.qq.com/wrepub/third">后文</p>')
+end},images)
+local mixed_content,mixed_error;local before_mixed=#fetched
+mixed_service:getContent(nil,{id='book-mixed',remote_id='855812'},{uid='mixed'},function(value,err) mixed_content,mixed_error=value,err end)
+eq(nil,mixed_error,'mixed illustrations and legacy reference note complete one chapter')
+eq(3,#fetched-before_mixed,'only the three real illustrations are fetched')
+eq('https://res.weread.qq.com/wrepub/web/855812/figure.png',fetched[before_mixed+1],'service passes remote id to relative image normalization')
+yes(mixed_content and mixed_content.content:find('参考文献',1,true)~=nil,'mixed chapter retains the reference note text')
+eq(true,cache:verifyChapterImages('weread','book-mixed',{uid='mixed'},mixed_content.content),'all mixed chapter image references pass the actual cache manifest')
 
 return count
