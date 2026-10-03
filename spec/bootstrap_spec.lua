@@ -11,7 +11,10 @@ package.preload['logger'] = function() return {
     warn=function(...) slow_timings[#slow_timings+1]={...} end,
 } end
 
-package.preload["datastorage"] = function() return { getDataDir = function() return data_root end } end
+package.preload["datastorage"] = function() return {
+    getDataDir = function() return '.' end,
+    getFullDataDir = function() return data_root end,
+} end
 package.preload["ui/uimanager"] = function() return {
     scheduleIn = function(_, _, action) return action end,
     show = function() end,

@@ -7,6 +7,12 @@
 
 应用商店：刷新仓库列表，打开 `bailigebai/legado.koplugin`，选择“下载插件”并安装最新正式版，完成后重启 KOReader。
 
+## v0.10.41 开发包：整本缓存与微信缓存目录修复
+
+默认离线缓存改用 KOReader 的绝对数据目录，修复默认目录下整本缓存无法初始化的问题。详情页保留缓存与 EPUB 导出的真实错误码；缓存对象存活期间保持只读目录句柄，避免 FAT 回收目录 inode 后误报 `cache root identity changed`，并保留目录替换、链接和路径越界检查。
+
+[下载 v0.10.41 安装包](https://github.com/bailigebai/legado.koplugin/raw/refs/heads/main/downloads/legado.koplugin-v0.10.41-20261003.zip)。详情与设备验收见 [修复记录](docs/cache-download-recovery-0.10.41.md)。
+
 ## v0.10.40 开发包：章节末尾失败后的重试恢复
 
 修复两处翻章失败后无法继续的状态：原生模式异步打开下一章失败时，恢复原章节并解除翻章限制；无感模式补齐目录后若保存或打开章节失败，通知阅读界面结束等待，同一章可以再次翻页重试。保留原章节和已取回的缓存，不重复通知错误。

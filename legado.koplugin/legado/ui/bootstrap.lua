@@ -55,7 +55,9 @@ function Bootstrap.build(plugin, options)
     local fs = options.fs or Fs.new()
     local default_download_cache_dir
     if DataStorage and type(DataStorage.getDataDir) == "function" then
-        root = DataStorage:getDataDir() .. "/legado"
+        local data_root=type(DataStorage.getFullDataDir)=='function' and DataStorage:getFullDataDir()
+            or DataStorage:getDataDir()
+        root = data_root .. "/legado"
         default_download_cache_dir = root .. "/offline-cache"
         fs:ensureDirectory(root)
         local Storage = require("legado.lib.storage")

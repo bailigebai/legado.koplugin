@@ -100,7 +100,13 @@ function CacheStore.new(o)
     if not ensured then self.init_error = ensure_error; return self end
     valid, validation_error = self:_validatePath(self.root)
     if not valid then self.init_error = validation_error; return self end
-    if type(self.fs.identity)=="function" then self.root_identity=self.fs:identity(self.root) end
+    if type(self.fs.pinDirectory)=='function' then
+        local lease,err=self.fs:pinDirectory(self.root)
+        if err then self.init_error=err;return self end
+        self.root_lease=lease
+        self.root_identity=lease and lease.identity
+    end
+    if not self.root_identity and type(self.fs.identity)=="function" then self.root_identity=self.fs:identity(self.root) end
     if jit and jit.os~="Windows" and not self.root_identity then
         self.init_error=Errors.new(Errors.STORAGE_ERROR,"cache root identity unavailable")
     end

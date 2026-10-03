@@ -65,6 +65,21 @@ do
 end
 
 do
+    local error_value={code='STORAGE_ERROR',message='offline cache is unavailable'}
+    local app=App.new{download_manager={enqueueCache=function() return nil,error_value end,
+        enqueue=function() return nil,error_value end}}
+    local detail=app:createBookDetail{id='rejected-book',source_id='source-ui'}
+    local task,err=detail:startCache()
+    equal(nil,task,'cache rejection does not become a placeholder success string')
+    equal(error_value,err,'whole-book caching preserves the real manager error')
+    task,err=detail:startCache(20)
+    equal(error_value,err,'partial caching preserves the real manager error')
+    task,err=detail:startDownload()
+    equal(nil,task,'EPUB rejection does not become a placeholder string')
+    equal(error_value,err,'EPUB export preserves the real manager error')
+end
+
+do
     local shown = {}
     local Menu = { new = function(_, options) return options end }
     local presenter = Presenter.new({ menu = Menu, ui_manager = { show = function(_, widget) shown[#shown + 1] = widget end } })

@@ -91,6 +91,38 @@ local function same_identity(expected, actual)
     return expected == nil or (actual and expected.dev == actual.dev and expected.ino == actual.ino)
 end
 
+-- FAT assigns a new inode number when an unreferenced inode is reconstructed.
+-- Keep the directory open for the cache lifetime, so its identity remains valid.
+-- The GC finalizer also releases short-lived settings validation stores.
+function Fs:pinDirectory(path)
+    if not self.posix_syscalls and (not jit or jit.os == 'Windows') then return nil end
+    local ffi=require('ffi')
+    local sys=self.posix_syscalls
+    if not sys then
+        pcall(ffi.cdef,'int open(const char *pathname, int flags, unsigned int mode); int close(int fd);')
+        sys={arch=ffi.arch,
+            open=function(_,name,flags) return ffi.C.open(name,flags,0) end,
+            close=function(_,fd) return ffi.C.close(fd) end,
+            identity=function(_,fd)
+                local attr=self.lfs and self.lfs.attributes('/proc/self/fd/'..tostring(fd))
+                if attr and attr.dev~=nil and attr.ino~=nil then
+                    return {dev=tostring(attr.dev),ino=tostring(attr.ino)}
+                end
+            end}
+    end
+    local flags=Fs.posixFlags(self.posix_arch or sys.arch or ffi.arch)
+    local fd=sys:open(path,flags.O_RDONLY+flags.O_DIRECTORY+flags.O_NOFOLLOW+flags.O_CLOEXEC)
+    if not fd or fd<0 then return nil,Errors.new(Errors.STORAGE_ERROR,'cannot hold cache root directory') end
+    local handle=ffi.gc(ffi.new('int[1]',fd),function(value) pcall(sys.close,sys,value[0]) end)
+    local ok,identity=pcall(sys.identity,sys,fd)
+    local current_ok,current=pcall(self.identity,self,path)
+    if not ok or not identity or not current_ok or not current or not same_identity(current,identity) then
+        ffi.gc(handle,nil);pcall(sys.close,sys,fd)
+        return nil,Errors.new(Errors.STORAGE_ERROR,'cache root directory identity unavailable or changed')
+    end
+    return {identity=identity,handle=handle}
+end
+
 local function random_hex()
     local random = io.open("/dev/urandom", "rb")
     local bytes

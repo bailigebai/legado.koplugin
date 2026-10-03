@@ -200,7 +200,13 @@ function BookDetail:startReading(callback, on_progress)
     end
     return self:_beginReading(chapters, nil, callback, self.book, on_progress)
 end
-function BookDetail:startDownload() return self.download_hook and self.download_hook(self.book) or "下载功能将在下一阶段提供" end
-function BookDetail:startCache(end_index) return self.cache_hook and self.cache_hook(self.book, end_index) or "缓存功能尚未初始化" end
+function BookDetail:startDownload()
+    if self.download_hook then return self.download_hook(self.book) end
+    return nil,{code='STORAGE_ERROR',message='下载功能尚未初始化'}
+end
+function BookDetail:startCache(end_index)
+    if self.cache_hook then return self.cache_hook(self.book, end_index) end
+    return nil,{code='STORAGE_ERROR',message='缓存功能尚未初始化'}
+end
 
 return BookDetail

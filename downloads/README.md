@@ -1,28 +1,29 @@
-# 不亦阅乎 v0.10.40 安装包
+# 不亦阅乎 v0.10.41 安装包
 
-2026-10-02 已更新本项目下载目录，并安装到 Kindle GN433W116246017G。
+2026-10-03 更新本项目下载目录，已安装到 Kindle GN433W116246017G。
 
-[下载安装包](https://github.com/bailigebai/legado.koplugin/raw/refs/heads/main/downloads/legado.koplugin-v0.10.40-20261002.zip) · [SHA256 校验文件](legado.koplugin-v0.10.40-20261002.zip.sha256)
+[下载安装包](https://github.com/bailigebai/legado.koplugin/raw/refs/heads/main/downloads/legado.koplugin-v0.10.41-20261003.zip) · [SHA256 校验](legado.koplugin-v0.10.41-20261003.zip.sha256)
 
-## 本次修复
+## 修复
 
-- 原生模式：下一章异步打开失败后解除章尾翻章限制，保留仍可用的旧章节，允许再次翻页重试。
-- 无感模式：补齐目录后的切章若保存进度、请求启动或打开失败，结束界面等待，同一章可重试；错误只通知一次。
-- 保留 v0.10.39 的书架排版、图片、评论、选字、缓存下载和 EPUB 导出功能。
+- 默认离线缓存使用 KOReader 的绝对数据目录，修复整本缓存未初始化。
+- 整本、部分缓存及 EPUB 导出保留真实错误码，避免错误被吞掉后只显示 DOWNLOAD_ERROR。
+- 缓存对象存活期间保持只读目录句柄，针对 FAT inode 回收造成的目录身份变化；真实目录替换、链接和路径越界仍被拒绝。
+- 保留 v0.10.40 的章尾失败重试，以及书架、图片、随文评论和下载进度等功能。
 
 ## 安装与验收
 
-本次连接设备已完成安装；安全弹出后完全退出并重启 KOReader，确认版本 0.10.40。
-自行安装时，退出 KOReader，将 ZIP 中的 legado.koplugin/ 复制到 koreader/plugins/，替换代码后重启。保留用户数据和 settings 目录。
+已连接设备安装完成；安全弹出后完全退出并重启 KOReader，确认版本 0.10.41。
+手动安装时，把 ZIP 内的 legado.koplugin/ 复制至 koreader/plugins/，替换代码后重启，保留用户数据和 settings。
 
-用原来的在线、未整本缓存书源，在两种阅读模式分别连续跨过至少 30 章。失败后再次翻页应允许重试，不应永久停在章节末尾。
+默认目录缓存一本短书或前 5 章，查看下载管理进度，断网读已缓存章节；微信书架开始阅读，闲置后继续翻章。整本完整成功才显示已下载封面标记，自定义目录可保留原设置。
 
 ## 验证范围
 
-两个故障均观察到修复前测试失败、修复后通过。完整 190 项 Lua 规格、48,193 条断言，12 项官方 KOReader 契约、37,894 条断言及官方 SQLite 检查通过。安装后完整回读 145 个文件，全部与本 ZIP 一致。
+191 项 Lua 规格、48,209 条断言，12 项官方宿主契约、37,894 条断言及官方 SQLite 检查通过。设备完整读回 145 个文件，全部与 ZIP 一致。
 
-桌面测试证明具体失败路径已修复，设备偶发问题是否完全消失仍待连续阅读确认。若仍发生，请保留大致时间、章号、模式和同次 koreader/crash.log。[修复记录](../docs/chapter-end-recovery-0.10.40.md)
+FAT/FUSE 引起微信目录身份变化仍是根因推断；桌面模拟和安装字节校验不能代替设备实际阅读。若仍失败，保留错误码、时间、默认或自定义目录选择和同次 crash.log。[详细记录](../docs/cache-download-recovery-0.10.41.md)
 
 本次更新仓库 downloads；GitHub Releases 当前仍为 v0.10.36，应用商店自动下载以已发布版本为准。
 
-SHA256：f58e8db60d40533b8020cc2d5ce4059dc253c9c20cc9261b24f04fe8012a392e
+SHA256：a8c12ccf76ccc54db4a80d0af7deb6e5d5f35a64cb52a8e5ca1235406d5f1231
