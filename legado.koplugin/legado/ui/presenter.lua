@@ -1537,7 +1537,7 @@ function Presenter:showLicenseDialog(continuation)
     end
     dialog = construct(self.input_dialog, {
         title = "密钥激活",
-        description = "免费书架最多添加 5 本，添加更多书籍需要密钥。\n阅读小票和阅读回顾数据展示也需要密钥。\n咸鱼搜索：kindle推箱子\n找到傅俊康，购买获取。\n沿用已有短密钥；激活后可离线使用。",
+        description = "插件售价：25 元。\n免费书架最多添加 5 本，添加更多书籍需要密钥。\n阅读小票和阅读回顾数据展示也需要密钥。\n咸鱼搜索：kindle推箱子\n找到傅俊康，购买获取。\n沿用已有短密钥；激活后可离线使用。",
         input = "", input_hint = "XXXX-XXXX-XXXX", input_type = "text", text_type = "password",
         buttons = {{
             { text = "取消", callback = function() closed=true;cancel();return self:_closeWidget(dialog) end },

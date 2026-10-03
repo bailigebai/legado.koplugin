@@ -1,11 +1,17 @@
 # 不亦阅乎：KOReader 书源阅读插件
 
 
-升级无需重新激活：同一 Kindle 已成功激活后，覆盖更新插件代码即可，原短密钥和离线授权继续有效。请保留 KOReader 的用户数据和 settings 目录，不要删除 legado.json 或 legado-license.json；它们不在插件安装包中。已发布的正式版以 GitHub Releases 为准；本仓库 `downloads/` 和开发交接目录另有尚未发布的开发安装包。
+升级无需重新激活：同一 Kindle 已成功激活后，覆盖更新插件代码即可，原短密钥和离线授权继续有效。请保留 KOReader 的用户数据和 settings 目录，不要删除 legado.json 或 legado-license.json；它们不在插件安装包中。正式安装包以 GitHub Releases 为准；本仓库 `downloads/` 同步保存安装包。
 
 [下载已发布的最新安装包](https://github.com/bailigebai/legado.koplugin/releases/latest)
 
 应用商店：刷新仓库列表，打开 `bailigebai/legado.koplugin`，选择“下载插件”并安装最新正式版，完成后重启 KOReader。
+
+## v0.10.42：授权提示显示插件售价
+
+“密钥激活”提示顶部增加“插件售价：25 元”。继续沿用现有购买说明、短密钥和已激活设备的离线授权。包含 v0.10.41 的默认缓存目录及错误提示修复、v0.10.40 的章尾失败重试，以及书架和微信阅读功能。
+
+[下载 v0.10.42 安装包](https://github.com/bailigebai/legado.koplugin/releases/download/v0.10.42/legado.koplugin-v0.10.42-20261003.zip)。微信阅读及整本缓存修复的设备验证边界见 [v0.10.41 记录](docs/cache-download-recovery-0.10.41.md)。
 
 ## v0.10.41 开发包：整本缓存与微信缓存目录修复
 
