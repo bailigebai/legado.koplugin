@@ -172,7 +172,9 @@ function Images:prepare(book_id,chapter_uid,html,callback,chapter,remote_book_id
         end)
     end
     local tar=chapter and trusted_url(chapter.resource_tar)
-    if chapter and chapter.resource_tar and not tar then
+    -- An empty tar field means the chapter uses direct image URLs. Lua treats
+    -- empty strings as true, so distinguish it from a supplied invalid URL.
+    if chapter and chapter.resource_tar and chapter.resource_tar~='' and not tar then
         done(nil,failure('INVALID_INPUT','微信章节资源包地址不受信任'))
     elseif tar and self.client.fetchResource then
         set_active(function(deliver)

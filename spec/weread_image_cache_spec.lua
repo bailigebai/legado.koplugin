@@ -206,6 +206,41 @@ eq(1,#tar_calls,'resource package avoids a second direct image request')
 yes(tar_result and tar_result:find('../images/tar%-chapter_1_[%w_-]+.png')~=nil,
     'image extracted from resource package is referenced locally')
 
+-- chapterInfos may explicitly return tar="" for chapters with direct images.
+-- Match the two-image dedication chapter reported on the device, without
+-- including the book's text or depending on a live account/network.
+local dedication_html='<p><img src="https://res.weread.qq.com/wrepub/CB_3300131225_xian-s.png&amp;xxxxxxxxxxxxxxxxxxx">'
+    ..'<img src="https://res.weread.qq.com/wrepub/CB_3300131225_xian-x.png&amp;xxxxxxxxxxxxxxxxxxx"></p>'
+local dedication_chapter={uid='dedication-chapter',remote_uid='137',resource_tar=''}
+local dedication_service=Service.new({chapterContent=function(_,_,_,callback) callback(dedication_html) end},images)
+local dedication_result,dedication_error
+local before_dedication=#fetched
+dedication_service:getContent(nil,{id='dedication-book',remote_id='3300131225'},dedication_chapter,
+    function(value,err) dedication_result,dedication_error=value,err end)
+eq(nil,dedication_error,'empty resource package address does not reject a direct-image chapter')
+yes(dedication_result and dedication_result.content:find('../images/dedication%-chapter_1_')~=nil,
+    'dedication first image is localized before the chapter opens')
+yes(dedication_result and dedication_result.content:find('../images/dedication%-chapter_2_')~=nil,
+    'dedication second image is localized before the chapter opens')
+eq(before_dedication+2,#fetched,'absent resource package downloads each direct image')
+eq('https://res.weread.qq.com/wrepub/CB_3300131225_xian-s.png&xxxxxxxxxxxxxxxxxxx',fetched[before_dedication+1],
+    'direct image URL retains its server suffix and decodes the HTML entity')
+eq(true,cache:verifyChapterImages('weread','dedication-book',dedication_chapter,dedication_result.content),
+    'dedication chapter stores verified image references')
+dedication_service:getContent(nil,{id='dedication-book',remote_id='3300131225'},dedication_chapter,
+    function(value,err) dedication_result,dedication_error=value,err end)
+eq(nil,dedication_error,'empty package address remains readable with cached images')
+eq(before_dedication+2,#fetched,'cached dedication images do not issue another network request')
+local before_bad_tar=#fetched
+for _,bad_tar in ipairs{'https://evil.test/package',' ',42} do
+    local bad_tar_result,bad_tar_error
+    images:prepare('bad-tar-book','bad-tar-chapter',dedication_html,
+        function(value,err) bad_tar_result,bad_tar_error=value,err end,{resource_tar=bad_tar})
+    eq(nil,bad_tar_result,'invalid nonempty package address cannot complete an image chapter')
+    eq('INVALID_INPUT',bad_tar_error and bad_tar_error.code,'invalid package address remains rejected')
+end
+eq(before_bad_tar,#fetched,'invalid package addresses never initiate resource requests')
+
 local service=Service.new({chapterContent=function(_,_,_,callback)
     callback(html);return {cancel=function() end}
 end},images)
