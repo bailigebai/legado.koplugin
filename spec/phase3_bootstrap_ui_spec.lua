@@ -27,4 +27,10 @@ eq(true,shown[#shown].text:find('关闭无感阅读',1,true)~=nil,'image diagnos
 app.reader_session.diagnostics('read',{code='READER_ERROR',message='字体加载失败。'})
 eq('字体加载失败。',shown[#shown].text,'local independent reader error preserves its safe reason')
 eq(2,pauses,'reader diagnostics participate in owned-overlay pause and close lifecycle')
+app.reader_session.diagnostics('read',{code='STORAGE_ERROR',message='Cookie=private; chapter body',
+    details={stage='html_write',location='example.lua:23'}})
+eq(true,shown[#shown].text:find('STORAGE_ERROR',1,true)~=nil,'chapter transition failure preserves its actual error code')
+eq(true,shown[#shown].text:find('生成阅读文档',1,true)~=nil,'chapter transition failure identifies its failed operation')
+eq(true,shown[#shown].text:find('example.lua:23',1,true)~=nil,'chapter transition exposes a safe Lua fault location')
+eq(nil,shown[#shown].text:find('private',1,true),'transition diagnosis does not expose raw credentials or content')
 return n

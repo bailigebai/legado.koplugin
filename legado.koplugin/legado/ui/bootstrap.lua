@@ -170,6 +170,13 @@ function Bootstrap.build(plugin, options)
                         return
                     end
                     if stage ~= "read" and stage ~= "reader" then return end
+                    local details=type(err)=='table' and type(err.details)=='table' and err.details or {}
+                    local code=type(err)=='table' and type(err.code)=='string' and err.code:match('^[A-Z][A-Z0-9_]*$') or 'UNKNOWN_ERROR'
+                    local operation=type(details.stage)=='string' and details.stage:match('^[a-z_]+$') or 'unknown'
+                    local logger=optional('logger')
+                    if logger and logger.warn then
+                        pcall(logger.warn,'[LegadoReadFailure]',code:sub(1,48),operation:sub(1,48))
+                    end
                     local InfoMessage = optional("ui/widget/infomessage")
                     if not InfoMessage then return end
                     local text = "阅读失败，请检查书源、网络或缓存。"
@@ -179,6 +186,8 @@ function Bootstrap.build(plugin, options)
                         text=err.message
                     elseif type(err) == "table" and err.message == "next chapter is not cached" then
                         text = "下一章尚未缓存，请联网下载后继续阅读。"
+                    elseif presenter and type(err)=='table' then
+                        return presenter:_readingResult(nil,err)
                     end
                     if presenter then presenter:_info(text)
                     else UIManager:show(InfoMessage:new({ text = text })) end

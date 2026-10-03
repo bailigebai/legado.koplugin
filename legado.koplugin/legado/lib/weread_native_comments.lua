@@ -4,8 +4,9 @@ Native.__index=Native
 function Native.new(reader,document,open)
     local view=reader.view
     if not view or not view.registerViewModule or not reader.document.findAllText then return nil end
+    -- ReaderView assigns widget.ui to ReaderUI; the scheduler needs its own field.
     local self=setmetatable({reader=reader,document=document,open=open,rows={},locations={},generation=0,
-        ui=require('ui/uimanager'),screen=require('device').screen},Native)
+        manager=require('ui/uimanager'),screen=require('device').screen},Native)
     self.mark=require('ui/widget/textwidget'):new{text='评',face=require('ui/font'):getFace('cfont',12)}
     view:registerViewModule('legado_comments',self)
     self.zone={id='legado_inline_comments',ges='tap',screen_zone={ratio_x=0,ratio_y=0,ratio_w=1,ratio_h=1},
@@ -30,7 +31,7 @@ end
 function Native:setRows(rows)
     if not self:current() then return false end
     self.generation=self.generation+1
-    if self.job then self.ui:unschedule(self.job);self.job=nil end
+    if self.job then self.manager:unschedule(self.job);self.job=nil end
     self.rows=rows or {}
     local queue,seen={},{}
     for _,row in ipairs(self.rows) do
@@ -45,7 +46,7 @@ function Native:setRows(rows)
         if not self:current() or generation~=self.generation then return end
         repeat index=index+1 until index>#queue or self.locations[queue[index].range]==nil
         local row=queue[index]
-        if not row then self.ui:setDirty(self.reader,'ui');return end
+        if not row then self.manager:setDirty(self.reader,'ui');return end
         local quote=Text.plainText(row.abstract)
         local ok,matches=false,nil
         if quote~='' and #quote<=2048 then
@@ -54,10 +55,10 @@ function Native:setRows(rows)
         local found=ok and matches and #matches==1 and matches[1]
         self.locations[row.range]=found and found.start and found['end'] and
             {first=found.start,last=found['end'],quote=quote} or false
-        self.ui:setDirty(self.reader,'ui')
-        self.job=advance;self.ui:scheduleIn(.01,advance)
+        self.manager:setDirty(self.reader,'ui')
+        self.job=advance;self.manager:scheduleIn(.01,advance)
     end
-    self.job=advance;self.ui:scheduleIn(.01,advance)
+    self.job=advance;self.manager:scheduleIn(.01,advance)
     return true
 end
 function Native:getTargets()
@@ -110,7 +111,7 @@ end
 function Native:close()
     if self.closed then return end
     self.closed=true;self.generation=self.generation+1
-    if self.job then self.ui:unschedule(self.job);self.job=nil end
+    if self.job then self.manager:unschedule(self.job);self.job=nil end
     if self.reader.unRegisterTouchZones then self.reader:unRegisterTouchZones{self.zone} end
     local modules=self.reader.view.view_modules
     if modules and modules.legado_comments==self then modules.legado_comments=nil end
