@@ -20,6 +20,7 @@ function Comments:cancelLoad()
     self.generation=self.generation+1
     if self.request and self.request.cancel then self.request:cancel() end
     self.request,self.loading=nil,false
+    if self.detail then self.detail:close();self.detail=nil end
 end
 function Comments:close()
     if self.closed then return false end

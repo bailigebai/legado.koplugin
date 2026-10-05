@@ -382,4 +382,22 @@ do
     equal(nil, next(state.fds), "restore fsync failure closes all descriptors")
 end
 
+do
+    local old=string.rep('O',1024*1024)
+    for _,reject in ipairs({false,true}) do
+        local sys,state=posix_fake({['root/new.part']='new',['root/book.epub']=old,['root/owned.backup']=old})
+        local previous={exists=true,identity={dev='1',ino=tostring(state.files['root/book.epub'].ino)},size=#old}
+        local backup={path='root/owned.backup',identity={dev='1',ino=tostring(state.files['root/owned.backup'].ino)},size=#old}
+        local reads=0
+        sys.read=function() reads=reads+1;error('prepared backup must not be copied on the UI') end
+        local published,err=injected_fs(sys):atomicReplacePreparedFile('root/new.part','root/book.epub',{
+            expected_size=3,previous=previous,backup=backup,
+            validate=function(_,phase) if reject and phase=='after_replace' then return nil,{code='STORAGE_ERROR'} end;return true end})
+        equal(0,reads,'prepared backup avoids reading a 1 MiB old EPUB on the parent')
+        local expected;if not reject then expected=true end
+        equal(expected,published,'prepared backup preserves publication result')
+        equal(reject and old or 'new',state.files['root/book.epub'].content,'prepared backup restores old bytes on rejection')
+        equal(nil,next(state.fds),'prepared backup closes all descriptors')
+    end
+end
 return count

@@ -18,19 +18,23 @@ function CoverLoader.new(options)
     assert(options.request_engine, "CoverLoader requires request_engine")
     assert(options.fs and options.root, "CoverLoader requires filesystem root")
     options.fs:ensureDirectory(options.root)
-    return setmetatable({ requests = options.request_engine, fs = options.fs, root = options.root, pending = {} }, CoverLoader)
+    return setmetatable({ requests = options.request_engine, fs = options.fs, root = options.root, pending = {},
+        max_bytes=math.min(CoverLoader.MAX_BYTES,math.max(1,tonumber(options.max_bytes) or CoverLoader.MAX_BYTES)),
+        priority=options.priority,max_redirects=options.max_redirects,timeout=options.timeout,
+        validate_url=options.validate_url }, CoverLoader)
 end
 
 function CoverLoader:load(book, callback)
     assert(type(callback) == "function", "cover callback is required")
-    if type(book) ~= "table" or type(book.cover_url) ~= "string" or book.cover_url == "" then
+    if type(book) ~= "table" or type(book.cover_url) ~= "string" or book.cover_url == ""
+        or (self.validate_url and not self.validate_url(book.cover_url)) then
         callback(nil, Errors.new(Errors.INVALID_INPUT, "book cover URL is missing"))
         return { cancel = function() return false end }
     end
     local stem = self.root .. "/cover-" .. Identity.hash(tostring(book.id or "") .. "\n" .. book.cover_url)
     if type(self.fs.readBounded) == "function" then
         for _, extension in ipairs({ ".jpg", ".png", ".webp", ".gif" }) do
-            local bytes = self.fs:readBounded(stem .. extension, CoverLoader.MAX_BYTES)
+            local bytes = self.fs:readBounded(stem .. extension, self.max_bytes)
             if image_extension(bytes) == extension then
                 callback(stem .. extension, nil)
                 return { cancel = function() return false end }
@@ -58,11 +62,12 @@ function CoverLoader:load(book, callback)
         for _, other in ipairs(flight.waiters) do if other.active then pcall(other.callback, path, err) end end
     end
     local ok, handle, request_error = pcall(self.requests.execute, self.requests,
-        { url = book.cover_url, source_id = book.source_id, max_bytes = CoverLoader.MAX_BYTES, binary = true }, function(response, err)
+        { url = book.cover_url, source_id = book.source_id, max_bytes = self.max_bytes, binary = true,
+            priority=self.priority,max_redirects=self.max_redirects,timeout=self.timeout }, function(response, err)
             if flight.done then return end
             if err then finish(nil, err); return end
             local bytes = response and response.body
-            local extension = image_extension(bytes)
+            local extension = type(bytes)=='string' and #bytes<=self.max_bytes and image_extension(bytes)
             if not extension then finish(nil, Errors.new(Errors.PARSE_ERROR, 'cover response is not a supported image')); return end
             local path = stem .. extension
             local write_ok, saved, save_error = pcall(self.fs.atomicWrite, self.fs, path, bytes)

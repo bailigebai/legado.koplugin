@@ -110,7 +110,7 @@ function Presenter.new(options)
         qr_message = options.qr_message or optional("ui/widget/qrmessage"),
         screen = options.screen,
         detail_factory = options.detail_factory,
-        app = options.app, cover_loader = options.cover_loader,
+        app = options.app, cover_loader = options.cover_loader,avatar_loader=options.avatar_loader,
         library_screen_factory = options.library_screen_factory or function(opts) return require("legado.ui.library_screen").new(opts) end,
         controllers = {},
         cover_grid_factory = options.cover_grid_factory or function(grid_options) return require("legado.ui.cover_grid").new(grid_options) end,
@@ -916,8 +916,15 @@ function Presenter:_shelfModeMenu(view, current_mode, on_back, retry)
         local selected = choice.mode == current_mode
         items[#items+1] = {text=(selected and '✓ ' or '')..choice.label, callback=function()
             if not active() then return false end
-            if selected then return on_back() end
-            return self:_switchShelf(view,choice.mode)
+            local err
+            if self.app and self.app.rememberShelfMode then
+                local saved;saved,err=self.app:rememberShelfMode(choice.mode)
+                if not saved and not err then err={code='STORAGE_ERROR'} end
+            end
+            local result
+            if selected then result=on_back() else result=self:_switchShelf(view,choice.mode) end
+            if err then self:_info('书架类型记忆保存失败；重启后可能恢复之前的书架。','书架记忆') end
+            return result
         end}
     end
     if retry then items[#items+1]={text='重新读取',callback=function()
@@ -972,7 +979,7 @@ function Presenter:_shelf(view, page)
     local widget
     local header_action = {text='切换书架',callback=function()
         if self.library_view ~= view or self.library_widget ~= widget or self.library_subpage ~= nil then return false end
-        return self:_shelfModeMenu(view,local_mode and 'local' or 'sources',
+        return self:_shelfModeMenu(view,view.source_mode or 'sources',
             function() return self:_shelf(view,model.page) end,
             (model.load_error or model.progress_error) and function() return self:_shelf(view,model.page) end or nil)
     end}
@@ -1822,10 +1829,16 @@ function Presenter:_settings(view)
     items[#items+1] = {text='页眉页脚设置',callback=function()
         return self:_readerChromeSettings(view,function() return self:_settings(view) end)
     end}
-    local modes={sources='书源书架',['local']='本地书架',mixed='混合书架'}
-    items[#items+1]={text='默认书架来源：'..(modes[values.shelf_source] or modes.sources),callback=function()
-        return save('shelf_source',values.shelf_source=='sources' and 'local' or values.shelf_source=='local' and 'mixed' or 'sources')
-    end}
+    local modes={sources='书源书架',['local']='本地书架',mixed='混合书架',weread='微信读书'}
+    local home_mode=view.temporary_home_shelf_mode or values.home_shelf_mode
+    if home_mode=='sources' or home_mode=='local' or home_mode=='weread' then
+        local hint=view.temporary_home_shelf_mode and '（仅本次运行；右上角切换）' or '（右上角切换）'
+        items[#items+1]={text='首页书架：'..modes[home_mode]..hint,enabled=false}
+    else
+        items[#items+1]={text='默认书架来源：'..(modes[values.shelf_source] or modes.sources),callback=function()
+            return save('shelf_source',values.shelf_source=='sources' and 'local' or values.shelf_source=='local' and 'mixed' or 'sources')
+        end}
+    end
     items[#items+1]={text='维护自定义分类',callback=function() return self:_editCategories(function() return self:_settings(view) end) end}
     if view.on_sources then items[#items+1]={text='设置书源',callback=function() self:_closeWidget(self.settings_widget); return view.on_sources() end} end
     if view.local_library then
@@ -1993,60 +2006,84 @@ function Presenter:_cacheSettings(view)
 end
 
 function Presenter:showChapterComments(comments,document,range)
-    if not comments:current() then return false end
-    local state=document.reading_state
-    local chapter=state.chapters[state.index]
-    local render
-    local function close_panel()
-        local widget=comments.panel_widget
-        comments.panel_widget,comments.panel_changed,comments.panel_close=nil,nil,nil
-        comments:cancelLoad()
-        if widget then self:_closeWidget(widget) end
+    return require('legado.ui.chapter_discussions').show(self,comments,document,{passage=true,range=range})
+end
+
+function Presenter:showChapterDiscussions(discussions,document)
+    return require("legado.ui.chapter_discussions").show(self,discussions,document)
+end
+
+function Presenter:showDictionary(client,word,document,is_current)
+    local TextViewer=require('ui/widget/textviewer')
+    local owner={closed=false,generation=0}
+    local function current() return not owner.closed and (not document or not document.closed)
+        and (not is_current or is_current()) end
+    function owner:cancel()
+        if self.closed then return false end
+        self.closed=true;self.generation=self.generation+1
+        if self.request and self.request.cancel then self.request:cancel() end
+        self.request=nil
+        local widget=self.widget;self.widget=nil
+        if widget then return self.presenter:_closeWidget(widget) end
         return true
     end
-    render=function(page)
-        if not comments:current() then return false end
-        local old=comments.panel_widget
-        if old then self:_closeWidget(old) end
-        local rows=comments:list(range)
-        local size=6
-        page=math.max(1,math.min(tonumber(page) or 1,math.max(1,math.ceil(#rows/size))))
-        local widget,items,actions=nil,{},{}
-        local function current() return comments:current() and comments.panel_widget==widget end
-        for index=(page-1)*size+1,math.min(page*size,#rows) do
-            local row=rows[index]
-            local quote=row.abstract~='' and ('原文：'..row.abstract..'\n') or '未提供可定位原文\n'
-            items[#items+1]={text=quote..row.content,callback=function()
-                if not current() then return false end
-                return self:_info(quote..(row.author~='' and ('读者：'..row.author..'\n\n') or '\n')..row.content,
-                    '公开随文评论',560)
-            end}
+    owner.presenter=self
+    local load,render
+    render=function(text,retry)
+        if not current() then return owner:cancel() end
+        local previous=owner.widget
+        owner.widget=nil
+        if previous then self:_closeWidget(previous) end
+        local buttons={{text='返回阅读',callback=function() return owner:cancel() end}}
+        if retry then buttons[#buttons+1]={text='重试',callback=function() if current() then return load() end end} end
+        local made,widget=pcall(TextViewer.new,TextViewer,{title='词典说明 · '..word,text=text,buttons_table={buttons},
+            close_callback=function() return owner:cancel() end})
+        if not made then
+            local failure={code='UI_ERROR',message='词典页面初始化失败：'..tostring(widget)}
+            owner.error=failure;owner:cancel()
+            if document and not document.closed then
+                if document.resumeReading then pcall(document.resumeReading,document) end
+                if document.widget and document.widget._error then pcall(document.widget._error,document.widget,failure) end
+            end
+            return nil,failure
         end
-        if not comments.loading and (comments.error or comments.next_cursor) then
-            actions[#actions+1]={text=comments.error and '重试' or '加载更多评论',callback=function()
-                if not current() then return false end
-                return comments:load()
-            end}
+        local original=widget.onCloseWidget
+        widget.onCloseWidget=function(instance,...)
+            if owner.widget==instance then owner:cancel() end
+            if original then return original(instance,...) end
         end
-        if range then actions[#actions+1]={text='全部本章评论',callback=function()
-            if not current() then return false end
-            range=nil;return render(1)
-        end} end
-        local status=comments.loading and '正在加载公开随文评论…' or comments.error
-            or (#rows==0 and (range and '这段暂无已加载的评论。' or '本章暂无可用的公开随文评论。'))
-            or '公开随文评论 · 原文核对成功后显示正文标记'
-        widget=self.library_screen_factory{title='本章评论 · '..tostring(chapter.title or ''),
-            subtitle=status,empty_text=status,items=items,actions=actions,mode='list',grid_columns=1,
-            already_paginated=true,page=page,page_count=math.max(1,math.ceil(#rows/size)),
-            on_prev=page>1 and function() if current() then return render(page-1) end end or nil,
-            on_next=page*size<#rows and function() if current() then return render(page+1) end end or nil,
-            on_back=close_panel,ui_manager=self.ui_manager}
-        comments.panel_widget=widget
-        comments.panel_close=close_panel
-        comments.panel_changed=function() if comments.panel_widget then return render(page) end end
-        return self:_show(widget)
+        owner.widget=widget
+        local shown,err=self:_show(widget)
+        if not shown then
+            -- UIManager may have inserted the window before a Show handler
+            -- throws. Ensure this failed lookup still gets a real close.
+            self.closed_widgets[widget]=nil
+            owner:cancel();return nil,err
+        end
+        return true
     end
-    return render(1)
+    load=function()
+        if not current() then return owner:cancel() end
+        owner.generation=owner.generation+1
+        local generation,delivered=owner.generation,false
+        if owner.request and owner.request.cancel then owner.request:cancel() end
+        owner.request=nil
+        local shown,err=render('正在查询微信读书词典…')
+        if not shown then return nil,err end
+        local request=client:dictionary(word,function(definition,failure)
+            delivered=true
+            if not current() then return owner:cancel() end
+            if generation~=owner.generation then return end
+            owner.request=nil
+            return render(definition and (definition.source..'\n\n'..definition.text)
+                or failure or '词典查询失败，请重试。',definition==nil)
+        end)
+        if not delivered and current() then owner.request=request end
+        return true
+    end
+    local loaded,err=load()
+    if not loaded then return nil,err end
+    return owner
 end
 
 function Presenter:explainSelection(service, selected_text, document)
@@ -2745,7 +2782,8 @@ local function download_items(self, view)
             end
             local function update(method)
                 local valid = {cancel = {queued = true, running = true},
-                    retry = {failed = true, cancelled = true}, resume = {interrupted = true}}
+                    retry = {failed = true, cancelled = true}, resume = {interrupted = true},
+                    remove = {queued=true,running=true,interrupted=true,failed=true,cancelled=true,completed=true}}
                 if not require_current(function(current)
                     return valid[method] and valid[method][current.task.status]
                 end) then return false end
@@ -2798,6 +2836,11 @@ local function download_items(self, view)
                     leave_downloads()
                     return result
                 end }
+            end
+            if task.status~='cancelling' then
+                local active=task.status=='running' or task.status=='queued'
+                actions[#actions+1]={text=active and '取消并删除记录' or '删除记录（保留已下载文件）',
+                    callback=function() return update('remove') end}
             end
             if #actions == 0 then actions[1] = { text = "暂无可用操作", enabled = false } end
             action_menu = construct(self.menu, { title = "下载操作", item_table = actions,

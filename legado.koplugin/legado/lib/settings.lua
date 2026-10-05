@@ -36,6 +36,7 @@ Settings.DEFAULTS = {
     reader_footer_font_size = 11,
     search_timeout = 10,
     shelf_source = "sources",
+    home_shelf_mode = "",
     side_toc_position = "left",
     shelf_categories = {},
     reader_corner_tl = "time", reader_corner_tc = "title", reader_corner_tr = "chapter_page",
@@ -92,6 +93,8 @@ local function normalized(key, value)
         return math.max(font and 8 or 16, math.min(font and 22 or 48, math.floor(n)))
     elseif key == "shelf_source" then
         return (value == "local" or value == "mixed") and value or "sources"
+    elseif key == 'home_shelf_mode' then
+        return (value=='sources' or value=='local' or value=='weread') and value or ''
     elseif key == "ai_provider" then
         return value == "mimo" and "mimo" or "deepseek"
     elseif key == "ai_prompt_extra" then
@@ -129,7 +132,10 @@ end
 
 local function loaded_values(stored)
     local values = copy(Settings.DEFAULTS)
-    for key,value in pairs(stored or {}) do values[key] = normalized(key,value) end
+    for key,value in pairs(stored or {}) do
+        -- A retired built-in-source flag remains in some legitimate device files.
+        if key~='default_sources_initialized' then values[key] = normalized(key,value) end
+    end
     if stored and stored.progress_bar_mode == nil and stored.progress_bar == false then values.progress_bar_mode = "hidden" end
     if stored and stored.progress_bar ~= nil then values.progress_bar = normalized("progress_bar", stored.progress_bar)
     else values.progress_bar = values.progress_bar_mode ~= "hidden" end
@@ -266,11 +272,13 @@ local function parse_legacy(input)
     return settings
 end
 
-local function validate_settings(value)
+local function validate_settings(value, allow_legacy)
     if type(value) ~= "table" then error("settings must be an object") end
     for key, child in pairs(value) do
         local expected = Settings.DEFAULTS[key]
-        if key == "schema_version" then
+        if allow_legacy and key=='default_sources_initialized' then
+            if type(child)~='boolean' then error('invalid obsolete source marker') end
+        elseif key == "schema_version" then
             if child ~= Settings.SCHEMA_VERSION then error("unsupported settings schema") end
         elseif expected == nil or type(child) ~= type(expected) then error("unknown or invalid setting")
         elseif key == "shelf_categories" then
@@ -307,6 +315,9 @@ local function validate_settings(value)
         error("invalid log level")
     end
     if value.shelf_source ~= nil and not ({sources=true, ["local"]=true, mixed=true})[value.shelf_source] then error("invalid shelf source") end
+    if value.home_shelf_mode~=nil and not ({['']=true,sources=true,['local']=true,weread=true})[value.home_shelf_mode] then
+        error('invalid homepage shelf mode')
+    end
     if value.side_toc_position ~= nil and not ({left=true,right=true})[value.side_toc_position] then error("invalid side TOC position") end
     local corners = { time=true, title=true, chapter_page=true, chapter=true, progress=true, off=true }
     for _, key in ipairs({ "reader_corner_tl", "reader_corner_tc", "reader_corner_tr", "reader_corner_bl", "reader_corner_br" }) do
@@ -361,7 +372,7 @@ local function default_adapter(options)
                 for key in pairs(envelope) do
                     if key ~= "schema_version" and key ~= "settings" then recovery_failure(raw, "unknown settings envelope key") end
                 end
-                local valid, settings = pcall(validate_settings, envelope.settings)
+                local valid, settings = pcall(validate_settings, envelope.settings, true)
                 if not valid then recovery_failure(raw, "invalid settings values") end
                 adapter.recovery_required, adapter.source = false, "canonical"
                 return settings
@@ -376,7 +387,7 @@ local function default_adapter(options)
             end
             local parsed_ok, parsed = pcall(parse_legacy, legacy)
             if not parsed_ok then error("invalid legacy settings") end
-            local valid, settings = pcall(validate_settings, parsed)
+            local valid, settings = pcall(validate_settings, parsed, true)
             if not valid then error("invalid legacy settings values") end
             adapter.recovery_required, adapter.source = false, "legacy"
             return settings

@@ -28,7 +28,7 @@ eq(1,#requests,'committed WeRead chapter begins a bounded asynchronous comments 
 eq('remote-book',requests[1].book,'comments use the same remote book identity as reading')
 eq('7',requests[1].chapter,'comments use the current remote chapter identity')
 app:openChapterComments(document)
-eq('本章评论 · 第一章',shown[#shown].title,'reading menu opens the current chapter panel')
+eq('随文评论 · 第一章',shown[#shown].title,'reading menu opens the current chapter panel')
 eq('正在加载公开随文评论…',shown[#shown].empty_text,'loading state is explicit')
 requests[1].callback({reviews={{id='r1',range='0-4',abstract='庄周梦蝶',content='对应原文的评论',author={name='读者'}}},has_more=false})
 eq(1,#markers,'verified comments update the body markers')
@@ -36,8 +36,9 @@ eq(true,shown[#shown].items[1].text:find('庄周梦蝶',1,true)~=nil,'comment li
 eq(true,shown[#shown].items[1].text:find('对应原文的评论',1,true)~=nil,'comment list includes the associated thought')
 local list=shown[#shown]
 list.items[1].callback()
-eq(true,shown[#shown].text:find('读者',1,true)~=nil,'opening a comment shows its author and full text')
-list.on_back()
+eq(true,shown[#shown].title:find('读者',1,true)~=nil,'opening a comment shows its author and full text')
+shown[#shown].on_back()
+shown[#shown].on_back()
 local visible=#shown
 list.items[1].callback()
 eq(visible,#shown,'old panel comment buttons cannot reopen a closed panel')

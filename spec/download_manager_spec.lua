@@ -144,7 +144,7 @@ local function manager_fixture(options)
     local opened = {}
     local manager = DownloadManager.new({ storage = storage, cache = cache,
         offline_cache = options.offline and offline_cache or nil, book_service = service,
-        builder = builder, standby = standby, scheduler = options.scheduler,
+        builder = builder, standby = standby, scheduler = options.scheduler, checkpoint_chapters = 1,
         output_root = "downloads", now = function() return 1788134400 end,
         open_final = function(path) opened[#opened + 1] = path; return "opened:" .. path end })
     return manager, { storage = stored, storage_adapter = storage, cache = cached,

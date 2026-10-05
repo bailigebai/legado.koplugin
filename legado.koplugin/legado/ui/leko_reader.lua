@@ -105,6 +105,10 @@ function View:_layoutStyle(style)
     if self.source_id=='weread' then
         value.comment_gutter=math.max(36,screen:scaleBySize(36))
         value.margin_right=style.margin_right+value.comment_gutter/scale
+        -- Reserve a stable two-line card slot before pagination. Reviews arrive
+        -- asynchronously and must not cover the final paragraph or reflow it.
+        value.chapter_discussion_height=math.ceil(math.max(screen:scaleBySize(48),
+            2*self:_chromeTextHeight(14,scale)+screen:scaleBySize(12))/scale)
     end
     -- The paginator takes logical heights; its rounding must still reserve
     -- every physical pixel measured by the native text widget.
@@ -255,10 +259,15 @@ function View:_makeWidgets(page)
             else
                 y=y+(element.top_gap or 0)
                 local options={text=element.text,face=element.face or g.body_face,padding=0,lang='zh-CN',bold=element.bold or false,
-                    width=g.content_width,height=element.height,line_height=element.line_height or self.style.line_spacing,alignment='left',alignment_strict=true}
+                    width=element.width or g.content_width,height=element.height,line_height=element.line_height or self.style.line_spacing,alignment='left',alignment_strict=true}
                 local widget=element.type=='title' and TransparentTitle:new(options) or TextWidget:new(options)
-                widgets[#widgets+1]={widget=widget,x=g.left,y=y,element=element}
-                widget:getSize()
+                local item={widget=widget,x=g.left+(element.offset_x or 0),y=y,element=element}
+                widgets[#widgets+1]=item
+                local size=widget:getSize()
+                if element.type=='line' and (element.alignment=='center' or element.alignment=='right') then
+                    local spare=math.max(0,(element.width or g.content_width)-size.w)
+                    item.x=item.x+(element.alignment=='center' and math.floor(spare/2) or spare)
+                end
                 y=y+element.height+(element.bottom_gap or 0)
             end
         end
@@ -276,6 +285,7 @@ end
 function View:_notifyPage()
     self.current_page=self:_pageNumber(self.page.start_position)
     self:_call('page_changed',self.current_page,self.page_total)
+    if self.page.at_end then self:_call('chapter_end') end
 end
 function View:_finishAnimation(cancel)
     local ok,err=pcall(cancel and self.animation.cancel or self.animation.settle,self.animation)
@@ -294,6 +304,8 @@ function View:_setPage(page,direction,prepared_widgets)
     self:_finishAnimation(true)
     local previous=self.widgets
     self.page,self.widgets=page,widgets
+    self.dictionary_targets,self.dictionary_page=nil,nil
+    self.comment_underlines=nil
     if page.style._font_fallback_pending then
         for _,key in ipairs{'body_font','body_font_index','body_font_display_name','title_font','title_font_index','title_font_display_name'} do self.style[key]=page.style[key] end
         self.font_fallback=true
@@ -476,6 +488,7 @@ function View:replaceChapter(options,prepared,commit)
     end
     self.chapter_generation=(self.chapter_generation or 0)+1
     self.chapter_comments={}
+    self.chapter_discussions=nil
     self.chapter_request,self.chapter_pending,self.previous_target=nil,nil,nil
     free(previous_widgets)
     local scheduled,cause=pcall(self._startPagination,self,prepared)
@@ -554,8 +567,22 @@ function View:_paintTo(bb,x,y)
         bb:paintRect(x+rect.x,y+rect.y,rect.w,rect.h,BB.COLOR_LIGHT_GRAY)
     end
     for _,item in ipairs(self.widgets) do item.widget:paintTo(bb,x+item.x,y+item.y) end
+    for _,target in ipairs(self:getDictionaryTargets()) do
+        bb:paintRect(x+target.x,y+target.y+target.h-2,target.w,1,BB.COLOR_BLACK)
+    end
+    local dash=math.max(2,Device.screen:scaleBySize(4))
+    for _,target in ipairs(self:getCommentUnderlines()) do
+        for offset=0,target.w-1,2*dash do
+            bb:paintRect(x+target.x+offset,y+target.y+target.h-2,math.min(dash,target.w-offset),1,BB.COLOR_BLACK)
+        end
+    end
     for _,target in ipairs(self:getCommentTargets()) do
         self:_paintLabel(bb,'评',x+target.x,y+target.y,target.w,'center',14)
+    end
+    local discussion=self:getChapterDiscussionTarget()
+    if discussion then
+        self:_paintLabel(bb,discussion.title,x+discussion.x,y+discussion.y,discussion.w,'center',14)
+        self:_paintLabel(bb,discussion.text,x+discussion.x,y+discussion.y+discussion.line_height,discussion.w,'center',14)
     end
     local g=self.page.geometry;local layout=self.page.style._chrome_layout;local context=self:getReadingContext()
     local values={time=os.date('%H:%M'),title=self.book.name or self.book.title or '',chapter=self.chapter.title or '',off='',
@@ -824,7 +851,7 @@ function View:showMenu()
         if #cells>0 then buttons[#buttons+1]=cells end
     end
     if self.callbacks.add_to_shelf then buttons[#buttons+1]={{text='加入书架',callback=function() self:_closeDialog('menu_dialog');self:runAction('add_to_shelf') end}} end
-    if self.callbacks.chapter_comments then buttons[#buttons+1]={{text='本章评论',callback=function()
+    if self.callbacks.chapter_comments then buttons[#buttons+1]={{text='随文评论',callback=function()
         self:_closeDialog('menu_dialog');return self:runAction('chapter_comments')
     end}} end
     buttons[#buttons+1]={{text='继续阅读',callback=function() self:_closeDialog('menu_dialog');self:resumeReading() end}}
@@ -898,8 +925,35 @@ end
 function View:setChapterComments(rows)
     if self.closed then return false end
     self.chapter_comments=rows or {}
+    self.comment_underlines=nil
     self.ui:setDirty(self,'ui')
     return true
+end
+function View:setChapterDiscussions(value)
+    if self.closed then return false end
+    self.chapter_discussions=value
+    local target=self:getChapterDiscussionTarget()
+    if target then self.ui:setDirty(self,'ui',Geom:new{x=target.x,y=target.y,w=target.w,h=target.h}) end
+    return true
+end
+function View:getChapterDiscussionTarget()
+    if self.closed or not self.page or not self.page.at_end or self.source_id~='weread'
+        or not self.callbacks.chapter_discussions then return nil end
+    local g=self.page.geometry
+    if not g.discussion_height then return nil end
+    local value=self.chapter_discussions or {}
+    local text='点击查看本章热门想法'
+    if value.loading then text='正在加载本章热门想法…'
+    elseif value.error then text='加载失败 · 点击重试'
+    elseif value.loaded then
+        local row=value.rows and value.rows[1]
+        if not row then text='暂无本章热门想法'
+        elseif row.likes_count~=nil then text='点击查看 · 首条赞 '..tostring(row.likes_count)
+        else text='点击查看' end
+    end
+    return {x=g.left,y=g.body_top+g.header_height+g.content_height,w=g.content_width,
+        h=g.discussion_height,line_height=self:_chromeTextHeight(14,Device.screen:scaleBySize(1000)/1000),
+        title='章节讨论 · 本章热门想法',text=text}
 end
 function View:getCommentTargets()
     local targets={}
@@ -923,9 +977,59 @@ function View:getCommentTargets()
     end
     return targets
 end
+function View:getDictionaryTargets()
+    if self.closed or not self.callbacks.dictionary or not self.page then return {} end
+    if not self.dictionary_targets or self.dictionary_page~=self.page then
+        self.dictionary_targets=require('legado.lib.reader_terms').targets(self.model,self.page,self.widgets)
+        self.dictionary_page=self.page
+    end
+    return self.dictionary_targets
+end
+function View:getCommentUnderlines()
+    if self.closed or not self.page or not self.callbacks.chapter_comments then return {} end
+    if self.comment_underlines then return self.comment_underlines end
+    local Selection=require('legado.lib.leko_selection')
+    local targets,seen={},{}
+    for _,row in ipairs(self.chapter_comments or {}) do
+        local p=row.position
+        if p and row.range and not seen[row.range] then
+            seen[row.range]=true
+            local first={chapter=1,paragraph=p.paragraph,char=p.char}
+            local last={chapter=1,paragraph=p.last_paragraph or p.paragraph,char=p.last_char}
+            for _,rect in ipairs(Selection.rectsForRange(self.page,self.widgets,first,last)) do
+                rect.range=row.range;targets[#targets+1]=rect
+            end
+        end
+    end
+    self.comment_underlines=targets
+    return targets
+end
 function View:onTap(_,ges) return safe_event(self, function()
     local x=ges and ges.pos and ges.pos.x or self.dimen.w/2;local y=ges and ges.pos and ges.pos.y or self.dimen.h/2
     if self.selection then self.selection:move{x=x,y=y};return self:showSelectionActions() end
+    local ranges,seen,on_underline={},{},false
+    for _,target in ipairs(self:getCommentUnderlines()) do
+        if x>=target.x and x<target.x+target.w and y>=target.y and y<target.y+target.h then
+            if not seen[target.range] then ranges[#ranges+1]=target.range;seen[target.range]=true end
+            if y>=target.y+target.h-Device.screen:scaleBySize(6) then on_underline=true end
+        end
+    end
+    local function open_comments()
+        return self:runAction('chapter_comments',#ranges==1 and ranges[1] or ranges)
+    end
+    -- Dictionary words retain their ordinary tap. The dashed baseline and
+    -- the margin marker offer passage comments even where the two overlap.
+    if on_underline then return open_comments() end
+    for _,target in ipairs(self:getDictionaryTargets()) do
+        if x>=target.x and x<target.x+target.w and y>=target.y and y<target.y+target.h then
+            return self:runAction('dictionary',target.word)
+        end
+    end
+    if #ranges>0 then return open_comments() end
+    local discussion=self:getChapterDiscussionTarget()
+    if discussion and x>=discussion.x and x<discussion.x+discussion.w and y>=discussion.y and y<discussion.y+discussion.h then
+        return self:runAction('chapter_discussions')
+    end
     for _,target in ipairs(self:getCommentTargets()) do
         if x>=target.x and x<target.x+target.w and y>=target.y and y<target.y+target.h then
             return self:runAction('chapter_comments',target.range)
@@ -967,9 +1071,7 @@ function View:showSelectionActions()
         self:_closeDialog('selection_dialog');selection.endpoint=endpoint
         return true
     end
-    self.selection_dialog=require('ui/widget/buttondialog'):new{
-        title='已选文字：'..preview..(more and '…' or ''),width=math.floor(self.dimen.w*.9),
-        buttons={{{text='AI 解释',callback=function()
+    local buttons={{{text='AI 解释',enabled=self.callbacks.ai~=nil,callback=function()
             if not current() then return false end
             local selected=selection:text()
             if selected=='' or #selected>4000 then
@@ -981,13 +1083,26 @@ function View:showSelectionActions()
             return result or true
         end},{text='取消',callback=function() if current() then return self:clearSelection(true) end end}},
         {{text='调整起点',callback=function() return adjust('anchor') end},
-            {text='调整终点',callback=function() return adjust('focus') end}}},
+            {text='调整终点',callback=function() return adjust('focus') end}}}
+    if self.callbacks.dictionary then
+        table.insert(buttons,1,{{text='词典说明',callback=function()
+            if not current() then return false end
+            local selected=require('legado.lib.weread_dictionary').word(selection:text())
+            if not selected then return self:_error({code='INVALID_INPUT',message='请选择不超过 512 字节的词条。'}) end
+            self:clearSelection(false)
+            local result,err=self:_call('dictionary',selected)
+            if result==false or err then self:resumeReading();return self:_error(err or '词典未能打开。') end
+            return result or true
+        end}})
+    end
+    self.selection_dialog=require('ui/widget/buttondialog'):new{
+        title='已选文字：'..preview..(more and '…' or ''),width=math.floor(self.dimen.w*.9),buttons=buttons,
         tap_close_callback=function() if current() then self:clearSelection(true) end end}
     self.ui:setDirty(self,'ui');self.ui:show(self.selection_dialog)
     return true
 end
 function View:onHold(_,ges) return safe_event(self,function()
-    if not self.callbacks.ai then return self:showMenu() end
+    if not self.callbacks.ai and not self.callbacks.dictionary then return self:showMenu() end
     if self.selection then
         self:_closeDialog('selection_dialog');self.selection:move(ges and ges.pos)
     else

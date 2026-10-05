@@ -7,7 +7,7 @@ local P=require('legado.lib.leko_paginator')
 local src='../images/chapter_1_checked.png'
 local assets={[src]={path='/cache/weread/book/images/chapter_1_checked.png',width=1200,height=1800}}
 local html='<p>甲<img src="'..src..'">乙</p><p>后文</p>'
-local model,err=Text.parse(html,'图片章',true,assets)
+local model,err=Text.parse(require('legado.lib.weread_text_coordinates').body(html),'图片章',true,assets)
 eq(nil,err,'verified images are accepted by immersive parser')
 assert(model)
 eq(4,#model.paragraphs,'inline image separates preceding and following text')
@@ -18,7 +18,8 @@ eq(assets[src],model.images[2],'image uses the verified cache descriptor')
 local lazy=Text.parse('<img data-src="original.png" src="'..src..'">','',false,assets)
 eq(assets[src],lazy and lazy.images[1],'immersive parser selects real src rather than data-src')
 eq(3,model.source_positions[3].first,'image block does not add original text offsets')
-local marker=Text.locateQuote(model,'乙','2-3')
+local source_offset=Text.utf8Length(html:match('^(.-)乙'))
+local marker=Text.locateQuote(model,'乙',source_offset..'-'..(source_offset+1))
 eq(3,marker and marker.paragraph,'inline comment still locates text after image')
 eq(1,Text.positionLength(model,2),'image contributes one reading position')
 eq(2,Text.positionAt(model,Text.fraction(model,{paragraph=2,char=1})).paragraph,'image position round trips through progress')

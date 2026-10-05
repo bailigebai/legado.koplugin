@@ -40,6 +40,13 @@ local function import(storage, input)
     return report
 end
 local storage = open()
+-- Download history deletion must use quoted IDs, preserve book data and survive reopen.
+local removed_id="download;'quoted"
+check(storage:putDownloadTask({id=removed_id,status="cancelled",book_id="history-book"}))
+check(storage:putDownloadTask({id="keep-history",status="completed",book_id="history-book"}))
+check(storage:deleteDownloadTask(removed_id))
+assert(storage:getDownloadTask(removed_id)==nil)
+assert(storage:getDownloadTask("keep-history").status=="completed")
 -- Semicolons occur in JS, HTML entities, cookies, URLs and book text alike.
 local source = {bookSourceUrl="https://sources.test/a;b?q='x'", bookSourceName="标点书源",
     ruleContent={content="@js: var text = '正文'; text;"}, header="Cookie: a=1; b=2"}

@@ -36,10 +36,11 @@ local doc=assert(adapter:openDocument('chapter.html',{weread=true}))
 local state={book={id='b',source_id='weread',remote_id='remote'},index=1,
     chapters={{uid='c',remote_uid='7',title='章'}},document=doc}
 doc.reading_state=state
-local app=App.new{reader_session={active=state,cache={readBody=function() return '<p>庄周梦蝶。</p>' end}},
+local app=App.new{reader_session={active=state,cache={readBody=function()
+    return require('legado.lib.weread_text_coordinates').body('<p>庄周梦蝶。</p>') end}},
     weread_client={chapterComments=function(_,_,_,cb) pending=cb end}}
 app:prepareChapterComments(doc)
-pending({reviews={{id='one',range='1-5',abstract='庄周梦蝶',content='评论'},
+pending({reviews={{id='one',range='3-7',abstract='庄周梦蝶',content='评论'},
     {id='unlocated',range='999-1000',abstract='庄周梦蝶',content='错误范围'}}})
 eq('function',type(doc.setChapterComments),'native reader accepts verified paragraph comments')
 while #h.tasks>0 do local task=table.remove(h.tasks,1);if task.delay==.01 then task.fn() end end
@@ -49,12 +50,12 @@ local targets=module:getTargets()
 eq(1,#targets,'only a verified unique visible native quote receives a marker')
 eq(true,targets[1].w>=36,'native comment marker has a usable touch target')
 zone.handler{pos={x=targets[1].x+1,y=targets[1].y+1}}
-eq('1-5',opened,'native paragraph marker opens the matching comment range')
+eq('3-7',opened,'native paragraph marker opens the matching comment range')
 eq(1,lookups,'unverified row never performs a native position search')
 visible=false
 eq(0,#module:getTargets(),'native page change never keeps off-page comment targets')
 reader.highlight['12_legado_comments'](reader.highlight).callback()
-eq('1-5',opened,'native selected text offers its corresponding paragraph comments')
+eq('3-7',opened,'native selected text offers its corresponding paragraph comments')
 local old_button=reader.highlight['12_legado_comments'](reader.highlight)
 module:setRows({{range='later',position={paragraph=1,char=1,last_char=4},abstract='庄周梦蝶'}})
 local delayed_lookup=module.job

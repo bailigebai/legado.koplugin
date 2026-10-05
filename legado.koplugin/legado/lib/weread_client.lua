@@ -63,7 +63,7 @@ function Client:_call(method, path, body, eink, callback, options)
         local handle = self.requests:execute({
             url = (eink and EINK or WEB) .. path, method = method,
             source_id = "weread", headers = headers,
-            body = body, body_type = body and "json" or nil, priority = "foreground",
+            body = body, body_type = body and "json" or nil, priority = options.priority or "foreground",
             timeout=options.timeout,max_bytes=options.max_bytes,
         }, function(response, err)
             delivered = true
@@ -101,6 +101,7 @@ function Client:_call(method, path, body, eink, callback, options)
                 return
             end
             if code == -2041 then return callback(nil, "请在微信读书官方客户端完成人机验证") end
+            if code == -2010 then return callback(nil,"微信读书登录已失效，请重新扫码登录") end
             if err or not status or status < 200 or status >= 300
                 or (not options.raw and not data) or (code and code ~= 0) then
                 return callback(nil, "微信读书请求失败")
@@ -116,6 +117,21 @@ function Client:_call(method, path, body, eink, callback, options)
         if active and type(active.cancel) == "function" then active:cancel() end
         return true
     end }
+end
+
+function Client:dictionary(word,callback)
+    local Dictionary=require('legado.lib.weread_dictionary')
+    word=Dictionary.word(word)
+    if not word then callback(nil,'请选择不超过 512 字节的词条。');return nil end
+    local session=self.auth:session()
+    local account=session and session.vid
+    return self:_call('GET','/web/dict/query?word='..Url(word),nil,false,function(data,err)
+        local latest=self.auth:session()
+        if account and (not latest or latest.vid~=account) then return callback(nil,'微信读书账号已切换') end
+        if not data then return callback(nil,err) end
+        local definition,failure=Dictionary.definition(data)
+        callback(definition,failure)
+    end,{timeout=20,max_bytes=128*1024})
 end
 
 function Client:chapterContent(book_id, chapter_uid, callback)
@@ -173,8 +189,7 @@ function Client:chapterContent(book_id, chapter_uid, callback)
                     if not text_chapter then decoded,decode_err=Protocol.decodeShards(first,part,last) end
                     if not decoded then return finish(nil,decode_err) end
                     if #decoded>4*1024*1024 then return finish(nil,'章节正文过大') end
-                    if text_chapter then return finish(decoded) end
-                    return finish(decoded:match('<[bB][oO][dD][yY][^>]*>(.-)</[bB][oO][dD][yY]>') or decoded)
+                    return finish(require('legado.lib.weread_text_coordinates').body(decoded))
                 end)
             end)
         end)
@@ -325,6 +340,91 @@ local function comment_owner_matches(value,book_id,chapter_uid)
         and (value.chapterUid==nil or tostring(value.chapterUid)==chapter_uid)
 end
 
+-- The Web reader's FETCH_CHAPTER_TOP_REVIEWS operation is a single popular
+-- list, not the whole-book review API and not the per-range pagination API.
+function Client:chapterDiscussions(book_id,chapter_uid,callback)
+    book_id,chapter_uid=tostring(book_id or ''),tostring(chapter_uid or '')
+    if book_id=='' or chapter_uid=='' or #book_id>512 or #chapter_uid>512 then
+        callback(nil,'书籍或章节标识无效');return nil
+    end
+    local session=self.auth:session()
+    if not session then callback(nil,'请先扫码登录微信读书');return nil end
+    local account=session.vid
+    return self:_call('GET','/web/review/list?bookId='..Url(book_id)..'&chapterUid='..Url(chapter_uid)
+        ..'&listType=8&listMode=3&count=20&maxIdx=0',nil,false,function(data,err)
+        local latest=self.auth:session()
+        if not latest or latest.vid~=account then return callback(nil,'微信读书账号已切换') end
+        if not data then return callback(nil,err) end
+        if not Json.isArray(data.reviews) then return callback(nil,'本章热门想法返回格式无效') end
+        callback(data)
+    end,{max_bytes=512*1024,priority='background'})
+end
+
+local function discussion_id(value)
+    value=tostring(value or '')
+    return #value>0 and #value<=512 and not value:find('[%c%s]') and value or nil
+end
+local function discussion_offset(value)
+    return type(value)=='number' and value>=0 and value<=10000 and value%1==0 and value or nil
+end
+local function discussion_read(self,path,callback,validate)
+    local session=self.auth:session()
+    if not session then callback(nil,'请先扫码登录微信读书');return nil end
+    local account=session.vid
+    return self:_call('GET',path,nil,false,function(data,err)
+        local latest=self.auth:session()
+        if not latest or latest.vid~=account then return callback(nil,'微信读书账号已切换') end
+        if not data then return callback(nil,err) end
+        if not validate(data) then return callback(nil,'讨论详情返回格式无效') end
+        callback(data)
+    end,{max_bytes=512*1024,timeout=20,priority='background'})
+end
+local function single_path(id,offset)
+    return '/web/review/single?reviewId='..Url(id)
+        ..'&likesCount=20&likesDirection=1&synckey=0&likesMaxIdx='..offset
+end
+local function optional_array(data,key)
+    return data[key]==nil or Json.isArray(data[key])
+end
+
+function Client:discussionDetail(book_id,chapter_uid,review_id,callback)
+    book_id,chapter_uid,review_id=discussion_id(book_id),discussion_id(chapter_uid),discussion_id(review_id)
+    if not book_id or not chapter_uid or not review_id then callback(nil,'讨论标识无效');return nil end
+    return discussion_read(self,single_path(review_id,0),callback,function(data)
+        local row=data.review
+        return tostring(data.reviewId or '')==review_id and type(row)=='table'
+            and tostring(row.reviewId or '')==review_id and comment_owner_matches(row,book_id,chapter_uid)
+            and optional_array(data,'comments') and optional_array(data,'hotComments') and optional_array(data,'likes')
+    end)
+end
+
+function Client:discussionReplies(review_id,callback,cursor)
+    review_id=discussion_id(review_id);cursor=cursor or {}
+    local offset=discussion_offset(cursor.max_idx or 0)
+    local parent=cursor.comment_id==nil and '' or discussion_id(cursor.comment_id)
+    if not review_id or not offset or not parent or cursor.review_id~=review_id then
+        callback(nil,'回复分页标识无效');return nil
+    end
+    return discussion_read(self,'/web/review/commentloadmore?reviewId='..Url(review_id)..'&commentId='..Url(parent)
+        ..'&maxIdx='..offset..'&count=20&isExpandAll=0',function(data,err)
+        if not data then return callback(nil,err) end
+        if data.commentsHasMore==true or data.commentsHasMore==1 then data.has_more=true
+        elseif data.commentsHasMore==false or data.commentsHasMore==0 then data.has_more=false end
+        callback(data)
+    end,function(data)
+        return (data.reviewId==nil or tostring(data.reviewId)==review_id)
+            and Json.isArray(data.comments) and optional_array(data,'hotComments')
+    end)
+end
+
+function Client:discussionLikes(review_id,offset,callback)
+    review_id=discussion_id(review_id);offset=discussion_offset(offset)
+    if not review_id or not offset then callback(nil,'点赞分页标识无效');return nil end
+    return discussion_read(self,single_path(review_id,offset),callback,function(data)
+        return tostring(data.reviewId or '')==review_id and Json.isArray(data.likes)
+    end)
+end
+
 -- The Web reader uses GET underlines then a read-only POST readReviews.
 -- A cursor owns its book/chapter and per-range positions; one call loads at
 -- most ten ranges, with twenty comments per range. No eager whole-book fetch.
@@ -352,7 +452,7 @@ function Client:chapterComments(book_id,chapter_uid,callback,cursor)
         local handle=self:_call(method,path,body,false,function(value,err)
             delivered=true;active=nil
             if current() then done(value,err) end
-        end,{idempotent=true,max_bytes=2*1024*1024})
+        end,{idempotent=true,max_bytes=2*1024*1024,priority='background',timeout=20})
         if not delivered then active=handle end
     end
     local function load_ranges(ranges)
@@ -380,9 +480,11 @@ function Client:chapterComments(book_id,chapter_uid,callback,cursor)
                         if type(review)=='table' and comment_owner_matches(row,book_id,chapter_uid)
                             and comment_owner_matches(review,book_id,chapter_uid)
                             and (review.range==nil or review.range==group.range) then
-                            reviews[#reviews+1]={id=tostring(review.reviewId or row.reviewId or (group.range..':'..(request.maxIdx+i))),
+                            local id=discussion_id(review.reviewId or row.reviewId)
+                            reviews[#reviews+1]={id=id or (group.range..':'..(request.maxIdx+i)),detail_available=id~=nil,
                                 range=group.range,abstract=review.abstract,content=review.content,
                                 htmlContent=review.htmlContent,author=review.author,createTime=review.createTime,
+                                likesCount=row.likesCount,commentsCount=row.commentsCount,
                                 book_id=book_id,chapter_uid=chapter_uid}
                         end
                     end

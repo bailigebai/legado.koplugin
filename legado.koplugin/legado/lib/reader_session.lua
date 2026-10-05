@@ -475,6 +475,7 @@ function ReaderSession:_callbacks(state)
         end,
         close = function(document)
             if document.chapter_comments then document.chapter_comments:close() end
+            if document.chapter_discussions then document.chapter_discussions:close() end
             if self.active == state and state.active and document == state.document then
                 local replacing=self.pending and self.pending.previous==state
                 -- _open_cached already saved this chapter before replacement.

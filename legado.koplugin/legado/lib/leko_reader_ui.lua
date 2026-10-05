@@ -165,6 +165,7 @@ function Adapter.open(owner,payload,callbacks)
         end
     end
     function proxy:detach()
+        if self.dictionary_lookup then self.dictionary_lookup:cancel() end
         local ok,snapshot=pcall(self.widget.getPaginationSnapshot,self.widget)
         if ok and #snapshot.page_starts<=10000 then owner.previous_pagination=snapshot end
         self.last_values={}
@@ -200,6 +201,9 @@ function Adapter.open(owner,payload,callbacks)
     end
     core.close=function()
         proxy.closed=true
+        if proxy.dictionary_lookup then proxy.dictionary_lookup:cancel() end
+        if proxy.chapter_comments then proxy.chapter_comments:close() end
+        if proxy.chapter_discussions then proxy.chapter_discussions:close() end
         if owner.current_document==proxy then cancel_preparation(owner,true);owner.current_document=nil end
         local current=owner.current_document
         if accepted and current and (current.backend~='immersive' or current.book.id~=state.book.id
@@ -226,6 +230,13 @@ function Adapter.open(owner,payload,callbacks)
     if callbacks.chapter or callbacks.refresh then
         core.chapter=function(_,index,request)
             if not accepted or proxy.closed then return false end
+            -- Optional review IO must release its slot before foreground text.
+            -- A failed chapter switch can retry the reviews on the old page.
+            if proxy.chapter_comments then proxy.chapter_comments:cancelLoad() end
+            if proxy.chapter_discussions then
+                proxy.chapter_discussions:cancelLoad()
+                proxy.widget:setChapterDiscussions(proxy.chapter_discussions)
+            end
             if request.refresh and callbacks.refresh then return callbacks.refresh(request) end
             if callbacks.chapter then return callbacks.chapter(index,request) end
             return nil,failure('章节切换接口未连接。')
@@ -248,6 +259,19 @@ function Adapter.open(owner,payload,callbacks)
         core.chapter_comments=function(_,range)
             if proxy.closed or not accepted then return false end
             return owner.on_chapter_comments(proxy,range)
+        end
+    end
+    if source_id(state)=='weread' then
+        if type(owner.on_dictionary)=='function' then core.dictionary=function(_,text)
+            if proxy.closed or not accepted then return false end
+            return owner.on_dictionary(text,proxy)
+        end end
+        for event,handler in pairs{chapter_discussions='on_chapter_discussions',chapter_end='on_chapter_end'} do
+            local fn=owner[handler]
+            if type(fn)=='function' then core[event]=function()
+                if proxy.closed or not accepted then return false end
+                return fn(proxy)
+            end end
         end
     end
     -- An explicit mode-switch fraction is newer than a prior immersive cursor.

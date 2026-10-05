@@ -23,7 +23,7 @@ eq(position.char,reader:getPosition().char,'comment tap does not turn the page')
 reader:showMenu()
 local found
 for _,row in ipairs(reader.menu_dialog.buttons) do for _,button in ipairs(row) do
-    if button.text=='本章评论' then found=button end
+    if button.text=='随文评论' then found=button end
 end end
 eq(true,found~=nil,'WeRead reading menu exposes the chapter comments action')
 found.callback()

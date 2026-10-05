@@ -384,5 +384,10 @@ function Storage:putDownloadTask(task)
 end
 function Storage:getDownloadTask(id) if self.adapter then return self.adapter:getDownload(id) end local value = self:_map("downloads")[id]; return value and copy(value) or nil end
 function Storage:listDownloadTasks() if self.adapter then return self.adapter:listDownloads() end return list_values(self:_map("downloads"), "id") end
+function Storage:deleteDownloadTask(id)
+    if type(id)~='string' or id=='' then return nil,Errors.new(Errors.INVALID_INPUT,'download task requires id') end
+    if self.adapter then return self.adapter:deleteDownload(id) end
+    return self:_mutate(function(candidate) candidate.data.downloads[id]=nil end)
+end
 
 return Storage

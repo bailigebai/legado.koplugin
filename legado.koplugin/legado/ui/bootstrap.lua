@@ -48,7 +48,7 @@ function Bootstrap.build(plugin, options)
     local LicenseStore = require("legado.lib.license_store")
     local license = License.new({ store = LicenseStore.new(settings) })
     local storage, service, source_manager, cover_loader, reader_session, download_manager, root, local_library
-    local requests, weread_auth, weread_client, weread_service, ai_service
+    local requests, weread_auth, weread_client, weread_service, ai_service, avatar_loader
     local offline_cache,cache_management
     local presenter
     local DataStorage = optional("datastorage")
@@ -106,6 +106,10 @@ function Bootstrap.build(plugin, options)
             })
             local CoverLoader = require("legado.lib.cover_loader")
             local loader = CoverLoader.new({ request_engine = requests, fs = fs, root = root .. "/covers" })
+            local avatars=CoverLoader.new{request_engine=requests,fs=fs,root=root..'/covers/avatars',
+                max_bytes=512*1024,priority='background',max_redirects=0,timeout=8,
+                validate_url=require('legado.lib.weread_mapper').avatarUrl}
+            avatar_loader=function(person,callback) return avatars:load(person,callback) end
             local_library = require('legado.lib.local_library').new({settings=settings,fs=fs,storage=storage,
                 service=service,cover_loader=loader,root=root..'/covers',scheduler=UIManager})
             cover_loader = function(book, callback)
@@ -202,7 +206,8 @@ function Bootstrap.build(plugin, options)
                 download_manager = DownloadManager.new({ storage = storage, cache = cache, offline_cache = offline_cache,
                     book_service = service,
                     builder = EpubBuilder.new({ fs = fs }), standby = StandbyGuard.new({ ui_manager = UIManager }),
-                    scheduler = UIManager, output_root = download_root,
+                    scheduler = UIManager, chapter_concurrency = 2, output_root = download_root,
+                    export_subprocess = require('legado.lib.subprocess_adapter').new({max_wire_bytes=65536}),
                     open_final = function(path) return reader_ui:openDocument(path) end })
             end
         end
@@ -243,6 +248,7 @@ function Bootstrap.build(plugin, options)
     if presenter then
         presenter.app = app
         presenter.cover_loader = cover_loader
+        presenter.avatar_loader = avatar_loader
         presenter.detail_factory = function(book, alternatives) return app:createBookDetail(book, alternatives) end
     end
     if reader_session and reader_session.ui then
@@ -259,9 +265,14 @@ function Bootstrap.build(plugin, options)
         reader_session.ui.on_book_info = function(doc) return app:openReaderBookInfo(doc) end
         reader_session.ui.on_add_to_shelf = function(doc) return app:addReaderToShelf(doc) end
         reader_session.ui.on_ai = function(text, doc) return app:explainSelection(text, doc) end
+        reader_session.ui.on_dictionary = function(text, doc) return app:openDictionary(text,doc) end
         reader_session.ui.on_chapter_comments = function(doc,range) return app:openChapterComments(doc,range) end
+        reader_session.ui.on_chapter_discussions = function(doc) return app:openChapterDiscussions(doc) end
+        reader_session.ui.on_chapter_end = function(doc) return app:loadChapterDiscussions(doc) end
         reader_session.ui.on_reading_committed = function(doc)
+            if app.dictionary_lookup then app.dictionary_lookup:cancel();app.dictionary_lookup=nil end
             if app.chapter_comments then app.chapter_comments:close() end
+            if app.chapter_discussions then app.chapter_discussions:close() end
             if app.comment_prepare_job then UIManager:unschedule(app.comment_prepare_job) end
             local job
             job=function()
@@ -269,6 +280,8 @@ function Bootstrap.build(plugin, options)
                 app.comment_prepare_job=nil
                 if not doc.closed and reader_session.active and reader_session.active.document==doc then
                     app:prepareChapterComments(doc)
+                    app:prepareChapterDiscussions(doc)
+                    if doc.widget and doc.widget.page.at_end then app:loadChapterDiscussions(doc) end
                 end
             end
             app.comment_prepare_job=job;UIManager:scheduleIn(.2,job)

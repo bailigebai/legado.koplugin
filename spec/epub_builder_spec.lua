@@ -341,4 +341,18 @@ do
     truthy(intro and intro:find("keeps\tline\n", 1, true), "XML permits and preserves TAB and LF")
 end
 
+do
+    local files={['old.epub']='old'}
+    local fs={removeFile=function(_,path) files[path]=nil;return true end,
+        size=function(_,path) return files[path] and #files[path] end,
+        atomicReplacePreparedFile=function(_,part,path) files[path]=files[part];files[part]=nil;return true end}
+    local builder=EpubBuilder.new{fs=fs,archive_writer={write=function(_,path) files[path]='prepared';return true end}}
+    equal('function',type(builder.prepare),'background EPUB preparation is separate from publication')
+    local prepared=assert(builder:prepare('owned.part',book,chapters,bodies,{}))
+    equal('old',files['old.epub'],'preparation leaves the previous EPUB untouched')
+    equal('prepared',files['owned.part'],'only the owned stage is written')
+    equal('old.epub',assert(builder:publish(prepared,'old.epub')),'parent publishes a prepared archive')
+    equal(nil,files['owned.part'],'publication consumes only the prepared stage')
+    equal('prepared',files['old.epub'],'publication exposes the prepared bytes')
+end
 return count

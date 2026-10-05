@@ -162,19 +162,117 @@ function Mapper.progress(wire,chapters)
     return nil
 end
 
+local function review_count(value)
+    if type(value)=='number' and value==value and value>=0 and value<=9007199254740991 and value%1==0 then
+        return value
+    end
+end
+Mapper.discussionCount=review_count
+local function review_avatar(value)
+    if type(value)~='string' or #value>2048 or value:find('[%c%s\\]') then return nil end
+    local host,path=value:match('^https://([^/]+)(/.*)$')
+    if path and (host=='res.weread.qq.com' or host=='thirdwx.qlogo.cn' or host=='wx.qlogo.cn') then
+        return value
+    end
+end
+Mapper.avatarUrl=review_avatar
+local function discussion_plain(value,limit)
+    if type(value)~='string' or #value>(limit or 65536) then return '' end
+    return require('legado.lib.leko_text').plainText(value)
+end
+local function discussion_author(row)
+    local author=type(row.author)=='table' and row.author or row
+    return discussion_plain(author.name or author.nickname or author.nick,1024),
+        review_avatar(author.avatar),text(author.userVid or author.vid or row.userVid)
+end
 function Mapper.inlineComments(wire,book_id,chapter_uid,model)
     local Text=require('legado.lib.leko_text')
     local rows={}
-    for _,row in ipairs(type(wire)=='table' and wire.reviews or {}) do
-        if type(row)=='table' and (not row.book_id or row.book_id==book_id)
+    for _,row in ipairs(type(wire)=='table' and type(wire.reviews)=='table' and wire.reviews or {}) do
+        if type(row)=='table' and (not row.book_id or tostring(row.book_id)==tostring(book_id))
             and (not row.chapter_uid or tostring(row.chapter_uid)==tostring(chapter_uid)) then
-            local content=Text.plainText(row.htmlContent)
-            if content=='' then content=Text.plainText(row.content) end
-            local abstract=Text.plainText(row.abstract)
-            local author=type(row.author)=='table' and text(row.author.name or row.author.nickname) or ''
-            rows[#rows+1]={id=tostring(row.id or ''),range=row.range,abstract=abstract,
-                content=content~='' and content or '无文字评论',author=author,
+            local content=discussion_plain(row.htmlContent)
+            if content=='' then content=discussion_plain(row.content) end
+            local abstract=discussion_plain(row.abstract)
+            local author,avatar,author_id=discussion_author(row)
+            rows[#rows+1]={id=text(row.id),range=row.range,abstract=abstract,
+                content=content~='' and content or '无文字评论',author=author,avatar_url=avatar,author_id=author_id,
+                likes_count=review_count(row.likesCount),comments_count=review_count(row.commentsCount),
+                detail_available=row.detail_available,
                 position=model and Text.locateQuote(model,abstract,row.range) or nil}
+        end
+    end
+    return rows
+end
+function Mapper.chapterDiscussions(wire,book_id,chapter_uid)
+    local Text=require('legado.lib.leko_text')
+    local rows,seen={},{}
+    local function plain(value)
+        if type(value)~='string' or #value>65536 then return '' end
+        return Text.plainText(value)
+    end
+    local function belongs(value)
+        return type(value)=='table' and (value.bookId==nil or tostring(value.bookId)==tostring(book_id))
+            and (value.chapterUid==nil or tostring(value.chapterUid)==tostring(chapter_uid))
+    end
+    for _,outer in ipairs(type(wire)=='table' and type(wire.reviews)=='table' and wire.reviews or {}) do
+        local row=type(outer)=='table' and outer.review
+        if belongs(outer) and belongs(row) then
+            local content=plain(row.htmlContent)
+            if content=='' then content=plain(row.content) end
+            local id=text(row.reviewId or row.id or outer.reviewId)
+            if content~='' and (id=='' or not seen[id]) then
+                seen[id]=true
+                local author,avatar,author_id=discussion_author(row)
+                rows[#rows+1]={id=id,content=content,abstract=plain(row.abstract),
+                    author=author,avatar_url=avatar,author_id=author_id,
+                    likes_count=review_count(outer.likesCount),comments_count=review_count(outer.commentsCount)}
+                if #rows>=100 then break end
+            end
+        end
+    end
+    return rows
+end
+
+function Mapper.discussionDetail(wire,book_id,chapter_uid,review_id)
+    local row=Mapper.chapterDiscussions({reviews={wire}},book_id,chapter_uid)[1]
+    if row and row.id==review_id then return row end
+end
+
+function Mapper.discussionReplies(wire,review_id)
+    local rows,seen={},{}
+    local function append(collection)
+        for _,row in ipairs(type(collection)=='table' and collection or {}) do
+            if type(row)=='table' and (row.reviewId==nil or tostring(row.reviewId)==review_id) then
+                local id=text(row.commentId)
+                local content=discussion_plain(row.content)
+                if id~='' and #id<=512 and content~='' and not seen[id] then
+                    seen[id]=true
+                    local author,avatar,author_id=discussion_author(row)
+                    rows[#rows+1]={id=id,content=content,author=author,avatar_url=avatar,author_id=author_id,
+                        likes_count=review_count(row.likesCount),replies_count=review_count(row.subCommentsCount),
+                        reply_to=type(row.replyUser)=='table' and discussion_plain(row.replyUser.name,1024) or '',
+                        sub_comments=type(row.subComments)=='table' and row.subComments or nil,
+                        sub_has_more=row.subCommentsHasMore,create_time=review_count(row.createTime)}
+                    if #rows>=100 then return end
+                end
+            end
+        end
+    end
+    wire=type(wire)=='table' and wire or {}
+    append(wire.hotComments);if #rows<100 then append(wire.comments) end
+    return rows
+end
+
+function Mapper.discussionLikes(wire)
+    local rows,seen={},{}
+    for _,row in ipairs(type(wire)=='table' and type(wire.likes)=='table' and wire.likes or {}) do
+        if type(row)=='table' then
+            local author,avatar,id=discussion_author(row)
+            if id~='' and #id<=512 and author~='' and not seen[id] then
+                seen[id]=true;rows[#rows+1]={id=id,author=author,avatar_url=avatar,author_id=id,content=''}
+                if #rows>=100 then break end
+            end
         end
     end
     return rows

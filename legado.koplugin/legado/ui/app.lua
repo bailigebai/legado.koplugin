@@ -192,7 +192,28 @@ function App:createBookshelf(mode, restore)
     return view
 end
 function App:openBookshelf(mode, restore)
+    if mode==nil then
+        local remembered=self.temporary_home_shelf_mode or (self.settings and self.settings:get('home_shelf_mode'))
+        if remembered=='sources' or remembered=='local' or remembered=='weread' then mode=remembered end
+    end
+    if mode=='weread' then
+        return self:openWeRead(function() return self:openBookshelf('sources') end,restore)
+    end
     return self:_present(self:createBookshelf(mode, restore))
+end
+function App:rememberShelfMode(mode)
+    if mode~='sources' and mode~='local' and mode~='weread' then return nil,{code='INVALID_INPUT'} end
+    if self.settings and type(self.settings.set)=='function' then
+        if self.settings:get('home_shelf_mode')==mode then
+            self.temporary_home_shelf_mode=nil
+            return mode
+        end
+        local saved,err=self.settings:set('home_shelf_mode',mode)
+        if saved then self.temporary_home_shelf_mode=nil else self.temporary_home_shelf_mode=mode end
+        return saved,err
+    end
+    self.temporary_home_shelf_mode=mode
+    return mode
 end
 function App:openSearch(keyword, back)
     if not self.service then return self:_present({ title = "搜索", error = "搜索服务尚未初始化", _back = back }) end
@@ -387,6 +408,31 @@ function App:explainSelection(text, document)
     end
     return self.ai_service:explain(text, nil, function() end)
 end
+function App:openDictionary(text,document)
+    local state=document and document.reading_state
+    if not state or document.closed or document.backend~='immersive' or state.book.source_id~='weread'
+        or not self.weread_client or not self.presenter then return false end
+    text=require('legado.lib.weread_dictionary').word(text)
+    if not text then return nil,{code='INVALID_INPUT',message='请选择不超过 512 字节的词条。'} end
+    local auth=self.weread_auth or self.weread_client.auth
+    local session=auth and auth:session()
+    if not session then return nil,{code='AUTH_ERROR',message='请先扫码登录微信读书。'} end
+    local account=session.vid
+    if state.book.weread_account_id and state.book.weread_account_id~='' and state.book.weread_account_id~=account then
+        return nil,{code='AUTH_ERROR',message='微信读书账号已切换，请同步书架。'}
+    end
+    if self.dictionary_lookup then self.dictionary_lookup:cancel() end
+    local paused,err=document:pauseReading()
+    if not paused then return nil,err end
+    local owner,failure=self.presenter:showDictionary(self.weread_client,text,document,function()
+        local latest=auth:session()
+        return self.reader_session.active==state and state.document==document and latest and latest.vid==account
+    end)
+    self.dictionary_lookup,document.dictionary_lookup=owner,owner
+    if not owner then document:resumeReading() end
+    return owner,failure
+end
+
 function App:prepareChapterComments(document)
     local state=document and document.reading_state
     if not state or document.closed or not self.weread_client or state.book.source_id~='weread' then
@@ -434,6 +480,51 @@ function App:openChapterComments(document,range)
     if not comments.loaded and not comments.loading and not comments.error then comments:load() end
     return self.presenter:showChapterComments(comments,document,range)
 end
+function App:prepareChapterDiscussions(document)
+    local state=document and document.reading_state
+    if not state or document.closed or document.backend~='immersive' or not self.weread_client
+        or state.book.source_id~='weread' then return false end
+    local auth=self.weread_auth or self.weread_client.auth
+    local account=auth and auth:session()
+    local account_id=account and account.vid
+    if (document.chapter_discussions and document.chapter_discussions.account_id~=account_id)
+        or (state.book.weread_account_id and state.book.weread_account_id~=''
+            and state.book.weread_account_id~=account_id) then
+        if document.chapter_discussions then document.chapter_discussions:close() end
+        return false
+    end
+    if document.chapter_discussions and document.chapter_discussions:current() then return document.chapter_discussions end
+    if self.chapter_discussions then self.chapter_discussions:close() end
+    local chapter=state.chapters[state.index]
+    local discussions=require('legado.lib.weread_chapter_discussions').new{
+        client=self.weread_client,book_id=state.book.remote_id,chapter_uid=chapter.remote_uid,
+        is_current=function()
+            local latest=auth and auth:session()
+            return not document.closed and self.reader_session.active==state and state.document==document
+                and (not auth or latest and latest.vid==account_id)
+        end,
+        on_change=function(value)
+            if document.widget and document.widget.setChapterDiscussions then document.widget:setChapterDiscussions(value) end
+        end}
+    document.chapter_discussions,self.chapter_discussions=discussions,discussions
+    discussions.account_id=account_id
+    if state.offline then discussions.error='当前离线，无法加载本章热门想法。联网后可重试。' end
+    if document.widget and document.widget.setChapterDiscussions then document.widget:setChapterDiscussions(discussions) end
+    return discussions
+end
+function App:loadChapterDiscussions(document)
+    local discussions=self:prepareChapterDiscussions(document)
+    if not discussions or not discussions:current() or discussions.error then return false end
+    return discussions:load()
+end
+function App:openChapterDiscussions(document)
+    local discussions=self:prepareChapterDiscussions(document)
+    if not discussions or not discussions:current() or not self.presenter then return false end
+    local paused,err=document:pauseReading()
+    if paused==false or err then return nil,err end
+    if not discussions.error then discussions:load() end
+    return self.presenter:showChapterDiscussions(discussions,document)
+end
 function App:openSettings(document, chrome_only, back, section)
     local independent=document and type(document.refreshAppearance)=='function'
     local function refresh()
@@ -473,6 +564,7 @@ function App:openSettings(document, chrome_only, back, section)
         default_download_cache_dir = self.default_download_cache_dir,
         validate_download_cache_dir = self.validate_download_cache_dir,
         temporary_reader_mode=self.reader_mode_temporary,
+        temporary_home_shelf_mode=self.temporary_home_shelf_mode,
         chrome_only = chrome_only,document=document,
         cache_usage = cache and function() return cache:usage() end or nil,
         cache_cleanup = cache and function()
@@ -603,6 +695,9 @@ function App:startReading(book, chapters, index, callback, intent)
     local catalog=offline_cache and offline_cache:readCatalog(book.source_id,book.id)
     if not (catalog and catalog.complete == true) then
         catalog=cache and cache.readCatalog and cache:readCatalog(book.source_id,book.id)
+    end
+    if self.download_manager and self.download_manager.readingCatalog then
+        catalog=self.download_manager:readingCatalog(book,catalog)
     end
     local progress=self.storage.getProgress and self.storage:getProgress(book.id)
     local saved_chapters=catalog and (catalog.chapters or catalog)

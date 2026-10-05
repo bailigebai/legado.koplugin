@@ -124,6 +124,15 @@ local function with_forced_task_pairs(order, call)
     return unpack(result, 2)
 end
 
+local function run_until_request(scheduled,index,state,expected)
+    for _=1,100 do
+        if #state.pending>=expected then return index end
+        assert(scheduled[index],'download worker did not schedule the expected request')
+        scheduled[index]();index=index+1
+    end
+    error('download worker did not yield/dispatch')
+end
+
 -- Mixed legacy queue metadata must define one strict total order independent of
 -- storage/hash insertion order, both at startup and after persistence recovery.
 do
@@ -152,8 +161,9 @@ do
             truthy(with_forced_task_pairs(forced_order, function() return manager:recoverPersistence() end),
                 "mixed queue recovers permutation " .. permutation_index)
             local observed = {}
-            for action_index = 2, 4 do
-                scheduled[action_index]()
+            local action_index=2
+            for expected = 1, 3 do
+                action_index=run_until_request(scheduled,action_index,state,expected)
                 local request = state.pending[#state.pending]
                 observed[#observed + 1] = request and request.book.id or "missing"
                 if request then request.callback({ content = "<p>ordered</p>" }, nil) end
@@ -229,7 +239,7 @@ do
         "post-recovery enqueue continues after the migrated sequence counter")
     equal("migrate-valid,migrate-a,migrate-b," .. after.id, table.concat(manager.queue, ","),
         "post-recovery enqueue appends after every migrated legacy task")
-    scheduled[1]()
+    run_until_request(scheduled,1,state,1)
     equal("migrate-valid", state.pending[1] and state.pending[1].book.id,
         "network begins with the first durable queued task only after migration recovery")
 end
@@ -269,13 +279,13 @@ do
     equal(0, state.refs, "failed running persistence holds no standby reference")
     state.storage_down = false
     truthy(manager:recoverPersistence(), "queued start recovers after storage returns")
-    scheduled[2]()
+    local action_index=run_until_request(scheduled,2,state,1)
     equal(value.id, state.pending[1] and state.pending[1].book.id,
         "recovery rebuilds persisted FIFO so the popped queued task runs first")
     equal("running", manager:get(task.id).status, "recovered first queued task persists running before network")
     equal("queued", manager:get(next_task.id).status, "later persisted task remains queued without duplication")
     state.pending[1].callback({ content = "<p>first</p>" }, nil)
-    scheduled[3]()
+    run_until_request(scheduled,action_index,state,2)
     equal(2, #state.pending, "recovered FIFO starts each queued task exactly once")
     equal(next_value.id, state.pending[2] and state.pending[2].book.id,
         "later persisted task starts only after the recovered first task completes")

@@ -123,4 +123,14 @@ local oversized_done, _, oversized_error = oversized_adapter:poll(oversized_chil
 assertx.equal(true, oversized_done, "oversized wire completes with failure")
 assertx.equal("child wire payload exceeds limit", oversized_error, "parent bounds child wire accumulation")
 
-return 25
+do
+    local killed={}
+    local a=Adapter.new{ffi_util=util,kill_process=function(pid) killed[#killed+1]=pid end}
+    local c=assert(a:start(function() return {} end))
+    a:terminate(c);a:terminate(c)
+    assertx.equal(321,killed[1],'owned pid is killed directly when its process group is not ready')
+    assertx.equal(1,#killed,'direct pid termination is idempotent')
+    c.reaped=true;a:terminate(c)
+    assertx.equal(1,#killed,'a reaped pid is never killed again')
+end
+return 28

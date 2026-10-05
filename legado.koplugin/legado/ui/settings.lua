@@ -13,6 +13,7 @@ function SettingsView.new(options)
         default_download_cache_dir = options.default_download_cache_dir,
         validate_download_cache_dir = options.validate_download_cache_dir,
         temporary_reader_mode = options.temporary_reader_mode,
+        temporary_home_shelf_mode = options.temporary_home_shelf_mode,
         values = values,
         clear_cache = options.clear_cache, cache_usage = options.cache_usage, cache_cleanup = options.cache_cleanup, local_library = options.local_library,
         on_sources = options.on_sources, on_progress_change = options.on_progress_change,

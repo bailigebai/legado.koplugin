@@ -37,7 +37,7 @@ Service.new(client):getContent({id='weread'},book,chapters[1],function(value,err
     content,error_value=value,err
 end)
 eq(nil,error_value,'content request succeeds')
-eq('Hi',content and content.content,'decoded chapter reaches reader service')
+eq('Hi',content and require('legado.lib.leko_text').plainText(content.content),'decoded chapter reaches reader service')
 eq(3,#calls,'normal chapter load only fetches three text shards')
 eq(true,calls[1].url:find('/e_0',1,true)~=nil,'chapter starts with the content endpoint')
 eq(true,type(calls[1].body.ps)=='string' and #calls[1].body.ps>0,'chapter request signs generated reader state')
@@ -56,7 +56,7 @@ Client.new{auth={session=function() return session end},requests={execute=functi
     return {cancel=function() end}
 end}}:chapterContent('remote-1','11',function(value,err) fallback_content,fallback_error=value,err end)
 eq(nil,fallback_error,'empty fast response recovers with server reader state')
-eq('Hi',fallback_content,'fallback still returns decoded content')
+eq('Hi',require('legado.lib.leko_text').plainText(fallback_content),'fallback still returns decoded content')
 eq(5,#fallback_calls,'reader page is requested only after an empty fast response')
 eq(true,fallback_calls[2].url:find('/web/reader/',1,true)~=nil,'fallback loads reader state')
 eq('server-psvts',fallback_calls[3].body.ps,'fallback retries with server reader state')

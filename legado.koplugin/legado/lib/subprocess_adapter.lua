@@ -13,9 +13,19 @@ function Adapter.new(options)
     options = options or {}
     local max_wire_bytes = tonumber(options.max_wire_bytes) or Wire.MAX_BYTES
     max_wire_bytes = math.max(1, math.min(max_wire_bytes, Wire.MAX_BYTES))
+    local ffi=options.ffi or optional_require('ffi')
+    local kill_process=options.kill_process
+    if not kill_process and not options.ffi_util and ffi and ffi.os=='Linux' then
+        kill_process=function(pid)
+            -- This unreaped child still owns its PID. Kill both the group and
+            -- the PID, including the short fork-to-setpgid startup interval.
+            ffi.C.kill(-pid,9)
+            ffi.C.kill(pid,9)
+        end
+    end
     return setmetatable({
         util = options.ffi_util or optional_require("ffi/util"),
-        ffi = options.ffi or optional_require("ffi"),
+        ffi = ffi,kill_process=kill_process,
         read_fd = options.read_fd,
         max_wire_bytes = max_wire_bytes,
     }, Adapter)
@@ -124,8 +134,9 @@ end
 
 function Adapter:terminate(child)
     if child.terminated or child.reaped then return false end
+    if self.kill_process then self.kill_process(child.pid)
+    else self.util.terminateSubProcess(child.pid) end
     child.terminated = true
-    self.util.terminateSubProcess(child.pid)
     return true
 end
 

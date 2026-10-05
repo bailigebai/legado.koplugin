@@ -108,8 +108,8 @@ local function leadingIndentChars(value)
     return char_count
 end
 
-local function bodyMetrics(style)
-    local face = resolveReaderFace(style, "body_font", "body_font_index",
+local function bodyMetrics(style, face, bold)
+    face = face or resolveReaderFace(style, "body_font", "body_font_index",
         "body_font_display_name", style.body_font_size or 27)
     local probe = TextBoxWidget:new{
         text = "测",
@@ -117,12 +117,44 @@ local function bodyMetrics(style)
         width = math.max(20, Screen:getWidth() - 20),
         line_height = style.line_spacing or 0.28,
         lang = "zh-CN",
-        bold = false,
+        bold = bold == true,
         for_measurement_only = true,
     }
-    local height = probe.line_height_px
+    local height = probe.line_height_px+(probe.line_glyph_extra_height or 0)
     if probe.free then probe:free() end
     return face, height
+end
+
+local italic_variants = {
+    ['NotoSans-Regular.ttf']='NotoSans-Italic.ttf', ['NotoSans-Bold.ttf']='NotoSans-BoldItalic.ttf',
+    ['NotoSerif-Regular.ttf']='NotoSerif-Italic.ttf', ['NotoSerif-Bold.ttf']='NotoSerif-BoldItalic.ttf',
+}
+
+local function paragraphMetrics(style, geometry, values)
+    local face,height=geometry.body_face,geometry.body_line_height
+    local scale=tonumber(values.font_scale) or 1
+    local size=math.max(12,math.min(96,math.floor((style.body_font_size or 27)*scale+.5)))
+    if scale~=1 then
+        face=resolveReaderFace(style,'body_font','body_font_index','body_font_display_name',size)
+    end
+    if values.italic then
+        local name=tostring(face.realname or style.body_font or SYSTEM_FONT)
+        if name==SYSTEM_FONT then name='NotoSans-Regular.ttf' end
+        local basename=name:match('([^/\\]+)$') or name
+        local variant=italic_variants[basename]
+        if variant then
+            local prefix=name:match('^(.*[/\\])') or ''
+            local ok,italic=pcall(Font.getFace,Font,prefix..variant,size)
+            if ok and italic then face=italic end
+        end
+    end
+    if face~=geometry.body_face or values.bold then
+        face,height=bodyMetrics(style,face,values.bold)
+        -- Very large reader settings on a short screen still need one row to
+        -- fit. Keep the body face rather than producing a non-advancing page.
+        if height>geometry.content_height then face,height=geometry.body_face,geometry.body_line_height end
+    end
+    return face,height
 end
 
 local function measuredSize(widget)
@@ -177,6 +209,8 @@ function Paginator:getGeometry(style)
     local control_height = 0
     local body_top = style.show_header and top or Screen:scaleBySize(READER_BODY_TOP_GAP)
     local content_height = screen_height - body_top - bottom - header_height - footer_height
+    local discussion_height=style.chapter_discussion_height and Screen:scaleBySize(style.chapter_discussion_height)
+    if discussion_height then content_height=content_height-discussion_height end
 
     return {
         screen_width = screen_width,
@@ -188,6 +222,7 @@ function Paginator:getGeometry(style)
         bottom = bottom,
         content_width = content_width,
         content_height = math.max(body_line_height, content_height),
+        discussion_height = discussion_height,
         body_face = body_face,
         body_cell_width = cell_width,
         body_line_height = body_line_height,
@@ -321,9 +356,9 @@ end
 -- TextBoxWidget paragraph wrapping, makeLine(..., true) fills the available
 -- width instead of moving otherwise fitting glyphs to obey break preferences.
 -- One bounded window is measured once; no paragraph/glyph records survive it.
-local function fitBodyLines(text, chars, face, width)
+local function fitBodyLines(text, chars, face, width, bold)
     local probe = TextWidget:new{ text = text, face = face, padding = 0,
-        lang = "zh-CN", bold = false }
+        lang = "zh-CN", bold = bold == true }
     local lines, offset = {}, 1
     local ok, err = pcall(function()
         probe:getSize()
@@ -334,7 +369,7 @@ local function fitBodyLines(text, chars, face, width)
                 last = line.end_offset
             else
                 local RenderText = require("ui/rendertext")
-                local fitted = RenderText:getSubTextByWidth(table.concat(chars, "", offset), face, width, true, false)
+                local fitted = RenderText:getSubTextByWidth(table.concat(chars, "", offset), probe.face, width, true, probe.bold)
                 last = offset + Util.utf8Length(fitted) - 1
             end
             last = math.min(#chars, math.max(offset, tonumber(last) or offset))
@@ -456,6 +491,15 @@ function Paginator:makePage(book, requested_position, style, checkpoint)
             added_line = true
         else
         local paragraph = model.paragraphs[paragraph_index]
+        local paragraph_style=model.paragraph_styles and model.paragraph_styles[paragraph_index] or {}
+        local paragraph_face,paragraph_line_height=paragraphMetrics(style,geometry,paragraph_style)
+        local alignment=paragraph_style.alignment or 'left'
+        local quote_inset=paragraph_style.quote and math.min(geometry.body_cell_width or geometry.body_face.size,
+            math.floor(geometry.content_width/4)) or 0
+        local paragraph_width=geometry.content_width-2*quote_inset
+        if paragraph_line_height>remaining_height and not added_line then
+            page.elements,page.used_height={},0;remaining_height=geometry.content_height
+        end
         local paragraph_length = paragraphLength(model, paragraph_index)
         local paragraph_done = false
         while not paragraph_done do
@@ -464,7 +508,8 @@ function Paginator:makePage(book, requested_position, style, checkpoint)
             local content_char_index = char_index
             if char_index == 1 then
                 content_char_index = char_index + leadingIndentChars(paragraph)
-                if style.indent ~= false and (not geometry.body_cell_width or geometry.content_width >= 3 * geometry.body_cell_width) then
+                if not paragraph_style.heading_level and paragraph_style.indent~=false and alignment~='center' and alignment~='right'
+                    and style.indent ~= false and (not geometry.body_cell_width or paragraph_width >= 3 * geometry.body_cell_width) then
                     prefix = INDENT
                     prefix_length = 2
                 end
@@ -490,7 +535,7 @@ function Paginator:makePage(book, requested_position, style, checkpoint)
             -- This table is now strictly bounded instead of mirroring the full
             -- chapter-sized paragraph.
             local layout_chars = Util.utf8Chars(layout_text)
-            local lines = fitBodyLines(layout_text, layout_chars, geometry.body_face, geometry.content_width)
+            local lines = fitBodyLines(layout_text, layout_chars, paragraph_face, paragraph_width, paragraph_style.bold)
             if has_more and #lines > 1 then
                 -- Refill the final window row before painting it.
                 local tail = table.remove(lines)
@@ -500,7 +545,7 @@ function Paginator:makePage(book, requested_position, style, checkpoint)
 
             for line_index, line in ipairs(lines) do
                 if line.end_offset and line.end_offset >= line.offset then
-                    if geometry.body_line_height > remaining_height and (added_line or #page.elements > 0) then
+                    if paragraph_line_height > remaining_height and (added_line or #page.elements > 0) then
                         local next_layout_offset = line.offset
                         local next_char = content_char_index + math.max(0, next_layout_offset - prefix_length - 1)
                         page.next_position = makePosition(book, chapter_index, paragraph_index, next_char)
@@ -516,21 +561,27 @@ function Paginator:makePage(book, requested_position, style, checkpoint)
                     table.insert(page.elements, {
                         type = "line",
                         text = text,
-                        height = geometry.body_line_height,
+                        face = paragraph_face,
+                        bold = paragraph_style.bold == true,
+                        italic = paragraph_style.italic == true,
+                        alignment = alignment,
+                        width = paragraph_width,
+                        offset_x = quote_inset,
+                        height = paragraph_line_height,
                         paragraph = paragraph_index,
                         start_char = content_char_index + math.max(0, line.offset - prefix_length - 1),
                         prefix_chars = math.max(0, prefix_length - line.offset + 1),
                         next_char = next_char,
                         paragraph_end = is_last_line and not has_more,
                     })
-                    page.used_height = page.used_height + geometry.body_line_height
-                    remaining_height = remaining_height - geometry.body_line_height
+                    page.used_height = page.used_height + paragraph_line_height
+                    remaining_height = remaining_height - paragraph_line_height
                     added_line = true
                     -- Background callers may yield here: the bounded shaping
                     -- probe is already freed and the page is still private.
                     if checkpoint then checkpoint() end
 
-                    if not is_last_line and remaining_height < geometry.body_line_height then
+                    if not is_last_line and remaining_height < paragraph_line_height then
                         page.next_position = makePosition(book, chapter_index, paragraph_index, next_char)
                         return finishPage(book, model, page)
                     end
@@ -540,7 +591,7 @@ function Paginator:makePage(book, requested_position, style, checkpoint)
             if has_more then
                 char_index = content_char_index + window_count
                 model._utf8_hints[paragraph_index] = next_byte and { char = char_index, byte = next_byte } or nil
-                if remaining_height < geometry.body_line_height then
+                if remaining_height < paragraph_line_height then
                     page.next_position = makePosition(book, chapter_index, paragraph_index, char_index)
                     return finishPage(book, model, page)
                 end

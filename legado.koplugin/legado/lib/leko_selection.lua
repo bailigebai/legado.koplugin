@@ -142,4 +142,9 @@ function Selection:rects()
     end
     return result
 end
+-- Reuse the actual shaped glyph bounds for passive links without changing
+-- the reader's active selection or source character positions.
+function Selection.rectsForRange(page,widgets,first,last)
+    return setmetatable({page=page,widgets=widgets,anchor=first,focus=last},Selection):rects()
+end
 return Selection

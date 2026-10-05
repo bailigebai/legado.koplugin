@@ -267,6 +267,7 @@ function SqliteBackend:listProgress() return self:_list("progress", nil, "book_i
 function SqliteBackend:getDownload(id) return self:_get("downloads", "id=" .. quote(id)) end
 function SqliteBackend:putDownload(value) return self:_put("downloads", "id", value.id, value, { book_id = value.book_id or "" }) end
 function SqliteBackend:listDownloads() return self:_list("downloads", nil, "id") end
+function SqliteBackend:deleteDownload(id) return self:_exec("DELETE FROM " .. TABLE .. "downloads WHERE id=" .. quote(id)) end
 
 function SqliteBackend:replaceChapters(book_id, chapters)
     local started, start_error = self:_exec("BEGIN IMMEDIATE")

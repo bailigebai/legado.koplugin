@@ -1,0 +1,56 @@
+local A=require('assertions')
+local Client=require('legado.lib.weread_client')
+local Json=require('legado.lib.json_codec')
+local count=0
+local function eq(expected,actual,message) count=count+1;A.equal(expected,actual,message) end
+local sent,pending={},nil
+local account='a'
+local client=Client.new{auth={session=function() return {vid=account,access_token='fixture'} end},
+    requests={execute=function(_,request,callback)
+        sent[#sent+1]=request;pending=callback
+        return {cancel=function() sent.cancelled=true end}
+    end}}
+local value,failure
+local function done(data,err) value,failure=data,err end
+client:dictionary('《纽约时报》',done)
+eq('https://weread.qq.com/web/dict/query?word=%E7%BA%BD%E7%BA%A6%E6%97%B6%E6%8A%A5',sent[1].url,'dictionary searches the title without decorative brackets')
+eq('GET',sent[1].method,'dictionary is a read-only official request')
+eq(128*1024,sent[1].max_bytes,'dictionary replies remain bounded')
+pending({status=200,body=Json.encode{status=1,type=4,source=1,baike='<p>报纸的<b>背景</b>。</p>',message={word_name='纽约时报',result={{mean=''}}}}})
+eq(nil,failure,'an empty mean does not hide actual encyclopedia text')
+eq('报纸的背景。',value.text,'dictionary displays plain background text')
+eq('微信读书词典 · 搜狗百科',value.source,'returned encyclopedia origin is identified')
+client:dictionary('词条',done)
+pending({status=200,body=Json.encode{status=1,type=4,message={result={{mean='普通释义'}}}}})
+eq('普通释义',value.text,'ordinary mean is usable when baike is absent')
+client:dictionary('不存在',done)
+pending({status=200,body=Json.encode{status=1,type=4,message={result={{mean=''}}}}})
+eq(true,value and value.empty,'missing definitions are a normal empty dictionary result')
+eq(nil,failure,'missing background never asks for a new login')
+eq(true,value.text:find('未收录',1,true)~=nil,'empty result explains the source coverage')
+client:dictionary('失败',done)
+pending({status=200,body=Json.encode{status=0}})
+eq(true,value and value.empty,'official no-definition status is not a network failure')
+client:dictionary('类型一',done)
+pending({status=200,body=Json.encode{status=1,type=1,message={result={{spell='读音',means={{mean='第一种释义'},{mean='第二种释义'}}}}}}})
+eq('第一种释义\n\n第二种释义',value.text,'Chinese dictionary nested meanings are all readable')
+client:dictionary('格式异常',done)
+pending({status=200,body='{}'})
+eq(nil,value,'missing dictionary protocol status cannot mean an absent term')
+eq(true,failure:find('格式',1,true)~=nil,'malformed response is distinct from a term without definition')
+client:dictionary('登录',done)
+pending({status=200,body=Json.encode{errCode=-2010,errMsg='用户不存在'}})
+eq(nil,value,'expired account cannot be treated as an unknown term')
+eq(true,failure:find('重新扫码',1,true)~=nil,'verified account error asks for a new login')
+client:dictionary('账号',done)
+account='b';pending({status=200,body=Json.encode{status=1,baike='旧账号内容'}})
+eq(nil,value,'late reply for a different account is rejected')
+eq(true,failure:find('账号',1,true)~=nil,'account change is explicit')
+local before=#sent
+client:dictionary(string.rep('字',200),done)
+eq(before,#sent,'oversized selected phrase does not access network')
+eq(nil,value,'invalid phrase is rejected before reading')
+local handle=client:dictionary('取消',done)
+value='unchanged';handle:cancel();pending({status=200,body=Json.encode{status=1,baike='迟到'}})
+eq('unchanged',value,'cancelled dictionary cannot deliver a late result')
+return count

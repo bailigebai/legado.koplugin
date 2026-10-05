@@ -4,6 +4,68 @@ local Cleaner = {}
 
 local allowed = { p = true, h1 = true, h2 = true, h3 = true, h4 = true, h5 = true, h6 = true, em = true, strong = true, b = true, i = true, a = true, img = true, br = true, blockquote = true, ul = true, ol = true, li = true, code = true, pre = true }
 local void = { img = true, br = true }
+allowed.span=true -- Safe inline carrier for internal WeRead source coordinates.
+local presentation_tags = {p=true,div=true,h1=true,h2=true,h3=true,h4=true,h5=true,h6=true,
+    blockquote=true,pre=true,li=true,strong=true,b=true,em=true,i=true}
+local heading_scales = {1.3,1.2,1.15,1.1,1.1,1}
+
+local function presentation_attrs(source)
+    local result = {}
+    for name,value in tostring(source or ''):gmatch('([%w:_-]+)%s*=%s*"([^"]*)"') do result[name:lower()]=value end
+    for name,value in tostring(source or ''):gmatch("([%w:_-]+)%s*=%s*'([^']*)'") do result[name:lower()]=value end
+    return result
+end
+
+-- This is a bounded whitelist of paragraph attributes, not a CSS engine.
+-- External class rules and mixed inline fonts remain outside this interface.
+local function presentation(source)
+    local attributes=presentation_attrs(source)
+    local values,css={},{}
+    local align=tostring(attributes.align or ''):lower()
+    if ({left=true,center=true,right=true})[align] then values.alignment=align end
+    local raw=attributes.style
+    if type(raw)=='string' and #raw<=1024 then
+        for key,value in raw:gmatch('([%w-]+)%s*:%s*([^;]+)') do
+            key,value=key:lower(),value:match('^%s*(.-)%s*$'):lower()
+            if key=='text-align' and ({left=true,center=true,right=true,justify=true})[value] then
+                values.alignment=value=='justify' and 'left' or value;css[key]=value
+            elseif key=='font-size' then
+                local scale=tonumber(value:match('^([%d.]+)em$'))
+                local percent=tonumber(value:match('^([%d.]+)%%$'))
+                scale=scale or (percent and percent/100)
+                if scale and scale>=.5 and scale<=3 then values.font_scale=scale;css[key]=value end
+            elseif key=='font-weight' then
+                local weight=tonumber(value)
+                if value=='bold' or value=='normal' or (weight and weight>=100 and weight<=900 and weight%100==0) then
+                    values.bold=value=='bold' or (weight and weight>=600) or false;css[key]=value
+                end
+            elseif key=='font-style' and (value=='italic' or value=='normal') then
+                values.italic=value=='italic';css[key]=value
+            elseif key=='text-indent' and ({['0']=true,['0em']=true,['0px']=true,['2em']=true})[value] then
+                values.indent=value=='2em';css[key]=value
+            end
+        end
+    end
+    local declarations={}
+    for _,key in ipairs{'font-size','font-weight','font-style','text-align','text-indent'} do
+        if css[key] then declarations[#declarations+1]=key..':'..css[key] end
+    end
+    return values,table.concat(declarations,';'),({left=true,center=true,right=true})[align] and align or nil
+end
+
+function Cleaner.paragraphStyle(tag,source)
+    tag=tostring(tag or ''):lower()
+    if not presentation_tags[tag] then return {} end
+    local level=tonumber(tag:match('^h([1-6])$'))
+    local values={}
+    if level then values.heading_level=level;values.font_scale=heading_scales[level];values.bold=true;values.indent=false
+    elseif tag=='strong' or tag=='b' then values.bold=true
+    elseif tag=='em' or tag=='i' then values.italic=true
+    elseif tag=='blockquote' then values.quote=true;values.indent=false end
+    local explicit=presentation(source)
+    for key,value in pairs(explicit) do values[key]=value end
+    return values
+end
 
 local function escape_text(value)
     local entities, index = {}, 0
@@ -73,7 +135,15 @@ local function stripped(value, regexes)
     return value
 end
 local function attrs(tag, source)
-    if tag ~= "a" and tag ~= "img" then return "" end
+    if tag=='span' then
+        local offset=require('legado.lib.weread_text_coordinates').attribute(source)
+        return offset and (' data-legado-wr-offset="'..offset..'"') or ''
+    end
+    if tag ~= "a" and tag ~= "img" then
+        if not presentation_tags[tag] then return '' end
+        local _,style,align=presentation(source)
+        return (align and ' align="'..align..'"' or '')..(style~='' and ' style="'..style..'"' or '')
+    end
     local output = {}
     local function add(name, value)
         name = name:lower()
@@ -117,12 +187,12 @@ function Cleaner.normalize(input, options)
     end
     if cursor <= #input then out[#out + 1] = escape_text(input:sub(cursor)) end
     local value = table.concat(out):gsub("&nbsp;", " ")
-    value = value:gsub('<p>(.-)</p>', function(content)
-        if content:find('<img',1,true) then return '<p>'..content..'</p>' end
+    value = value:gsub('<p([^>]*)>(.-)</p>', function(attributes,content)
+        if content:find('<img',1,true) then return '<p'..attributes..'>'..content..'</p>' end
         local text = content:gsub('<[^>]*>',''):gsub('&#160;',''):gsub('&#[xX]0*[aA]0;','')
             :gsub('　',''):gsub('\194\160',''):gsub('\226\128\139','')
         if not text:match('%S') then return '' end
-        return '<p>'..content..'</p>'
+        return '<p'..attributes..'>'..content..'</p>'
     end)
     local reversed, tail = value:reverse(), 1
     while true do

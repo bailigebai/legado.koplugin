@@ -61,6 +61,7 @@ function LibraryScreen.new(options)
     local cover_width = mode == "detail" and scale(150) or (mode == "grid" or mode == "shelf_hero") and scale(compact and 96 or 76) or scale(110)
     local cover_height = mode == "detail" and scale(210) or (mode == "grid" or mode == "shelf_hero") and scale(compact and 128 or 102) or scale(154)
     local closed = false
+    local widget
     local detail_intro, empty_widget
 
     local function face(size) return deps.font:getFace("cfont", size) end
@@ -83,7 +84,7 @@ function LibraryScreen.new(options)
     local function placeholder(box_width, box_height, text)
         return fixed(label(text or "无封面", 15, box_width - scale(4)), box_width, box_height)
     end
-    local function cover_widget(path, box_width, box_height)
+    local function cover_widget(path, box_width, box_height, fallback)
         if path then
             local image
             local ok = pcall(function()
@@ -93,7 +94,7 @@ function LibraryScreen.new(options)
             if ok then return fixed(image, box_width, box_height) end
             if image and type(image.free) == "function" then pcall(image.free, image) end
         end
-        return placeholder(box_width, box_height, path and "封面不可用" or "无封面")
+        return placeholder(box_width, box_height, fallback or (path and "封面不可用" or "无封面"))
     end
     local function book_cover(path, item, box_width, box_height)
         box_width, box_height = box_width or cover_width, box_height or cover_height
@@ -406,6 +407,13 @@ function LibraryScreen.new(options)
         custom_body, focus_rows = options.custom_body{
             deps=deps, width=content_width, height=math.max(1,body_height), scale=scale,
             cover_widget=cover_widget, request_cover=request_cover, cells=cells,
+            repaint=function(region)
+                if closed or not widget then return false end
+                if deps.ui and deps.ui.setDirty then
+                    deps.ui:setDirty(widget,function() return 'ui',region and region() or widget.dimen end)
+                end
+                return true
+            end,
         }
         body_rows[1] = custom_body
         local insert_at = 2 + #category_rows
@@ -424,7 +432,7 @@ function LibraryScreen.new(options)
         fixed(content, content_width, available_height) }
     local background = deps.frame:new{ padding = 0, bordersize = 0, background = deps.colors.COLOR_WHITE, centered }
     local Root = type(deps.focus.extend) == "function" and deps.focus:extend{} or deps.focus
-    local widget = Root:new{ layout = layout, background }
+    widget = Root:new{ layout = layout, background }
     if detail_intro then detail_intro.dialog = widget end
     widget.kind, widget.items, widget.options, widget.cells = "library_screen", items, options, cells
     widget.page = options.page or 1

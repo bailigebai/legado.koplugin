@@ -272,4 +272,27 @@ equal(true, mode_settings:get('immersive_reader'), 'enabled mode is visible imme
 equal(true, Settings.new(nil, { data_dir = 'settings-root', fs = mode_fs }):get('immersive_reader'), 'enabled mode survives restart')
 equal(false, mode_settings:set('immersive_reader', false), 'disable mode is a successful false value')
 equal(false, Settings.new(nil, { data_dir = 'settings-root', fs = mode_fs }):get('immersive_reader'), 'disabled mode survives restart')
+for _, marker in ipairs({true,false}) do
+    local migrated_fs,migrated_state=memory_fs({[json_path]=Json.encode{schema_version=1,settings={
+        default_sources_initialized=marker,prefetch=7,immersive_reader=false,
+        license_receipt='fixture-receipt',license_installation_id='fixture-installation'}}})
+    local migrated_settings,migrated_error=Settings.new(nil,{data_dir='settings-root',fs=migrated_fs})
+    equal(nil,migrated_error,'obsolete built-in-source marker does not lock legitimate device settings')
+    equal(7,migrated_settings:get('prefetch'),'migration preserves reading preferences')
+    equal(false,migrated_settings:get('immersive_reader'),'migration preserves an explicit false setting')
+    equal('fixture-receipt',migrated_settings:get('license_receipt'),'migration preserves authorization receipt')
+    equal('fixture-installation',migrated_settings:get('license_installation_id'),'migration preserves installation identity')
+    equal(nil,migrated_settings:get('default_sources_initialized'),'obsolete marker is removed from active values')
+    equal(nil,Json.decode(migrated_state.files[json_path]).settings.default_sources_initialized,'canonical migration removes only the obsolete marker')
+    equal('weread',migrated_settings:set('home_shelf_mode','weread'),'the failed device action can now save')
+    equal('weread',Settings.new(nil,{data_dir='settings-root',fs=migrated_fs}):get('home_shelf_mode'),'homepage preference survives migration and restart')
+end
+for _, invalid in ipairs({{default_sources_initialized='true'},{default_sources_initialized=true,unexpected_key=true}}) do
+    local original=Json.encode{schema_version=1,settings=invalid}
+    local strict_fs,strict_state=memory_fs({[json_path]=original})
+    local _,strict_error=Settings.new(nil,{data_dir='settings-root',fs=strict_fs})
+    equal('RECOVERY_REQUIRED',strict_error and strict_error.code,'legacy migration does not accept malformed or unrelated unknown fields')
+    equal(original,strict_state.files[json_path],'rejected settings remain byte-for-byte intact')
+    equal(0,strict_state.writes,'invalid settings are never automatically rewritten')
+end
 return count

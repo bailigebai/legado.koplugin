@@ -428,9 +428,37 @@ local function posix_dirfd_atomic(self, path, data, options)
         if not prepared_path and not old_content then return failure("cannot read previous atomic target") end
     end
     local backup_name, backup_fd, backup_identity
+    local previous=options.previous
+    if previous and (previous.exists~=had_old or had_old and
+        (not previous.identity or not same_identity(previous.identity,fd_identity(target_fd)) or tonumber(sys:size(target_fd))~=previous.size)) then
+        return failure('previous EPUB changed during preparation')
+    end
     if had_old then
-        backup_name, backup_fd, backup_identity = create_name("backup")
-        local backup_written = backup_name and backup_identity and (prepared_path and copy_all(target_fd, backup_fd) or write_all(backup_fd, old_content))
+        local backup_written
+        if previous and prepared_path then
+            local backup=options.backup
+            local parent=backup and parent_directory(backup.path)
+            local canonical=parent and self:canonicalize(parent)
+            if type(canonical)~='string' or canonical:gsub('\\','/'):gsub('/+$','')~=canonical_parent then
+                return failure('prepared backup must share the target directory')
+            end
+            backup_name=backup.path:gsub('\\','/'):match('([^/]+)$')
+            if backup_name==target_name or backup_name==temp_name or backup_name=='.' or backup_name=='..' then
+                return failure('invalid prepared backup name')
+            end
+            backup_fd=remember(retry(function() return sys:openat(parent_fd,backup_name,read_flags,0) end))
+            if backup_fd<0 then return failure('prepared backup is unavailable') end
+            backup_identity=fd_identity(backup_fd)
+            if not backup.identity or not same_identity(backup.identity,backup_identity)
+                or backup.size~=previous.size or tonumber(sys:size(backup_fd))~=backup.size then
+                return failure('prepared backup identity or size changed')
+            end
+            names[backup_name]=true
+            backup_written=retry(function() return sys:fsync(backup_fd) end)==0
+        else
+            backup_name, backup_fd, backup_identity = create_name("backup")
+            backup_written = backup_name and backup_identity and (prepared_path and copy_all(target_fd, backup_fd) or write_all(backup_fd, old_content))
+        end
         local target_closed, target_close_error = close_fd(target_fd)
         if not target_closed then return failure("cannot close previous atomic target", { cause = target_close_error }) end
         if not backup_written then return failure("cannot create bound atomic backup") end
@@ -682,6 +710,55 @@ function Fs:readBounded(path, max_bytes)
     return self:read(path)
 end
 
+function Fs:syncFile(path)
+    if not jit or jit.os=='Windows' then return true end
+    local ffi=require('ffi')
+    pcall(ffi.cdef,'int open(const char *pathname,int flags,unsigned int mode); int fsync(int fd); int close(int fd);')
+    local flags=Fs.posixFlags(ffi.arch)
+    local fd=ffi.C.open(path,flags.O_RDONLY+flags.O_NOFOLLOW+flags.O_CLOEXEC,0)
+    if fd<0 then return nil,Errors.new(Errors.STORAGE_ERROR,'prepared file cannot be opened for sync') end
+    local result
+    repeat result=ffi.C.fsync(fd) until result==0 or ffi.errno()~=4
+    local closed=ffi.C.close(fd)
+    if result~=0 or closed~=0 then return nil,Errors.new(Errors.STORAGE_ERROR,'prepared file sync failed') end
+    return true
+end
+
+-- Called in the export child. The parent verifies these file identities before
+-- its single atomic rename; it never has to copy the previous book on the UI.
+function Fs:prepareReplacement(prepared_path,target)
+    local synced,err=self:syncFile(prepared_path)
+    if not synced then return nil,err end
+    local size=self:size(target)
+    if size==nil then return {previous={exists=false}} end
+    local identity=self:identity(target)
+    if not identity then return nil,Errors.new(Errors.STORAGE_ERROR,'previous EPUB identity is unavailable') end
+    local backup_path=prepared_path..'.backup'
+    local input=self.open(target,'rb')
+    if not input then return nil,Errors.new(Errors.STORAGE_ERROR,'previous EPUB cannot be read') end
+    local output,cause=posix_exclusive(backup_path)
+    if not output and (not jit or jit.os=='Windows') then output,cause=self.open(backup_path,'wb') end
+    if not output then input:close();return nil,Errors.new(Errors.STORAGE_ERROR,'EPUB backup cannot be created') end
+    local bytes=0
+    local called=pcall(function()
+        while true do
+            local chunk,read_error=input:read(65536)
+            if chunk==nil then assert(not read_error);break end
+            if chunk=='' then break end
+            assert(output:write(chunk));bytes=bytes+#chunk
+        end
+        assert(output:flush())
+    end)
+    local closed=output:close();input:close()
+    if not called or not closed or bytes~=size or self:size(backup_path)~=size
+        or not same_identity(identity,self:identity(target)) or self:size(target)~=size then
+        self:removeFile(backup_path)
+        return nil,Errors.new(Errors.STORAGE_ERROR,'previous EPUB backup failed or changed')
+    end
+    return {previous={exists=true,identity=identity,size=size},
+        backup={path=backup_path,identity=self:identity(backup_path),size=size}}
+end
+
 function Fs:atomicWrite(path, data, options)
     if type(data) ~= "string" then return nil, Errors.new(Errors.INVALID_INPUT, "atomic write accepts strings") end
     options = options or {}
@@ -852,6 +929,11 @@ function Fs:atomicReplacePreparedFile(prepared_path, target_path, options)
     local old_identity = self:_identity(target_path)
     local old_size = self:size(target_path)
     local had_old = old_size ~= nil
+    if options.previous and (options.previous.exists~=had_old or had_old and
+        (not options.previous.identity or not same_identity(options.previous.identity,old_identity)
+            or options.previous.size~=old_size)) then
+        return nil,Errors.new(Errors.STORAGE_ERROR,'previous EPUB changed during preparation')
+    end
     local backup, backup_identity
     if had_old then
         local backup_handle, backup_error

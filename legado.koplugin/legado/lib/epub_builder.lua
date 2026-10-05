@@ -177,11 +177,11 @@ function EpubBuilder.exportFilename(book)
     return name .. "-" .. readable_id .. "-" .. Identity.hash(raw_id) .. ".epub"
 end
 
-function EpubBuilder:write(path, book, chapters, bodies, assets)
+function EpubBuilder:prepare(path, book, chapters, bodies, assets, previous_path)
     if type(path) ~= "string" or path == "" then return nil, Errors.new(Errors.INVALID_INPUT, "EPUB path is required") end
     local entries, build_error = EpubBuilder.buildEntries(book, chapters, bodies, assets)
     if not entries then return nil, build_error end
-    local part = path .. ".part"
+    local part = path
     pcall(self.fs.removeFile, self.fs, part)
     local written, write_error = self.archive_writer:write(part, entries)
     if not written then self.fs:removeFile(part); return nil, write_error end
@@ -190,13 +190,32 @@ function EpubBuilder:write(path, book, chapters, bodies, assets)
         self.fs:removeFile(part)
         return nil, size_error or Errors.new(Errors.STORAGE_ERROR, "EPUB archive part is empty")
     end
+    local prepared={path=part,size=size}
+    if previous_path then
+        local replacement,err=self.fs:prepareReplacement(part,previous_path)
+        if not replacement then self.fs:removeFile(part);return nil,err end
+        prepared.previous,prepared.backup=replacement.previous,replacement.backup
+    end
+    return prepared
+end
+
+function EpubBuilder:publish(prepared,path)
+    local part,size=prepared.path,prepared.size
     if type(self.fs.atomicReplacePreparedFile) ~= "function" then
         self.fs:removeFile(part)
         return nil, Errors.new(Errors.STORAGE_ERROR, "atomic EPUB publication is unavailable")
     end
-    local published, publish_error = self.fs:atomicReplacePreparedFile(part, path, { expected_size = size })
+    local published, publish_error = self.fs:atomicReplacePreparedFile(part, path,
+        {expected_size=size,previous=prepared.previous,backup=prepared.backup})
     if not published then self.fs:removeFile(part); return nil, publish_error end
     return path, publish_error
+end
+
+function EpubBuilder:write(path, book, chapters, bodies, assets)
+    if type(path)~='string' or path=='' then return nil,Errors.new(Errors.INVALID_INPUT,'EPUB path is required') end
+    local prepared,err=self:prepare(path..'.part',book,chapters,bodies,assets)
+    if not prepared then return nil,err end
+    return self:publish(prepared,path)
 end
 
 return EpubBuilder

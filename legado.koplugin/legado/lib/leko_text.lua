@@ -2,6 +2,7 @@
 -- jnjnnjzch/leko-reader 57dff8958dd43a5d95cb2dac22ca363d874de29b (AGPL-3.0-or-later).
 -- The HTML-to-paragraph boundary uses this plugin's existing entity decoder.
 local Text = {}
+local Coordinates=require('legado.lib.weread_text_coordinates')
 local function valid_utf8(value)
     local i=1
     while i<=#value do
@@ -61,13 +62,68 @@ function Text.parse(body,title,map_positions,assets)
     if not valid_utf8(body) then return nil,{code='ENCODING_ERROR',message='章节正文不是有效的 UTF-8 文本。'} end
     local value=body:gsub('<[sS][cC][rR][iI][pP][tT][^>]*>.-</[sS][cC][rR][iI][pP][tT]%s*>','')
         :gsub('<[sS][tT][yY][lL][eE][^>]*>.-</[sS][tT][yY][lL][eE]%s*>','')
-    value=value:gsub('<%s*/?%s*([%a%d]+)[^>]*>',function(tag)
+    local decode=require('legado.lib.safe_functions').functions.htmldecode
+    local Cleaner=require('legado.lib.content_cleaner')
+    local style_stack,style_runs,style_char,source_cursor={},{},1,1
+    local source_runs,source_mapped={},false
+    local styles_valid=true
+    local function style_text(chunk)
+        local decoded=decode(chunk):gsub('\r\n','\n'):gsub('\r','\n')
+        local length=Text.utf8Length(decoded)
+        local scope=style_stack[#style_stack]
+        if map_positions and length>0 and scope and scope.source_offset then
+            source_runs[#source_runs+1]={first=style_char,last=style_char+length-1,
+                source_first=scope.source_offset,text=decoded}
+        end
+        if length>0 and styles_valid then
+            if #style_runs>=20000 then styles_valid=false
+            else style_runs[#style_runs+1]={first=style_char,last=style_char+length-1,
+                values=style_stack[#style_stack] and style_stack[#style_stack].values or {}} end
+        end
+        style_char=style_char+length
+    end
+    local original=value
+    value=value:gsub('()(<%s*/?%s*([%a%d]+)[^>]*>)',function(first,raw,tag)
+        style_text(original:sub(source_cursor,first-1));source_cursor=first+#raw
         tag=tag:lower()
         if tag=='img' then return nil end -- Keep image tags for the bounded block scan below.
-        return (({p=true,div=true,br=true,li=true,blockquote=true,pre=true})[tag] or tag:match('^h[1-6]$')) and '\n' or ''
+        if raw:match('^<%s*/') then
+            for index=#style_stack,1,-1 do if style_stack[index].tag==tag then
+                for last=#style_stack,index,-1 do style_stack[last]=nil end;break
+            end end
+        elseif not ({br=true,hr=true,meta=true,link=true,input=true})[tag] and not raw:match('/%s*>$') then
+            if #style_stack>=64 then styles_valid=false
+            else
+                local values={}
+                for key,item in pairs(style_stack[#style_stack] and style_stack[#style_stack].values or {}) do values[key]=item end
+                for key,item in pairs(Cleaner.paragraphStyle(tag,raw)) do values[key]=item end
+                local offset=tag=='span' and Coordinates.attribute(raw) or nil
+                if offset then source_mapped=true end
+                style_stack[#style_stack+1]={tag=tag,values=values,source_offset=offset}
+            end
+        end
+        if ({p=true,div=true,br=true,li=true,blockquote=true,pre=true})[tag] or tag:match('^h[1-6]$') then
+            style_char=style_char+1;return '\n'
+        end
+        return ''
     end)
-    local decode=require('legado.lib.safe_functions').functions.htmldecode
-    local paragraphs,images,source_positions={},{},map_positions and {} or nil
+    style_text(original:sub(source_cursor))
+    local paragraphs,images,paragraph_styles,source_positions={},{},{},map_positions and {} or nil
+    local style_run_index=1
+    local function paragraph_style(first,last)
+        if not styles_valid then return nil end
+        while style_runs[style_run_index] and style_runs[style_run_index].last<first do style_run_index=style_run_index+1 end
+        local common
+        for index=style_run_index,#style_runs do
+            local run=style_runs[index]
+            if run.first>last then break end
+            if run.last>=first then
+                if not common then common={};for key,item in pairs(run.values) do common[key]=item end
+                else for key,item in pairs(common) do if run.values[key]~=item then common[key]=nil end end end
+            end
+        end
+        return common and next(common) and common or nil
+    end
     local original_char=1
     local function text_chunk(chunk)
         chunk=decode(chunk):gsub('\r\n','\n'):gsub('\r','\n')
@@ -78,10 +134,12 @@ function Text.parse(body,title,map_positions,assets)
             local trimmed=line:match('^%s*(.-)%s*$')
             if trimmed~='' then
                 local index=#paragraphs+1;paragraphs[index]=trimmed
+                local leading=line:find('%S') or 1
+                local first=original_char+Text.utf8Length(line:sub(1,leading-1))
+                local last=first+Text.utf8Length(trimmed)-1
+                paragraph_styles[index]=paragraph_style(first,last)
                 if source_positions then
-                    local leading=line:find('%S') or 1
-                    local first=original_char+Text.utf8Length(line:sub(1,leading-1))
-                    source_positions[index]={first=first,last=first+Text.utf8Length(trimmed)-1}
+                    source_positions[index]={first=first,last=last}
                 end
             end
             original_char=original_char+Text.utf8Length(line)+(ending and 1 or 0)
@@ -102,9 +160,13 @@ function Text.parse(body,title,map_positions,assets)
         if source_positions then source_positions[index]=false end
         cursor=last+1
     end
+    -- Invalid markup can assemble an entity across tag boundaries. Keep the
+    -- established text/coordinate result and discard ambiguous metadata.
+    if style_char~=original_char then paragraph_styles={};source_runs={} end
     if not images[1] and paragraphs[1]==title and #paragraphs>1 then
         table.remove(paragraphs,1);if source_positions then table.remove(source_positions,1) end
         local shifted={};for index,asset in pairs(images) do shifted[index-1]=asset end;images=shifted
+        shifted={};for index,style in pairs(paragraph_styles) do if index>1 then shifted[index-1]=style end end;paragraph_styles=shifted
     end
     if #paragraphs==0 then return nil,{code='PARSE_ERROR',message='本章没有可显示的内容。'} end
     local paths={}
@@ -114,6 +176,8 @@ function Text.parse(body,title,map_positions,assets)
     end
     local image_key=#paths>0 and '\n'..require('legado.lib.identity').hash(table.concat(paths,'\n')) or ''
     return {title=tostring(title or ''),paragraphs=paragraphs,images=images,image_key=image_key,source_positions=source_positions,
+        weread_source_runs=map_positions and (source_mapped and styles_valid and source_runs or {}) or nil,
+        paragraph_styles=paragraph_styles,
         checksum=require('legado.lib.identity').hash(body)}
 end
 
@@ -140,35 +204,54 @@ end
 -- A quote alone cannot identify its original occurrence after an edit. Accept
 -- a marker only when its zero-based, end-exclusive range also matches the
 -- reconstructed original-text map. Other coordinate variants stay list-only.
+local function comment_index(model)
+    if model.comment_index then return model.comment_index end
+    local parts,spans,offset={},{},0
+    for paragraph,value in ipairs(model.paragraphs or {}) do
+        -- An image has no verified source character coordinates. It must not
+        -- join otherwise adjacent sentences into a false cross-block quote.
+        local normalized=model.images and model.images[paragraph] and '\0' or normalized_quote(value)
+        parts[#parts+1]=normalized
+        if #normalized>0 then spans[#spans+1]={paragraph=paragraph,first=offset+1,last=offset+#normalized} end
+        offset=offset+#normalized
+    end
+    model.comment_index={text=table.concat(parts),spans=spans}
+    return model.comment_index
+end
 function Text.locateQuote(model,quote,range)
     local first,last
     if type(range)=='string' then first,last=range:match('^(%d+)%-(%d+)$') end
-    if not first or not last or tonumber(first)>=tonumber(last) then return nil end
+    if not first or not last or tonumber(first)>=tonumber(last) or tonumber(last)>8*1024*1024 then return nil end
+    if model.weread_source_runs and #model.weread_source_runs==0 then return nil end
     quote=Text.plainText(quote)
-    if #quote>32768 or not valid_utf8(quote) then return nil end
+    if #quote>32768 or quote:find('%z') or not valid_utf8(quote) then return nil end
     local wanted=normalized_quote(quote)
     if wanted=='' then return nil end
-    local found
-    model.comment_text=model.comment_text or {}
-    for paragraph,value in ipairs(model.paragraphs or {}) do
-        local normalized=model.comment_text[paragraph]
-        if not normalized then normalized=normalized_quote(value);model.comment_text[paragraph]=normalized end
-        local at,ending=normalized:find(wanted,1,true)
-        if at then
-            if found or normalized:find(wanted,at+1,true) then return nil end
-            local start_char=Text.utf8Length(normalized:sub(1,at-1))+1
-            local end_char=Text.utf8Length(normalized:sub(1,ending))
-            local _,positions=normalized_quote(value)
-            local original=model.source_positions and model.source_positions[paragraph]
-            found={paragraph=paragraph,char=positions[start_char],last_char=positions[end_char],source_range=range,
-                original_first=original and original.first+positions[start_char]-1,
-                original_last=original and original.first+positions[end_char]-1}
+    local index=comment_index(model)
+    local at,ending=index.text:find(wanted,1,true)
+    if not at or index.text:find(wanted,at+1,true) then return nil end
+    local start_span,end_span
+    for _,span in ipairs(index.spans) do
+        if at>=span.first and at<=span.last then start_span=span end
+        if ending>=span.first and ending<=span.last then end_span=span;break end
+    end
+    if not start_span or not end_span then return nil end
+    local function source_position(span,byte,is_last)
+        local normalized,positions=normalized_quote(model.paragraphs[span.paragraph])
+        local char=Text.utf8Length(normalized:sub(1,byte-span.first+(is_last and 1 or 0)))+(is_last and 0 or 1)
+        local original=model.source_positions and model.source_positions[span.paragraph]
+        local coordinate=original and original.first+positions[char]-1
+        if coordinate and model.weread_source_runs then
+            coordinate=Coordinates.offset(model.weread_source_runs,coordinate,is_last)
+            if coordinate and not is_last then coordinate=coordinate+1 end
         end
+        return positions[char],coordinate
     end
-    if found and found.original_first==tonumber(first)+1 and found.original_last==tonumber(last) then
-        return found
-    end
-    return nil
+    local start_char,original_first=source_position(start_span,at,false)
+    local end_char,original_last=source_position(end_span,ending,true)
+    if original_first~=tonumber(first)+1 or original_last~=tonumber(last) then return nil end
+    return {paragraph=start_span.paragraph,char=start_char,last_paragraph=end_span.paragraph,last_char=end_char,
+        source_range=range,original_first=original_first,original_last=original_last}
 end
 function Text.metrics(model)
     if model.metrics then return model.metrics end

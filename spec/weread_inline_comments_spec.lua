@@ -53,21 +53,22 @@ sent[5].callback({status=200,body=Json.encode{underlines={{range='0-4'}}}})
 eq('微信读书账号已切换',failure,'a successful old-account response cannot load new-account comments')
 eq(5,#sent,'account switch prevents the second request')
 
-local model=assert(Text.parse('<p>庄周<b>梦蝶</b>。</p><p>白日&nbsp;依山尽， 黄河入海流。</p>','第一章',true))
+local model=assert(Text.parse(require('legado.lib.weread_text_coordinates').body(
+    '<p>庄周<b>梦蝶</b>。</p><p>白日&nbsp;依山尽， 黄河入海流。</p>'),'第一章',true))
 eq(2,model.source_positions and model.source_positions[1].first,
     'display paragraphs retain positions before trimming and reflow')
 eq(9,model.source_positions and model.source_positions[2].first,
     'HTML block boundaries and Chinese characters are represented in the source map')
 local rows=Mapper.inlineComments({reviews={
-    {id='r1',range='1-5',abstract='庄周梦蝶',content='第一条'},
-    {id='r2',range='8-21',abstract='白日 依山尽，黄河入海流',content='第二条'},
+    {id='r1',range='3-10',abstract='庄周梦蝶',content='第一条'},
+    {id='r2',range='22-40',abstract='白日 依山尽，黄河入海流',content='第二条'},
     {id='r3',range='20-24',abstract='不同版本',content='保留列表'},
 }},'book-one','7',model)
 eq(3,#rows,'all current-chapter comments remain in the list')
 eq(1,rows[1].position.paragraph,'HTML tags do not shift the verified quote to a wrong paragraph')
 eq(1,rows[1].position.char,'multi-byte Chinese is mapped to character positions')
 eq(4,rows[1].position.last_char,'Chinese quote ends at the right character')
-eq(2,rows[1].position.original_first,'verified comment carries its mapped original text position')
+eq(4,rows[1].position.original_first,'verified comment carries its mapped original HTML position')
 eq(2,rows[2].position.paragraph,'whitespace and HTML entities preserve the matched paragraph')
 eq(nil,rows[3].position,'version mismatch never creates a body marker')
 local duplicate=assert(Text.parse('<p>重复句子</p><p>重复句子</p>','章'))
@@ -88,7 +89,7 @@ local comments=Comments.new{book_id='book-one',chapter_uid='7',model=model,
 eq(true,comments:load(),'first chapter comment page starts asynchronously')
 eq(true,comments.loading,'comment loading status is visible')
 eq(0,#comments.rows,'loading does not supply fake comments')
-pending[1].callback({reviews={{id='r1',range='1-5',abstract='庄周梦蝶',content='可读'}},
+pending[1].callback({reviews={{id='r1',range='3-10',abstract='庄周梦蝶',content='可读'}},
     has_more=true,next_cursor=cursor})
 eq(1,#comments.rows,'verified comments reach the reading model')
 eq(1,comments.rows[1].position.paragraph,'controller carries the verified marker position')

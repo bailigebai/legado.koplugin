@@ -36,8 +36,8 @@ function Downloads:_scheduleRefresh()
     action = function()
         if not self.alive or generation ~= self.generation or self.refresh_action ~= action then return end
         self.refresh_action = nil
-        local items = self:refresh()
-        if type(self.on_refresh) == "function" then pcall(self.on_refresh, self, items) end
+        local items,changed = self:refresh()
+        if changed and type(self.on_refresh) == "function" then pcall(self.on_refresh, self, items) end
     end
     self.refresh_action = action
     local scheduled = pcall(self.scheduler.scheduleIn, self.scheduler, self.refresh_interval, action)
@@ -50,7 +50,7 @@ function Downloads:refresh()
     self.persistence_error = self.manager.persistence_blocked and
         (self.manager.init_error or { code = "STORAGE_ERROR" }) or nil
     local items = {}
-    for _, task in ipairs(self.manager:list() or {}) do
+    for _, task in ipairs(self.manager:list(true) or {}) do
         local completed, total = tonumber(task.completed) or 0, tonumber(task.total) or 0
         local progress = total > 0 and (" · " .. completed .. "/" .. total) or ""
         if total > 0 then progress = progress .. " · " .. tostring(math.floor(completed * 100 / total)) .. "%" end
@@ -67,10 +67,18 @@ function Downloads:refresh()
             .. " · " .. kind
             .. " · " .. (labels[task.status] or tostring(task.status or "未知")) .. progress .. failures .. warning .. next_step }
     end
+    local changed=#items~=#self.items
+    for index,row in ipairs(items) do
+        local old=self.items[index]
+        if not old or old.task.id~=row.task.id or old.text~=row.text then changed=true;break end
+    end
+    local blocked=self.persistence_error and self.persistence_error.code or nil
+    if self.previous_error~=blocked then changed=true end
+    self.previous_error=blocked
     self.items = items
     self.navigation:setCount(#items)
     self:_scheduleRefresh()
-    return items
+    return items,changed
 end
 
 function Downloads:onKey(key) if not self.alive then return false end return self.navigation:onKey(key) end
@@ -87,6 +95,7 @@ local function action(self, method, id)
 end
 
 function Downloads:cancel(id) return action(self, "cancel", id) end
+function Downloads:remove(id) return action(self, "remove", id) end
 function Downloads:retry(id) return action(self, "retry", id) end
 function Downloads:resume(id) return action(self, "resume", id) end
 function Downloads:open(id) return action(self, "open", id) end
