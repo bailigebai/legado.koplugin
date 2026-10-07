@@ -70,7 +70,6 @@ RUNTIME_FILES = frozenset({
     "legado/lib/weread_dictionary.lua",
     "legado/lib/reader_chrome.lua",
     "legado/lib/reader_background.lua",
-    "legado/lib/reader_terms.lua",
     "legado/lib/shelf_categories.lua",
     "legado/lib/reading_history.lua",
     "legado/lib/receipt_styles.lua",
@@ -126,6 +125,7 @@ RUNTIME_FILES = frozenset({
     "legado/vendor/licenses/swipe-LICENSE",
 })
 DOCUMENTS = frozenset({
+    "docs/reader-comments-dictionary-0.10.51.md",
     "docs/weread-passage-comments-0.10.50.md",
     "docs/reader-library-0.10.48.md",
     "docs/download-responsiveness-0.10.49.md",

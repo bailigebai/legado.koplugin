@@ -42,8 +42,8 @@ eq(true,pending[2].cancelled,'return cancels passage detail IO')
 local count_shown=#shown
 pending[2].cb{reviewId='r1',review={reviewId='r1',content='late'}}
 eq(count_shown,#shown,'late response cannot reopen the passage panel')
-for _,action in ipairs(shown[#shown].actions) do if action.text=='全部随文评论' then action.callback();break end end
-eq(2,#shown[#shown].items,'all-passages action clears only the passage filter')
+for _,action in ipairs(shown[#shown].actions) do if action.text=='全部原文片段' then action.callback();break end end
+eq(2,#shown[#shown].items,'all-passages action opens the source groups')
 local root=shown[#shown]
 for _,action in ipairs(root.actions) do if action.text=='加载更多评论' then action.callback();break end end
 eq(c.next_cursor,pending[3].page,'more comments use the actual per-range continuation cursor')

@@ -21,11 +21,11 @@ eq('https://wx.qlogo.cn/1/0',list.items[1].row.avatar_url,'avatar DTO reaches ca
 eq(0,#pending,'list starts no detail prefetch')
 list.on_next();list=shown[#shown]
 list.items[1].callback()
-eq('r7',pending[1].id,'clicking a card loads its actual thought')
+eq('r5',pending[1].id,'clicking a card loads its actual thought')
 local loading=shown[#shown]
-eq('全文7',loading.review.content,'loading retains complete original thought')
-pending[1].cb{reviewId='r7',review={reviewId='r7',content='完整详情',author={name='作者'}},likesCount=2,commentsCount=1,
-    comments={{reviewId='r7',commentId='c1',content='完整回复',author={name='回复者'}}},likes={{userVid=3,name='赞者'}}}
+eq('全文5',loading.review.content,'loading retains complete original thought')
+pending[1].cb{reviewId='r5',review={reviewId='r5',content='完整详情',author={name='作者'}},likesCount=2,commentsCount=1,
+    comments={{reviewId='r5',commentId='c1',content='完整回复',author={name='回复者'}}},likes={{userVid=3,name='赞者'}}}
 local detail=shown[#shown]
 eq('回复者',detail.items[1].row.author,'detail shows reply author independently')
 eq('回复',detail.categories[1].text:sub(1,6),'reply tab is offered')
@@ -44,7 +44,7 @@ local stale=pending[2].cb
 shown[#shown].on_back()
 eq(true,pending[2].cancelled,'return cancels current detail network request')
 local before=#shown
-stale{reviewId='r7',review={reviewId='r7',content='late'}}
+stale{reviewId='r5',review={reviewId='r5',content='late'}}
 eq(before,#shown,'late detail never reopens closed screen')
 shown[#shown].on_back()
 eq(1,resumed,'closing root list resumes original reader exactly once')

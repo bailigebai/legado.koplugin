@@ -7,8 +7,11 @@ function Screen.show(presenter,discussions,document,options)
     if not discussions:current() then return false end
     options=options or {}
     local passage,range=options.passage,options.range
+    local group_filter=type(range)=='table' and range or nil
+    if group_filter then range=nil end
     local chapter=document.reading_state.chapters[document.reading_state.index]
-    local mode,list_page,detail_page,tab,parents='list',1,1,'replies',{}
+    local mode=passage and range==nil and 'passages' or 'list'
+    local group_page,list_page,detail_page,tab,parents=1,1,1,'replies',{}
     local detail,full,render
     local function close_widget()
         local widget=discussions.panel_widget
@@ -28,6 +31,7 @@ function Screen.show(presenter,discussions,document,options)
             if #parents>0 then table.remove(parents);detail_page=1;return render() end
             detail:close();discussions.detail,detail=nil,nil;mode='list';return render()
         end
+        if passage and mode=='list' then mode,range='passages',nil;return render() end
         return close_panel()
     end
     local function show_full(row)
@@ -60,17 +64,28 @@ function Screen.show(presenter,discussions,document,options)
             opts.custom_body=Body.new{full_text=opts.text}
         else
             local rows,state,size,page
-            if mode=='list' then
-                rows,size,page=passage and discussions:list(range) or discussions.rows,passage and 4 or 6,list_page
+            if mode=='list' or mode=='passages' then
+                rows=mode=='passages' and discussions:groups(group_filter) or passage and discussions:list(range) or discussions.rows
+                size,page=mode=='passages' and 6 or 4,mode=='passages' and group_page or list_page
                 opts.subtitle=discussions.loading and (passage and '正在加载公开随文评论…' or '正在加载本章热门想法…')
                     or discussions.error or (#rows==0 and (passage and '暂无已加载的随文评论' or '暂无本章热门想法'))
-                    or (passage and (range and '这段的公开想法' or '本章公开随文评论') or '本章热门想法')
+                    or (passage and (mode=='passages' and '选择原文片段' or '对应读者评论') or '本章热门想法')
                 if not discussions.loading and (discussions.error or passage and discussions.next_cursor) then
                     opts.actions[1]={text=discussions.error and '重试' or '加载更多评论',
                         callback=guarded(function() return discussions:load() end)}
                 end
-                if passage and range then opts.actions[#opts.actions+1]={text='全部随文评论',
-                    callback=guarded(function() range,list_page=nil,1;return render() end)} end
+                if passage and (mode=='list' or group_filter) then opts.actions[#opts.actions+1]={text='全部原文片段',
+                    callback=guarded(function() range,group_filter,group_page,mode=nil,nil,1,'passages';return render() end)} end
+                if passage and mode=='list' then
+                    local quotes,seen={},{}
+                    for _,row in ipairs(rows) do
+                        local quote=row.abstract
+                        if quote and quote~='' and not seen[row.range or false] then
+                            seen[row.range or false]=true;quotes[#quotes+1]=quote
+                        end
+                    end
+                    opts.source_text=table.concat(quotes,'\n\n')
+                end
             else
                 local parent=parents[#parents]
                 state=tab=='likes' and detail.likes or detail:thread(parent)
@@ -99,13 +114,14 @@ function Screen.show(presenter,discussions,document,options)
                 end
             end
             local pages=math.max(1,math.ceil(#rows/size));page=math.max(1,math.min(page,pages))
-            if mode=='list' then list_page=page else detail_page=page end
+            if mode=='passages' then group_page=page elseif mode=='list' then list_page=page else detail_page=page end
             for index=(page-1)*size+1,math.min(page*size,#rows) do
                 local row=rows[index]
-                local preview,_,more=Text.utf8Window(row.content or '',1,180)
+                local preview,_,more=Text.utf8Window(mode=='passages' and row.abstract or row.content or '',1,180)
                 local quote=passage and mode=='list' and row.abstract and row.abstract~='' and ('原文：'..row.abstract..'\n') or ''
-                opts.items[#opts.items+1]={row=row,text=Body.heading(row)..'\n'..quote..preview..(more and '…' or ''),
+                opts.items[#opts.items+1]={row=row,text=(mode=='passages' and '' or Body.heading(row)..'\n')..quote..preview..(more and '…' or ''),
                     callback=guarded(function()
+                        if mode=='passages' then range,list_page,mode=row.range,1,'list';return render() end
                         if mode=='list' then return open_detail(row) end
                         if tab=='likes' then return true end
                         if row.replies_count and row.replies_count>0 or row.sub_comments and #row.sub_comments>0
@@ -121,19 +137,20 @@ function Screen.show(presenter,discussions,document,options)
             end
             opts.empty_text=empty
             opts.custom_body=Body.new{items=opts.items,review=opts.review,empty_text=empty,
-                show_quote=passage and mode=='list',
+                passages=mode=='passages',source_text=opts.source_text,
+                on_source_text=guarded(function() return show_full{author='原文',content=opts.source_text} end),
                 on_full_text=guarded(function() return show_full(opts.review) end)}
             opts.page,opts.page_count,opts.already_paginated=page,pages,true
             opts.on_prev=page>1 and guarded(function()
-                if mode=='list' then list_page=page-1 else detail_page=page-1 end;return render()
+                if mode=='passages' then group_page=page-1 elseif mode=='list' then list_page=page-1 else detail_page=page-1 end;return render()
             end) or nil
             opts.on_next=page<pages and guarded(function()
-                if mode=='list' then list_page=page+1 else detail_page=page+1 end;return render()
+                if mode=='passages' then group_page=page+1 elseif mode=='list' then list_page=page+1 else detail_page=page+1 end;return render()
             end) or nil
         end
         opts.on_request_close=function()
             if owned() then
-                if mode=='list' then discussions:cancelLoad()
+                if mode=='list' or mode=='passages' then discussions:cancelLoad()
                 elseif detail and mode~='full' then detail:cancelRequests() end
                 discussions.panel_changed=nil
             end

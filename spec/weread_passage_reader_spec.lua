@@ -40,9 +40,10 @@ reader:paintTo(bb,0,0)
 local dashed=false
 for _,rect in ipairs(rects) do if rect.y==first.y+first.h-2 and rect.w<=4 then dashed=true end end
 eq(true,dashed,'comment underline is visibly dashed to distinguish dictionary links')
-local term=reader:getDictionaryTargets()[1]
+local term=require('legado.lib.leko_selection').rectsForRange(reader.page,reader.widgets,
+    {chapter=1,paragraph=1,char=6},{chapter=1,paragraph=1,char=6})[1]
 reader:onTap(nil,{pos={x=term.x+term.w/2,y=term.y+term.h/2}})
-eq('纽约时报',dictionary,'word text still opens its dictionary when it overlaps a passage comment')
+eq(nil,dictionary,'unmarked titles cannot hijack a passage comment tap as dictionary lookup')
 local before=reader:getPosition()
 reader:onTap(nil,{pos={x=term.x+term.w/2,y=term.y+term.h-2}})
 eq('table',type(opened),'the passage underline collects overlapping comment ranges')

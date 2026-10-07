@@ -1,5 +1,25 @@
 local Text=require('legado.lib.leko_text')
 local Dictionary={}
+function Dictionary.failure(details)
+    local status,code=tonumber(details.status),tonumber(details.remote_code)
+    local transport=details.transport_code
+    local diagnostic={status=status,remote_code=code}
+    if transport=='TIMEOUT' then
+        diagnostic.transport_code=transport
+        return '词典查询超时，请重试（TIMEOUT）。',diagnostic
+    elseif transport=='RESPONSE_TOO_LARGE' then
+        diagnostic.transport_code=transport
+        return '词典返回内容过大，请重试（RESPONSE_TOO_LARGE）。',diagnostic
+    elseif status and (status<200 or status>=300) then
+        return '词典服务请求失败（HTTP '..tostring(status)..'），请稍后重试。',diagnostic
+    elseif code and code~=0 then
+        return '词典服务返回错误（'..tostring(code)..'），请重试。',diagnostic
+    elseif transport or not status then
+        diagnostic.transport_code='NETWORK_ERROR'
+        return '词典网络请求失败，请检查网络后重试。',diagnostic
+    end
+    return '词典返回格式无效，请重试。',diagnostic
+end
 function Dictionary.word(value)
     if type(value)~='string' then return nil end
     value=value:match('^%s*(.-)%s*$')

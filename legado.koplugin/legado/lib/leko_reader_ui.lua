@@ -235,7 +235,6 @@ function Adapter.open(owner,payload,callbacks)
             if proxy.chapter_comments then proxy.chapter_comments:cancelLoad() end
             if proxy.chapter_discussions then
                 proxy.chapter_discussions:cancelLoad()
-                proxy.widget:setChapterDiscussions(proxy.chapter_discussions)
             end
             if request.refresh and callbacks.refresh then return callbacks.refresh(request) end
             if callbacks.chapter then return callbacks.chapter(index,request) end

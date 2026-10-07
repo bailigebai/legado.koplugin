@@ -33,10 +33,13 @@ eq('正在加载公开随文评论…',shown[#shown].empty_text,'loading state i
 requests[1].callback({reviews={{id='r1',range='0-4',abstract='庄周梦蝶',content='对应原文的评论',author={name='读者'}}},has_more=false})
 eq(1,#markers,'verified comments update the body markers')
 eq(true,shown[#shown].items[1].text:find('庄周梦蝶',1,true)~=nil,'comment list includes the source quote')
-eq(true,shown[#shown].items[1].text:find('对应原文的评论',1,true)~=nil,'comment list includes the associated thought')
+eq(false,shown[#shown].items[1].text:find('对应原文的评论',1,true)~=nil,'menu first shows source passages rather than mixed thoughts')
+shown[#shown].items[1].callback()
+eq(true,shown[#shown].items[1].text:find('对应原文的评论',1,true)~=nil,'opening source passage shows its associated thought')
 local list=shown[#shown]
 list.items[1].callback()
 eq(true,shown[#shown].title:find('读者',1,true)~=nil,'opening a comment shows its author and full text')
+shown[#shown].on_back()
 shown[#shown].on_back()
 shown[#shown].on_back()
 local visible=#shown

@@ -46,6 +46,14 @@ function Body.new(options)
             local box=canvas(ctx.width,height);box.card=true
             box.callback=function() if item.callback then return item.callback() end end
             box.ges_events.TapSelect={d.gesture:new{ges='tap',range=function() return box.dimen end}}
+            if options.passages or header=='source' then
+                local quote=d.textbox:new{text=item.text or row.abstract or '',face=d.font:getFace('cfont',16),
+                    width=ctx.width-s(16),height=height-s(16),height_adjust=false,
+                    height_overflow_show_ellipsis=true,alignment='left'}
+                put(box,quote,s(8),s(8));put(root,box,0,y);focus[#focus+1]={box}
+                ctx.cells[#ctx.cells+1]={item=item,button=box,visual=box,frame=box,intro_widget=quote}
+                return
+            end
             local inset,avatar_size=s(8),math.min(s(32),height-s(16))
             local initial=Text.utf8Window(row.author or '读者',1,1)
             if initial=='' then initial='人' end
@@ -95,6 +103,11 @@ function Body.new(options)
             end
         end
         local y,gap=0,s(6)
+        if options.source_text and options.source_text~='' then
+            local height=math.min(s(84),math.floor(ctx.height*.2))
+            card({row={},text='原文：'..options.source_text,callback=options.on_source_text},0,height,'source')
+            y=height+gap
+        end
         if options.review then
             local height=math.min(s(155),math.floor(ctx.height*.25))
             card({row=options.review,callback=options.on_full_text},0,height,true)

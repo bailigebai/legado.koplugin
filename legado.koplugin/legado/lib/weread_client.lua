@@ -104,7 +104,9 @@ function Client:_call(method, path, body, eink, callback, options)
             if code == -2010 then return callback(nil,"微信读书登录已失效，请重新扫码登录") end
             if err or not status or status < 200 or status >= 300
                 or (not options.raw and not data) or (code and code ~= 0) then
-                return callback(nil, "微信读书请求失败")
+                return callback(nil, "微信读书请求失败",{status=status,remote_code=code,
+                    transport_code=type(err)=='table' and err.code or nil,
+                    malformed=not options.raw and not data})
             end
             callback(options.raw and response.body or data)
         end)
@@ -125,11 +127,19 @@ function Client:dictionary(word,callback)
     if not word then callback(nil,'请选择不超过 512 字节的词条。');return nil end
     local session=self.auth:session()
     local account=session and session.vid
-    return self:_call('GET','/web/dict/query?word='..Url(word),nil,false,function(data,err)
+    return self:_call('GET','/web/dict/query?word='..Url(word),nil,false,function(data,err,details)
         local latest=self.auth:session()
         if account and (not latest or latest.vid~=account) then return callback(nil,'微信读书账号已切换') end
-        if not data then return callback(nil,err) end
+        if not data then
+            if details then
+                local message,diagnostic=Dictionary.failure(details)
+                require('legado.lib.logger').warn('[LegadoDictionaryFailure] '..Json.encode(diagnostic))
+                return callback(nil,message)
+            end
+            return callback(nil,err)
+        end
         local definition,failure=Dictionary.definition(data)
+        if not definition then require('legado.lib.logger').warn('[LegadoDictionaryFailure] INVALID_RESPONSE') end
         callback(definition,failure)
     end,{timeout=20,max_bytes=128*1024})
 end

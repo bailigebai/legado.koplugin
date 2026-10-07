@@ -304,7 +304,6 @@ function View:_setPage(page,direction,prepared_widgets)
     self:_finishAnimation(true)
     local previous=self.widgets
     self.page,self.widgets=page,widgets
-    self.dictionary_targets,self.dictionary_page=nil,nil
     self.comment_underlines=nil
     if page.style._font_fallback_pending then
         for _,key in ipairs{'body_font','body_font_index','body_font_display_name','title_font','title_font_index','title_font_display_name'} do self.style[key]=page.style[key] end
@@ -488,7 +487,6 @@ function View:replaceChapter(options,prepared,commit)
     end
     self.chapter_generation=(self.chapter_generation or 0)+1
     self.chapter_comments={}
-    self.chapter_discussions=nil
     self.chapter_request,self.chapter_pending,self.previous_target=nil,nil,nil
     free(previous_widgets)
     local scheduled,cause=pcall(self._startPagination,self,prepared)
@@ -567,9 +565,6 @@ function View:_paintTo(bb,x,y)
         bb:paintRect(x+rect.x,y+rect.y,rect.w,rect.h,BB.COLOR_LIGHT_GRAY)
     end
     for _,item in ipairs(self.widgets) do item.widget:paintTo(bb,x+item.x,y+item.y) end
-    for _,target in ipairs(self:getDictionaryTargets()) do
-        bb:paintRect(x+target.x,y+target.y+target.h-2,target.w,1,BB.COLOR_BLACK)
-    end
     local dash=math.max(2,Device.screen:scaleBySize(4))
     for _,target in ipairs(self:getCommentUnderlines()) do
         for offset=0,target.w-1,2*dash do
@@ -582,7 +577,6 @@ function View:_paintTo(bb,x,y)
     local discussion=self:getChapterDiscussionTarget()
     if discussion then
         self:_paintLabel(bb,discussion.title,x+discussion.x,y+discussion.y,discussion.w,'center',14)
-        self:_paintLabel(bb,discussion.text,x+discussion.x,y+discussion.y+discussion.line_height,discussion.w,'center',14)
     end
     local g=self.page.geometry;local layout=self.page.style._chrome_layout;local context=self:getReadingContext()
     local values={time=os.date('%H:%M'),title=self.book.name or self.book.title or '',chapter=self.chapter.title or '',off='',
@@ -929,31 +923,13 @@ function View:setChapterComments(rows)
     self.ui:setDirty(self,'ui')
     return true
 end
-function View:setChapterDiscussions(value)
-    if self.closed then return false end
-    self.chapter_discussions=value
-    local target=self:getChapterDiscussionTarget()
-    if target then self.ui:setDirty(self,'ui',Geom:new{x=target.x,y=target.y,w=target.w,h=target.h}) end
-    return true
-end
 function View:getChapterDiscussionTarget()
     if self.closed or not self.page or not self.page.at_end or self.source_id~='weread'
         or not self.callbacks.chapter_discussions then return nil end
     local g=self.page.geometry
     if not g.discussion_height then return nil end
-    local value=self.chapter_discussions or {}
-    local text='点击查看本章热门想法'
-    if value.loading then text='正在加载本章热门想法…'
-    elseif value.error then text='加载失败 · 点击重试'
-    elseif value.loaded then
-        local row=value.rows and value.rows[1]
-        if not row then text='暂无本章热门想法'
-        elseif row.likes_count~=nil then text='点击查看 · 首条赞 '..tostring(row.likes_count)
-        else text='点击查看' end
-    end
     return {x=g.left,y=g.body_top+g.header_height+g.content_height,w=g.content_width,
-        h=g.discussion_height,line_height=self:_chromeTextHeight(14,Device.screen:scaleBySize(1000)/1000),
-        title='章节讨论 · 本章热门想法',text=text}
+        h=g.discussion_height,title='章节讨论'}
 end
 function View:getCommentTargets()
     local targets={}
@@ -977,14 +953,6 @@ function View:getCommentTargets()
     end
     return targets
 end
-function View:getDictionaryTargets()
-    if self.closed or not self.callbacks.dictionary or not self.page then return {} end
-    if not self.dictionary_targets or self.dictionary_page~=self.page then
-        self.dictionary_targets=require('legado.lib.reader_terms').targets(self.model,self.page,self.widgets)
-        self.dictionary_page=self.page
-    end
-    return self.dictionary_targets
-end
 function View:getCommentUnderlines()
     if self.closed or not self.page or not self.callbacks.chapter_comments then return {} end
     if self.comment_underlines then return self.comment_underlines end
@@ -1007,23 +975,14 @@ end
 function View:onTap(_,ges) return safe_event(self, function()
     local x=ges and ges.pos and ges.pos.x or self.dimen.w/2;local y=ges and ges.pos and ges.pos.y or self.dimen.h/2
     if self.selection then self.selection:move{x=x,y=y};return self:showSelectionActions() end
-    local ranges,seen,on_underline={},{},false
+    local ranges,seen={},{}
     for _,target in ipairs(self:getCommentUnderlines()) do
         if x>=target.x and x<target.x+target.w and y>=target.y and y<target.y+target.h then
             if not seen[target.range] then ranges[#ranges+1]=target.range;seen[target.range]=true end
-            if y>=target.y+target.h-Device.screen:scaleBySize(6) then on_underline=true end
         end
     end
     local function open_comments()
         return self:runAction('chapter_comments',#ranges==1 and ranges[1] or ranges)
-    end
-    -- Dictionary words retain their ordinary tap. The dashed baseline and
-    -- the margin marker offer passage comments even where the two overlap.
-    if on_underline then return open_comments() end
-    for _,target in ipairs(self:getDictionaryTargets()) do
-        if x>=target.x and x<target.x+target.w and y>=target.y and y<target.y+target.h then
-            return self:runAction('dictionary',target.word)
-        end
     end
     if #ranges>0 then return open_comments() end
     local discussion=self:getChapterDiscussionTarget()

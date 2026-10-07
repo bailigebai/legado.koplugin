@@ -502,14 +502,10 @@ function App:prepareChapterDiscussions(document)
             local latest=auth and auth:session()
             return not document.closed and self.reader_session.active==state and state.document==document
                 and (not auth or latest and latest.vid==account_id)
-        end,
-        on_change=function(value)
-            if document.widget and document.widget.setChapterDiscussions then document.widget:setChapterDiscussions(value) end
         end}
     document.chapter_discussions,self.chapter_discussions=discussions,discussions
     discussions.account_id=account_id
     if state.offline then discussions.error='当前离线，无法加载本章热门想法。联网后可重试。' end
-    if document.widget and document.widget.setChapterDiscussions then document.widget:setChapterDiscussions(discussions) end
     return discussions
 end
 function App:loadChapterDiscussions(document)

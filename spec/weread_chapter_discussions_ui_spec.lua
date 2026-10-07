@@ -13,12 +13,10 @@ local reader=assert(Reader.new{source_id='weread',book={id='b',name='微信书'}
     style={page_transition='off'},callbacks={chapter_discussions=function() opened=opened+1;return true end,
         chapter_end=function() ended=ended+1 end}})
 h.ui:show(reader)
-eq('function',type(reader.setChapterDiscussions),'immersive view exposes chapter-end discussion state')
-reader:setChapterDiscussions{loaded=true,rows={{content='讨论',likes_count=37}}}
 local target=reader:getChapterDiscussionTarget()
 eq(true,target~=nil,'last page exposes a discussion card')
-eq(true,target.text:find('37',1,true)~=nil,'card shows the first returned thought likes')
-eq(true,target.text:find('首条',1,true)~=nil,'card never labels one thought likes as a chapter total')
+eq('章节讨论',target.title,'chapter footer contains only its entry name')
+eq(nil,target.text,'footer does not expose an extra metadata or status line')
 eq(true,target.y>=reader.page.geometry.body_top+reader.page.geometry.header_height+reader.page.geometry.content_height,
     'card occupies reserved space below the body')
 eq(true,target.y+target.h<=reader.dimen.h-reader.page.geometry.footer_height,'card stays above footer')
@@ -27,13 +25,8 @@ local original_page,original_widgets=reader.page,reader.widgets
 reader:onTap(nil,{pos={x=target.x+target.w/2,y=target.y+target.h/2}})
 eq(1,opened,'tapping card opens current chapter discussions')
 eq(position.char,reader:getPosition().char,'card tap does not turn page')
-reader:setChapterDiscussions{error='网络失败',rows={}}
-eq(true,reader:getChapterDiscussionTarget().text:find('重试',1,true)~=nil,'error card offers retry')
-eq(position.char,reader:getPosition().char,'late state update preserves reading position')
-eq(original_page,reader.page,'comment arrival retains current pagination description')
-eq(original_widgets,reader.widgets,'comment arrival does not rebuild text widgets')
-reader:setChapterDiscussions{loaded=true,rows={{content='未知赞'}}}
-eq('点击查看',reader:getChapterDiscussionTarget().text,'unknown likes are omitted without fabricating zero or explaining missing data')
+eq(original_page,reader.page,'opening discussions retains current pagination description')
+eq(original_widgets,reader.widgets,'opening discussions does not rebuild text widgets')
 reader:close()
 eq(nil,reader:getChapterDiscussionTarget(),'closed reader has no active target')
 
@@ -78,9 +71,9 @@ local presenter=Presenter.new{ui_manager={show=function(_,widget) shown[#shown+1
     info_message={new=function(_,options) return options end}}
 local state={book={id='local',remote_id='remote',source_id='weread',name='书'},index=1,
     chapters={{uid='local-c',remote_uid='7',title='第一章'}},active=true}
-local paused,resumed,doc_state=0,0,nil
+local paused,resumed,footer_updates=0,0,0
 local doc={reading_state=state,backend='immersive',closed=false,
-    widget={page={at_end=false},setChapterDiscussions=function(_,value) doc_state=value end},
+    widget={page={at_end=false},setChapterDiscussions=function() footer_updates=footer_updates+1 end},
     pauseReading=function() paused=paused+1;return true end,
     resumeReading=function() resumed=resumed+1;return true end}
 state.document=doc
@@ -88,6 +81,7 @@ local session={active=state}
 local app=App.new{weread_auth=auth,weread_client=client,reader_session=session,presenter=presenter}
 presenter.app=app
 local discussions=app:prepareChapterDiscussions(doc)
+eq(0,footer_updates,'preparing a controller does not repaint a fixed chapter footer')
 eq(0,#sent,'committed ordinary page prepares controller without network work')
 eq(true,discussions~=false,'immersive chapter owns a discussions controller')
 app:openChapterDiscussions(doc)
@@ -99,14 +93,15 @@ eq('正在加载本章热门想法…',shown[#shown].empty_text,'loading is expl
 local response={reviews={}}
 for i=1,8 do response.reviews[i]={review={reviewId=tostring(i),content='想法'..i,author={name='读者'}},likesCount=i} end
 sent[1].callback(response)
+eq(0,footer_updates,'background discussion data only updates the open panel, not the fixed footer')
 local list=shown[#shown]
-eq(6,#list.items,'returned list has local six-row pages')
+eq(4,#list.items,'reader cards have enough room for avatar and comment body')
 eq(true,list.items[1].text:find('赞 1',1,true)~=nil,'each row shows original likes count')
 list.items[1].callback()
 eq(1,shown[#shown].review.likes_count,'expanded comment retains likes count')
 shown[#shown].on_back();list=shown[#shown]
 list.on_next()
-eq(2,#shown[#shown].items,'second local page includes remaining returned reviews')
+eq(4,#shown[#shown].items,'second local page includes remaining returned reviews')
 eq(1,#sent,'local page turn does not invent a network cursor')
 local last=shown[#shown]
 last.on_back()

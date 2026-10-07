@@ -64,7 +64,8 @@ end
 function Comments:list(range)
     local located,unlocated={},{}
     for _,row in ipairs(self.rows) do
-        local selected=not range or row.range==range
+        local selected=range==nil or row.range==range
+            or range==false and (type(row.range)~='string' or row.range=='')
         if type(range)=='table' then for _,value in ipairs(range) do if value==row.range then selected=true;break end end end
         if selected then
             local list=row.position and located or unlocated;list[#list+1]=row
@@ -72,5 +73,18 @@ function Comments:list(range)
     end
     for _,row in ipairs(unlocated) do located[#located+1]=row end
     return located
+end
+function Comments:groups(ranges)
+    local groups,by_range={},{}
+    for _,row in ipairs(self:list(ranges)) do
+        local range=type(row.range)=='string' and row.range~='' and row.range or false
+        local group=by_range[range]
+        if not group then
+            group={range=range,abstract=range and row.abstract or '其他评论'}
+            by_range[range]=group;groups[#groups+1]=group
+        end
+        if range and (not group.abstract or group.abstract=='') then group.abstract=row.abstract end
+    end
+    return groups
 end
 return Comments
