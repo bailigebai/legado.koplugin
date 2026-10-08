@@ -19,6 +19,15 @@ local function decoded(raw)
     if ok and type(value) == "table" then return value end
 end
 
+local function request_error(status,err)
+    if status==401 then return 'AI 密钥无效或已过期，请重新选择密钥文件。' end
+    if status==402 then return 'AI 服务余额不足，请在服务商处检查余额。' end
+    if status==429 then return 'AI 请求过于频繁，请稍后重试。' end
+    if status and status>=500 then return 'AI 服务暂时不可用，请稍后重试。' end
+    if type(err)=='table' and err.code=='TIMEOUT' then return 'AI 请求超时，请缩短选区或稍后重试。' end
+    if err then return 'AI 连接失败，请检查网络、密钥或服务余额' end
+end
+
 function AI.new(options)
     options = options or {}
     assert(options.requests and options.fs and options.settings, "AI service requires requests, fs and settings")
@@ -71,11 +80,13 @@ function AI:_chat(provider, messages, callback)
         headers = { Authorization = "Bearer " .. key },
         body_type = "json", body = body,
     }, function(response, err)
-        if err then callback(nil, "AI 连接失败，请检查网络、密钥或服务余额"); return end
         local status = response and tonumber(response.status or response.code)
+        if not status and type(err)=='table' and type(err.details)=='table' then status=tonumber(err.details.status) end
+        local failure=request_error(status,err)
+        if failure then callback(nil,failure);return end
         local data = response and decoded(response.body)
         local first = data and type(data.choices) == "table" and data.choices[1]
-        local content = first and type(first.message) == "table" and trim(first.message.content)
+        local content = type(first)=='table' and type(first.message) == "table" and trim(first.message.content) or ''
         if not status or status < 200 or status >= 300 or content == "" then
             callback(nil, "AI 返回内容不可用，请检查密钥、模型和服务余额")
             return

@@ -10,6 +10,9 @@ function Legado:init()
 end
 
 function Legado:onReaderReady()
+    require('legado.lib.ai_selection_context').attach(self.ui,function(text,document)
+        return self:_getApp():explainSelection(text,document)
+    end)
     require('legado.lib.excerpt_context').attach(self.ui,function(text,document,range)
         return self:_getApp():captureExcerpt(text,document,range)
     end)
@@ -21,6 +24,7 @@ function Legado:onNetworkConnected()
 end
 
 function Legado:onCloseDocument()
+    require('legado.lib.ai_selection_context').detach(self.ui)
     require('legado.lib.excerpt_context').detach(self.ui)
 end
 

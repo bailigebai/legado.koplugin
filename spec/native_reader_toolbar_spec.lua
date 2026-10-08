@@ -66,6 +66,9 @@ eq('书源书架',shelf.layout[1][2].text,'local shelf switch stays in header')
 eq(true,shelf.content:getSize().h<=shelf.content_height,'local twelve-cover shelf fits native 600x800 layout')
 local progress=LibraryScreen.new{title='正在准备章节',compact=true,progress=.25,items={},navigation={}}
 eq(true,progress.content:getSize().h<=progress.content_height,'native progress widget fits loading screen')
+local old_ai=reader.highlight['11_legado_ai'](reader.highlight)
 reader:onClose()
 eq(nil,reader.highlight['11_legado_ai'],'AI action is removed when plugin reader closes')
+ai_text=nil;old_ai.callback()
+eq(nil,ai_text,'old native selection cannot send AI after the document closes')
 return count

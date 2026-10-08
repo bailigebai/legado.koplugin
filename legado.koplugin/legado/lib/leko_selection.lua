@@ -86,6 +86,13 @@ function Selection:range()
     if Text.positionLess(self.focus,self.anchor) then return self.focus,self.anchor end
     return self.anchor,self.focus
 end
+function Selection:setEndpoint(endpoint)
+    if endpoint~='first' and endpoint~='last' then return false end
+    local first,last=self:range()
+    local position=endpoint=='first' and first or last
+    self.endpoint=position==self.anchor and 'anchor' or 'focus'
+    return true
+end
 function Selection:_indices(item)
     local first,last=self:range()
     local line=item.element

@@ -79,8 +79,23 @@ eq(true, type(shown[#shown].text) == "string"
     "prompt save failure is visible")
 
 item(ai_page, "测试连接").callback()
-ai_page.close_callback()
+shown[#shown]:onCloseWidget()
 before_stale = #shown
 pending_tests[5]("连接成功")
-eq(before_stale, #shown, "leaving AI settings suppresses the pending test result")
+eq(before_stale, #shown, "dismissing the waiting window suppresses the pending test result")
+do
+    local displays,pending={},nil
+    local real_close=Presenter.new{menu={new=function(_,options) return options end},
+        info_message={new=function(_,options) return options end},
+        ui_manager={show=function(_,widget) displays[#displays+1]=widget end,close=function() end}}
+    local model={refresh=function() return values end,settings=settings,
+        ai_service={testConnection=function(_,done) pending=done;return {cancel=function() end} end}}
+    local page=real_close:_aiSettings(model)
+    item(page,'测试连接').callback()
+    page.close_callback() -- Menu closes naturally after item selection.
+    local before=#displays
+    pending('连接成功')
+    eq(before+1,#displays,'connection test result survives normal Menu selection close')
+    eq('AI 连接成功',displays[#displays].text,'connection success is visible after Menu closes')
+end
 return count

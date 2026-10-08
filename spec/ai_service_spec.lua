@@ -51,4 +51,24 @@ eq("AI 返回内容不可用，请检查密钥、模型和服务余额", connect
 ai:explain("庄周梦蝶", nil, function() end)
 eq("disabled", pending[3].spec.body.thinking and pending[3].spec.body.thinking.type,
     "MiMo reading explanations skip default deep thinking")
+local malformed_error
+ai:explain('测试异常格式',nil,function(_,err) malformed_error=err end)
+pending[4].callback({status=200,body=Json.encode({unrelated=true})})
+eq('AI 返回内容不可用，请检查密钥、模型和服务余额',malformed_error,
+    'missing choices always produces an explicit error rather than nil answer and nil error')
+for _,case in ipairs{
+    {status=401,expected='AI 密钥无效或已过期，请重新选择密钥文件。'},
+    {status=402,expected='AI 服务余额不足，请在服务商处检查余额。'},
+    {status=429,expected='AI 请求过于频繁，请稍后重试。'},
+    {status=503,expected='AI 服务暂时不可用，请稍后重试。'},
+} do
+    local error_text
+    ai:explain('选中的原文',nil,function(_,err) error_text=err end)
+    pending[#pending].callback(nil,{code='NETWORK_ERROR',details={status=case.status},message='secret provider body'})
+    eq(case.expected,error_text,'HTTP '..case.status..' from request engine has an actionable, private-safe error')
+end
+local timeout_error
+ai:explain('选中的原文',nil,function(_,err) timeout_error=err end)
+pending[#pending].callback(nil,{code='TIMEOUT'})
+eq('AI 请求超时，请缩短选区或稍后重试。',timeout_error,'timeout explains a useful retry action')
 return count

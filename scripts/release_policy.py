@@ -14,6 +14,7 @@ RUNTIME_FILES = frozenset({
     "assets/logo.svg",
     "legado/lib/archive_writer.lua",
     "legado/lib/ai_service.lua",
+    "legado/lib/ai_selection_context.lua",
     "legado/lib/excerpt_context.lua",
     "legado/lib/excerpt_markdown.lua",
     "legado/lib/excerpt_service.lua",
@@ -130,6 +131,7 @@ RUNTIME_FILES = frozenset({
     "legado/vendor/licenses/swipe-LICENSE",
 })
 DOCUMENTS = frozenset({
+    "docs/ai-selection-0.10.53.md",
     "docs/obsidian-excerpts-0.10.52.md",
     "docs/reader-comments-dictionary-0.10.51.md",
     "docs/weread-passage-comments-0.10.50.md",

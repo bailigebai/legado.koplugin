@@ -243,10 +243,20 @@ function Presenter:showNativeStatistics(statistics,document)
 end
 
 function Presenter:_showInput(widget)
-    self:_show(widget)
+    local shown,err=self:_show(widget)
+    if not shown then
+        self.closed_widgets[widget]=nil
+        self:_closeWidget(widget)
+        return nil,err
+    end
     if widget and not self.keyboard_widgets[widget] and type(widget.onShowKeyboard) == "function" then
         self.keyboard_widgets[widget] = true
-        widget:onShowKeyboard()
+        local ok=pcall(widget.onShowKeyboard,widget)
+        if not ok then
+            self.keyboard_widgets[widget]=nil
+            self:_closeWidget(widget)
+            return nil,{code='UI_ERROR',message='输入键盘打开失败，请重试。'}
+        end
     end
     return widget
 end
@@ -1899,6 +1909,45 @@ function Presenter:_settings(view)
     return widget
 end
 
+-- Own the waiting window independently of the menu that started the request.
+-- Menu closes after selection; closing this window cancels the actual work.
+function Presenter:_aiRequest(message, start, current, finish)
+    if self.ai_operation then self.ai_operation:cancel() end
+    local waiting=construct(self.info_message,{text=message..'\n点击关闭可取消本次请求。',title='AI 解释'})
+    local shown,show_error=self:_show(waiting)
+    if not shown then
+        self.closed_widgets[waiting]=nil
+        self:_closeWidget(waiting)
+        return nil,show_error
+    end
+    local owner={active=true}
+    local function stop(close_window)
+        if not owner.active then return end
+        owner.active=false
+        if self.ai_operation==owner then self.ai_operation=nil end
+        if type(owner.request)=='table' and type(owner.request.cancel)=='function' then pcall(owner.request.cancel,owner.request) end
+        if close_window then self:_closeWidget(waiting) end
+    end
+    function owner:cancel() stop(true) end
+    local old_close=waiting.onCloseWidget
+    waiting.onCloseWidget=function(instance,...)
+        stop(false)
+        if old_close then return old_close(instance,...) end
+    end
+    self.ai_operation=owner
+    local function completed(answer,err)
+        if not owner.active then return end
+        owner.active=false
+        if self.ai_operation==owner then self.ai_operation=nil end
+        self:_closeWidget(waiting)
+        if current() then return finish(answer,err) end
+    end
+    local ok,request=pcall(start,completed)
+    if not ok then completed(nil,'AI 请求未能启动，请检查服务配置后重试。')
+    elseif owner.active then owner.request=request end
+    return owner
+end
+
 function Presenter:_aiSettings(view)
     local values = view:refresh()
     local provider = values.ai_provider == "mimo" and "mimo" or "deepseek"
@@ -1957,14 +2006,19 @@ function Presenter:_aiSettings(view)
     items[#items + 1] = { text = "测试连接", callback = function()
         test_generation = test_generation + 1
         local generation = test_generation
-        return view.ai_service:testConnection(function(answer, err)
-            if generation ~= test_generation or self.view_widgets[view] ~= widget
-                or self.closed_widgets[widget] or view.settings:get("ai_provider") ~= provider then return end
+        return self:_aiRequest('正在测试 AI 连接，请稍候…',function(done)
+            return view.ai_service:testConnection(done)
+        end,function()
+            return generation == test_generation and self.view_widgets[view] == widget
+                and view.settings:get("ai_provider") == provider
+        end,function(answer,err)
             self:_info(answer and "AI 连接成功" or (err or "AI 连接失败"), "AI 服务")
         end)
     end }
     widget = self:_modelMenu(view, { title = "AI 服务", item_table = items,
         close_callback = function()
+            test_generation=test_generation+1
+            if self.ai_operation then self.ai_operation:cancel() end
             if not self:_closeWidget(widget) then return false end
             if view.section == 'ai' and view.on_close then return view.on_close(view.local_directories_changed) end
             return self:_settings(view)
@@ -2092,28 +2146,41 @@ end
 
 function Presenter:explainSelection(service, selected_text, document)
     if type(selected_text) ~= 'string' or selected_text == '' or #selected_text > 4000 then
-        return self:_info('请选择不超过 4000 字节的阅读内容。', 'AI 解释')
+        local message='请选择不超过 4000 字节的阅读内容。'
+        self:_info(message,'AI 解释')
+        return nil,{code='INVALID_INPUT',message=message}
     end
+    self.ai_generation=(self.ai_generation or 0)+1
+    local generation=self.ai_generation
+    if self.ai_operation then self.ai_operation:cancel() end
+    self:_closeWidget(self.ai_selection_dialog)
     local dialog
     local default_extra = service.settings and service.settings:get('ai_prompt_extra') or ''
-    local function current() return not document or document.closed ~= true end
+    local function current() return generation==self.ai_generation and (not document or document.closed ~= true) end
     local function accepted(extra)
         if extra == nil and dialog and type(dialog.getInputText) == 'function' then extra=dialog:getInputText() end
         if type(extra) ~= 'string' or #extra > 2000 then
             return self:_info('补充提示词不能超过 2000 字节。', 'AI 解释')
         end
-        if not self:_closeWidget(dialog) then return false end
-        if not current() then return false end
-        return service:explain(selected_text, extra, function(answer, err)
-            if not current() then return end
+        if self.closed_widgets[dialog] or not current() then return false end
+        return self:_aiRequest('正在分析所选内容，请稍候…',function(done)
+            if not self:_closeWidget(dialog) then
+                done(nil,'分析窗口切换失败，请重新选择文字后重试。')
+                return nil
+            end
+            return service:explain(selected_text,extra,done)
+        end,current,function(answer,err)
             if not answer then return self:_info(err or 'AI 解释失败', 'AI 解释') end
             local TextViewer=optional('ui/widget/textviewer')
             return self:_show(construct(TextViewer or self.info_message, { title='AI 解释', text=answer }))
         end)
     end
+    local preview,_,more=require('legado.lib.leko_text').utf8Window(selected_text,1,120)
     dialog=construct(self.input_dialog, { title='AI 解释 · 补充要求', input=default_extra,
+        description='已选文字：'..preview..(more and '…' or ''),input_hint='可留空，按默认要求分析',
         multiline=true, buttons={{{text='取消',callback=function() return self:_closeWidget(dialog) end},
             {text='解释',is_enter_default=true,callback=accepted}}} })
+    self.ai_selection_dialog=dialog
     return self:_showInput(dialog)
 end
 

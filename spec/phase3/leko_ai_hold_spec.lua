@@ -104,4 +104,15 @@ eq(1,sends,'oversized selection never reaches the AI callback')
 eq(true,limited.last_error.message:find('4000',1,true)~=nil,'oversized selection explains how to shorten it')
 limited:close()
 eq(nil,limited.selection,'closing the reader clears selection resources')
+local rejected=assert(Reader.new{book={id='retry',name='书'},chapter={uid='retry',title='第一章'},
+    index=1,count=1,body='<p>保留选中的原文。</p>',style={page_transition='off',indent=false},
+    callbacks={ai=function() return nil,{code='UI_ERROR',message='测试打开失败'} end}})
+local selected_line
+for _,item in ipairs(rejected.widgets) do if item.element and item.element.type=='line' then selected_line=item;break end end
+rejected:onHold(nil,{pos={x=selected_line.x+1,y=selected_line.y+1}})
+local original=rejected:getSelectedText()
+rejected:onHoldRelease(nil,{pos={x=selected_line.x+1,y=selected_line.y+1}})
+rejected.selection_dialog.buttons[1][1].callback()
+eq(original,rejected:getSelectedText(),'failed AI dialog opening preserves the selected text for retry')
+rejected:close()
 return count

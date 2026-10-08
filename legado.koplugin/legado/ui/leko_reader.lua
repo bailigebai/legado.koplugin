@@ -1027,8 +1027,8 @@ function View:showSelectionActions()
     local function current() return not self.closed and self.selection==selection end
     local function adjust(endpoint)
         if not current() then return false end
-        self:_closeDialog('selection_dialog');selection.endpoint=endpoint
-        return true
+        self:_closeDialog('selection_dialog')
+        return selection:setEndpoint(endpoint)
     end
     local buttons={{{text='AI 解释',enabled=self.callbacks.ai~=nil,callback=function()
             if not current() then return false end
@@ -1036,13 +1036,13 @@ function View:showSelectionActions()
             if selected=='' or #selected>4000 then
                 return self:_error({code='INVALID_INPUT',message='请选择不超过 4000 字节的文字；可调整选区缩短内容。'})
             end
-            self:clearSelection(false)
             local result,err=self:_call('ai',selected)
-            if result==false or err then self:resumeReading();return self:_error(err or 'AI 服务未能打开。') end
+            if not result or err then return self:_error(err or 'AI 服务未能打开，选区已保留。') end
+            self:clearSelection(false)
             return result or true
         end},{text='取消',callback=function() if current() then return self:clearSelection(true) end end}},
-        {{text='调整起点',callback=function() return adjust('anchor') end},
-            {text='调整终点',callback=function() return adjust('focus') end}}}
+        {{text='调整起点',callback=function() return adjust('first') end},
+            {text='调整终点',callback=function() return adjust('last') end}}}
     if self.callbacks.dictionary then
         table.insert(buttons,1,{{text='词典说明',callback=function()
             if not current() then return false end

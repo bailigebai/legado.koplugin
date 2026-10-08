@@ -419,20 +419,10 @@ function Adapter:openDocument(path, callbacks)
                 end
             end
         end
-        if self.on_ai and reader.highlight and type(reader.highlight.addToHighlightDialog)=='function' then
-            reader.highlight:addToHighlightDialog('11_legado_ai', function(highlight)
-                return {text='AI 解释',callback=function()
-                    local selected=highlight.selected_text and highlight.selected_text.text
-                    if type(selected)~='string' or selected=='' then return false end
-                    if highlight.onClose then highlight:onClose() end
-                    return self.on_ai(selected,proxy)
-                end}
-            end)
-            rollbacks[#rollbacks+1]=function()
-                if reader.highlight and reader.highlight.removeFromHighlightDialog then
-                    reader.highlight:removeFromHighlightDialog('11_legado_ai')
-                end
-            end
+        if self.on_ai then
+            local AISelection=require('legado.lib.ai_selection_context')
+            AISelection.attach(reader,function(text,doc) return self.on_ai(text,doc) end,proxy)
+            rollbacks[#rollbacks+1]=function() AISelection.detach(reader) end
         end
         self:applyTouchZones(reader,proxy)
         if self.settings then self:applyProgressBar(reader) end
@@ -504,9 +494,7 @@ function Adapter:openDocument(path, callbacks)
                 if callbacks and callbacks.weread and reader.highlight and reader.highlight.removeFromHighlightDialog then
                     reader.highlight:removeFromHighlightDialog('12_legado_comments')
                 end
-                if self.on_ai and reader.highlight and type(reader.highlight.removeFromHighlightDialog)=='function' then
-                    reader.highlight:removeFromHighlightDialog('11_legado_ai')
-                end
+                if self.on_ai then require('legado.lib.ai_selection_context').detach(reader) end
                 if self.current_document==proxy then self.current_document=nil end
                 if proxy.chrome then proxy.chrome:close() end
                 if callbacks and callbacks.close then pcall(callbacks.close,proxy) end
