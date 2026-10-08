@@ -121,13 +121,14 @@ end
 
 local function new_data()
     return { schema_version = Storage.SCHEMA_VERSION, data = {
-        sources = {}, books = {}, chapters = {}, progress = {}, downloads = {},
+        sources = {}, books = {}, chapters = {}, progress = {}, downloads = {}, excerpts = {},
     } }
 end
 
-local COLLECTIONS = { "sources", "books", "chapters", "progress", "downloads" }
+local COLLECTIONS = { "sources", "books", "chapters", "progress", "downloads", "excerpts" }
 
 local function validate_state_collections(state, path)
+    if state.data.excerpts==nil then state.data.excerpts={} end
     for _, name in ipairs(COLLECTIONS) do
         if type(state.data[name]) ~= "table" then
             return nil, Errors.new(Errors.STORAGE_ERROR, "invalid fallback storage collection", {
@@ -390,4 +391,23 @@ function Storage:deleteDownloadTask(id)
     return self:_mutate(function(candidate) candidate.data.downloads[id]=nil end)
 end
 
+function Storage:putExcerpt(value)
+    if type(value)~='table' or type(value.id)~='string' or value.id=='' then
+        return nil,Errors.new(Errors.INVALID_INPUT,'excerpt requires id')
+    end
+    value=copy(value)
+    if self.adapter then
+        local saved,err=self.adapter:putExcerpt(value)
+        return saved and value or nil,err
+    end
+    return self:_persist_value('excerpts',value.id,value)
+end
+function Storage:getExcerpt(id)
+    if self.adapter then return self.adapter:getExcerpt(id) end
+    return copy(self:_map('excerpts')[id])
+end
+function Storage:listExcerpts()
+    if self.adapter then return self.adapter:listExcerpts() end
+    return list_values(self:_map('excerpts'),'id')
+end
 return Storage

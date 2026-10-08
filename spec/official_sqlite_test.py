@@ -40,6 +40,12 @@ local function import(storage, input)
     return report
 end
 local storage = open()
+-- Excerpts preserve text containing SQL delimiters and survive native reopen.
+check(storage:putExcerpt({id="excerpt;'quoted",quote="原句; 不该执行 SQL",status="pending"}))
+assert(storage:getExcerpt("excerpt;'quoted").quote=="原句; 不该执行 SQL")
+assert(#storage:listExcerpts()==1)
+active_db:close();storage=open()
+assert(storage:getExcerpt("excerpt;'quoted").status=="pending")
 -- Download history deletion must use quoted IDs, preserve book data and survive reopen.
 local removed_id="download;'quoted"
 check(storage:putDownloadTask({id=removed_id,status="cancelled",book_id="history-book"}))

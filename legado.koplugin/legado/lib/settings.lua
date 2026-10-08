@@ -47,6 +47,7 @@ Settings.DEFAULTS = {
     ai_deepseek_key_file = "",
     ai_mimo_key_file = "",
     ai_prompt_extra = "",
+    obsidian_config_file = "",
     log_level = "info",
     cache_limit_mb = 500,
     cache_cleanup_threshold_mb = 300,
@@ -124,7 +125,7 @@ local function normalized(key, value)
         return allowed[value] and value or Settings.DEFAULTS[key]
     elseif key == "license_receipt" or key == "license_installation_id"
         or key == "local_dir" or key == "download_cache_dir" or key == "ai_deepseek_key_file"
-        or key == "ai_mimo_key_file" or key == 'receipt_background' or key=='reader_background' then
+        or key == "ai_mimo_key_file" or key=='obsidian_config_file' or key == 'receipt_background' or key=='reader_background' then
         return type(value) == "string" and value:sub(1, 4096) or ""
     end
     return value
@@ -325,7 +326,7 @@ local function validate_settings(value, allow_legacy)
     end
     if value.local_dir ~= nil and (#value.local_dir > 4096 or value.local_dir:find('%z')) then error("invalid local directory") end
     if value.ai_provider ~= nil and not ({deepseek=true,mimo=true})[value.ai_provider] then error("invalid AI provider") end
-    for _, key in ipairs({"ai_deepseek_key_file","ai_mimo_key_file"}) do
+    for _, key in ipairs({"ai_deepseek_key_file","ai_mimo_key_file","obsidian_config_file"}) do
         if value[key] ~= nil and (#value[key] > 4096 or value[key]:find('%z')) then error("invalid AI key file path") end
     end
     if value.ai_prompt_extra ~= nil and (#value.ai_prompt_extra > 2000 or value.ai_prompt_extra:find('%z')) then

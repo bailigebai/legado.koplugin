@@ -254,6 +254,12 @@ function Adapter.open(owner,payload,callbacks)
             return owner.on_ai(selected,proxy)
         end
     end
+    if type(owner.on_excerpt)=='function' then
+        core.excerpt=function(_,selected,range)
+            if proxy.closed or not accepted then return false end
+            return owner.on_excerpt(selected,proxy,range)
+        end
+    end
     if source_id(state)=='weread' and type(owner.on_chapter_comments)=='function' then
         core.chapter_comments=function(_,range)
             if proxy.closed or not accepted then return false end

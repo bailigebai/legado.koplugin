@@ -49,7 +49,7 @@ function Bootstrap.build(plugin, options)
     local license = License.new({ store = LicenseStore.new(settings) })
     local storage, service, source_manager, cover_loader, reader_session, download_manager, root, local_library
     local requests, weread_auth, weread_client, weread_service, ai_service, avatar_loader
-    local offline_cache,cache_management
+    local offline_cache,cache_management,excerpt_service
     local presenter
     local DataStorage = optional("datastorage")
     local fs = options.fs or Fs.new()
@@ -79,6 +79,9 @@ function Bootstrap.build(plugin, options)
             local UrlTemplate = require("legado.lib.url_template")
             local BookService = require("legado.lib.book_service")
             requests = RequestEngine.new({ scheduler = UIManager, settings = settings })
+            local excerpt_client=require('legado.lib.obsidian_client').new{fs=fs,settings=settings,
+                requests=RequestEngine.new{scheduler=UIManager,settings=settings}}
+            excerpt_service=require('legado.lib.excerpt_service').new{storage=storage,client=excerpt_client,scheduler=UIManager}
             ai_service = require("legado.lib.ai_service").new({
                 requests = RequestEngine.new({ scheduler = UIManager, settings = settings, max_timeout = 90 }),
                 fs = fs, settings = settings,
@@ -229,6 +232,7 @@ function Bootstrap.build(plugin, options)
         weread_client = weread_client, weread_shelf_path = root and (root .. "/weread-shelf.json") or nil,
         weread_service = weread_service,
         ai_service = ai_service,
+        excerpt_service = excerpt_service,
         cache_management = cache_management,
         presenter = presenter,
         fs = fs,
@@ -265,6 +269,7 @@ function Bootstrap.build(plugin, options)
         reader_session.ui.on_book_info = function(doc) return app:openReaderBookInfo(doc) end
         reader_session.ui.on_add_to_shelf = function(doc) return app:addReaderToShelf(doc) end
         reader_session.ui.on_ai = function(text, doc) return app:explainSelection(text, doc) end
+        reader_session.ui.on_excerpt=function(text,doc,range) return app:captureExcerpt(text,doc,range) end
         reader_session.ui.on_dictionary = function(text, doc) return app:openDictionary(text,doc) end
         reader_session.ui.on_chapter_comments = function(doc,range) return app:openChapterComments(doc,range) end
         reader_session.ui.on_chapter_discussions = function(doc) return app:openChapterDiscussions(doc) end

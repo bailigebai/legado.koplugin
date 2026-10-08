@@ -1750,6 +1750,7 @@ function Presenter:_settings(view)
     if view.ai_service then items[#items + 1] = { text = "AI 服务设置", callback = function()
         return self:_aiSettings(view)
     end } end
+    if view.on_excerpts then items[#items+1]={text='Obsidian 摘录',callback=view.on_excerpts} end
     local cache_usage
     if view.cache_usage then
         local ok, result = pcall(view.cache_usage)
@@ -2007,6 +2008,9 @@ end
 
 function Presenter:showChapterComments(comments,document,range)
     return require('legado.ui.chapter_discussions').show(self,comments,document,{passage=true,range=range})
+end
+function Presenter:showExcerpts(service,document)
+    return require('legado.ui.excerpts').show(self,service,document)
 end
 
 function Presenter:showChapterDiscussions(discussions,document)

@@ -26,6 +26,7 @@ function App.new(options)
         weread_client = options.weread_client, weread_shelf_path = options.weread_shelf_path,
         weread_service = options.weread_service,
         ai_service = options.ai_service,
+        excerpt_service=options.excerpt_service,
         cache_management = options.cache_management,
         presenter = options.presenter,
         default_download_cache_dir = options.default_download_cache_dir,
@@ -408,6 +409,25 @@ function App:explainSelection(text, document)
     end
     return self.ai_service:explain(text, nil, function() end)
 end
+function App:captureExcerpt(text,document,range)
+    local context,err=require('legado.lib.excerpt_context').build(text,document,range)
+    local saved
+    if context and self.excerpt_service then saved,err=self.excerpt_service:capture(context)
+    elseif context then err='摘录保存尚未初始化，请重新打开不亦阅乎。' end
+    if not saved then
+        if self.presenter then self.presenter:_info(err or '摘录保存失败。','Obsidian 摘录') end
+        return nil,{code='STORAGE_ERROR',message=err or '摘录保存失败。'}
+    end
+    if self.presenter then self.presenter:_info(saved.status=='synced' and '这条摘录已同步到 Obsidian。'
+        or '已保存摘录，连接可用时后台同步。可在“不亦阅乎 → Obsidian 摘录”查看状态。','Obsidian 摘录') end
+    return saved
+end
+function App:openExcerpts(document)
+    if self.presenter and self.excerpt_service then
+        return self.presenter:showExcerpts(self.excerpt_service,document)
+    end
+    return false
+end
 function App:openDictionary(text,document)
     local state=document and document.reading_state
     if not state or document.closed or document.backend~='immersive' or state.book.source_id~='weread'
@@ -550,6 +570,7 @@ function App:openSettings(document, chrome_only, back, section)
     end
     local view=SettingsView.new({ settings = self.settings, settings_error = self.settings_error,
         ai_service = self.ai_service,
+        on_excerpts=self.excerpt_service and function() return self:openExcerpts(document) end or nil,
         plugin_cache_usage = self.cache_management and function() return self.cache_management:usage() end or nil,
         plugin_cache_clear = self.cache_management and function()
             local ready,err=no_active_downloads();if not ready then return nil,err end

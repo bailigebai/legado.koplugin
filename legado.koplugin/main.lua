@@ -9,6 +9,21 @@ function Legado:init()
     self.ui.menu:registerToMainMenu(self)
 end
 
+function Legado:onReaderReady()
+    require('legado.lib.excerpt_context').attach(self.ui,function(text,document,range)
+        return self:_getApp():captureExcerpt(text,document,range)
+    end)
+    if self._app and self._app.excerpt_service then self._app.excerpt_service:schedule() end
+end
+
+function Legado:onNetworkConnected()
+    if self._app and self._app.excerpt_service then self._app.excerpt_service:schedule() end
+end
+
+function Legado:onCloseDocument()
+    require('legado.lib.excerpt_context').detach(self.ui)
+end
+
 function Legado:_getApp()
     if not self._app then self._app = require("legado.ui.bootstrap").build(self) end
     return self._app
@@ -57,6 +72,7 @@ function Legado:addToMainMenu(menu_items)
         sorting_hint = "tools",
         sub_item_table = {
             { text = "打开书架", callback = function() return self:openBookshelf() end },
+            { text = "Obsidian 摘录", callback = function() return self:_getApp():openExcerpts() end },
         },
     }
 end

@@ -1054,6 +1054,16 @@ function View:showSelectionActions()
             return result or true
         end}})
     end
+    if self.callbacks.excerpt then
+        table.insert(buttons,1,{{text='摘录到 Obsidian',callback=function()
+            if not current() then return false end
+            local first,last=selection:range()
+            local result,err=self:_call('excerpt',selection:text(),{first=first,last=last})
+            if not result or err then return self:_error(err or '摘录保存失败，选区已保留。') end
+            self:clearSelection(false)
+            return result
+        end}})
+    end
     self.selection_dialog=require('ui/widget/buttondialog'):new{
         title='已选文字：'..preview..(more and '…' or ''),width=math.floor(self.dimen.w*.9),buttons=buttons,
         tap_close_callback=function() if current() then self:clearSelection(true) end end}
@@ -1061,7 +1071,7 @@ function View:showSelectionActions()
     return true
 end
 function View:onHold(_,ges) return safe_event(self,function()
-    if not self.callbacks.ai and not self.callbacks.dictionary then return self:showMenu() end
+    if not self.callbacks.ai and not self.callbacks.dictionary and not self.callbacks.excerpt then return self:showMenu() end
     if self.selection then
         self:_closeDialog('selection_dialog');self.selection:move(ges and ges.pos)
     else

@@ -273,7 +273,7 @@ function RequestEngine:_normalize(request)
     normalized.headers = shallow_copy(request.headers)
     set_default_header(normalized.headers, "Accept-Encoding", "identity")
     normalized.method = tostring(request.method or (request.body ~= nil and "POST" or "GET")):upper()
-    if normalized.method ~= "GET" and normalized.method ~= "POST" and normalized.method ~= "HEAD" then
+    if normalized.method ~= "GET" and normalized.method ~= "POST" and normalized.method ~= "HEAD" and normalized.method~='PUT' then
         return nil, Errors.new(Errors.INVALID_INPUT, "request method is unsupported", { method = normalized.method })
     end
     normalized.timeout = clamp(request.timeout or setting(self.settings, "timeout", RequestEngine.DEFAULT_TIMEOUT),

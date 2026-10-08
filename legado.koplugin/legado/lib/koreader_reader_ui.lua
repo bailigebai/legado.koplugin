@@ -389,6 +389,13 @@ function Adapter:openDocument(path, callbacks)
             for _,tab in ipairs(reader.menu.tab_item_table or {}) do remember(tab,{'callback'}) end
         end
         self:_attachMenu(reader, proxy, callbacks)
+        if self.on_excerpt then
+            remember(reader,{'legado_reading_document'})
+            reader.legado_reading_document=proxy
+            local Excerpts=require('legado.lib.excerpt_context')
+            Excerpts.attach(reader,function(text,doc,range) return self.on_excerpt(text,doc,range) end,proxy)
+            rollbacks[#rollbacks+1]=function() Excerpts.detach(reader) end
+        end
         local native_comments
         if self.on_chapter_comments and callbacks and callbacks.weread then
             native_comments=require('legado.lib.weread_native_comments').new(reader,proxy,
@@ -489,6 +496,10 @@ function Adapter:openDocument(path, callbacks)
             reader.onClose = function(instance, ...)
                 if proxy.closed then return end
                 proxy.closed = true
+                if self.on_excerpt then
+                    require('legado.lib.excerpt_context').detach(reader)
+                    if reader.legado_reading_document==proxy then reader.legado_reading_document=nil end
+                end
                 if native_comments then native_comments:close() end
                 if callbacks and callbacks.weread and reader.highlight and reader.highlight.removeFromHighlightDialog then
                     reader.highlight:removeFromHighlightDialog('12_legado_comments')

@@ -39,7 +39,7 @@ local labels = {}
 for _, item in ipairs(menu_items.legado.sub_item_table) do
     labels[#labels + 1] = item.text
 end
-assertx.equal(1, #labels, "native menu has one clear plugin entry")
+assertx.equal(2, #labels, "native menu offers bookshelf and Obsidian excerpts")
 assertx.equal("打开书架", labels[1], "all plugin actions start from the grouped shelf")
 assertx.truthy(plugin:launch(), "launch is safe before later UI tasks")
 assertx.truthy(plugin:openBookshelf(), "bookshelf entry is safe before later UI tasks")

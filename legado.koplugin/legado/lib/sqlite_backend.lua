@@ -189,6 +189,7 @@ function SqliteBackend:_initialize()
         "CREATE TABLE IF NOT EXISTS " .. TABLE .. "chapters (uid TEXT PRIMARY KEY, book_id TEXT NOT NULL, chapter_index INTEGER NOT NULL, payload TEXT NOT NULL);",
         "CREATE TABLE IF NOT EXISTS " .. TABLE .. "progress (book_id TEXT PRIMARY KEY, payload TEXT NOT NULL);",
         "CREATE TABLE IF NOT EXISTS " .. TABLE .. "downloads (id TEXT PRIMARY KEY, book_id TEXT, payload TEXT NOT NULL);",
+        "CREATE TABLE IF NOT EXISTS " .. TABLE .. "excerpts (id TEXT PRIMARY KEY, payload TEXT NOT NULL);",
     }
     for _, statement in ipairs(schema) do
         local ready, ready_error = self:_exec(statement)
@@ -267,6 +268,9 @@ function SqliteBackend:listProgress() return self:_list("progress", nil, "book_i
 function SqliteBackend:getDownload(id) return self:_get("downloads", "id=" .. quote(id)) end
 function SqliteBackend:putDownload(value) return self:_put("downloads", "id", value.id, value, { book_id = value.book_id or "" }) end
 function SqliteBackend:listDownloads() return self:_list("downloads", nil, "id") end
+function SqliteBackend:putExcerpt(value) return self:_put('excerpts','id',value.id,value) end
+function SqliteBackend:getExcerpt(id) return self:_get('excerpts','id='..quote(id)) end
+function SqliteBackend:listExcerpts() return self:_list('excerpts',nil,'id') end
 function SqliteBackend:deleteDownload(id) return self:_exec("DELETE FROM " .. TABLE .. "downloads WHERE id=" .. quote(id)) end
 
 function SqliteBackend:replaceChapters(book_id, chapters)

@@ -30,6 +30,11 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
+& $venvPython (Join-Path $repositoryRoot "spec\obsidian_connection_test.py")
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
 & powershell -ExecutionPolicy Bypass -File (Join-Path $repositoryRoot "spec\namespace_checker_spec.ps1")
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
