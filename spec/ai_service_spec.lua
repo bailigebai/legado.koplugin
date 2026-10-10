@@ -16,7 +16,7 @@ local ai = AI.new{ requests = requests, fs = fs, settings = settings }
 eq("https://api.deepseek.com", AI.providers.deepseek.base_url, "DeepSeek official base URL is configured")
 eq("deepseek-flash", AI.providers.deepseek.model, "current DeepSeek default model is configured")
 eq("https://api.xiaomimimo.com/v1", AI.providers.mimo.base_url, "MiMo official base URL is configured")
-eq("mimo-v2.5-pro", AI.providers.mimo.model, "current MiMo default model is configured")
+eq("mimo-v2.6-pro", AI.providers.mimo.model, "current MiMo default model is configured")
 eq(true, AI.DEFAULT_PROMPT:find("不熟悉的名称", 1, true) ~= nil, "default reading prompt explains unfamiliar names")
 files["deepseek.json"] = Json.encode({ api_key = "secret-deepseek" })
 eq(true, ai:setKeyFile("deepseek", "deepseek.json"), "JSON key file is accepted")
@@ -41,7 +41,7 @@ local connected, connection_error
 ai:testConnection(function(value, err) connected, connection_error = value, err end)
 eq("https://api.xiaomimimo.com/v1/chat/completions", pending[2].spec.url,
     "connection test uses the selected provider")
-eq("mimo-v2.5-pro", pending[2].spec.body.model, "MiMo test uses its default model")
+eq("mimo-v2.6-pro", pending[2].spec.body.model, "MiMo test uses its default model")
 eq("disabled", pending[2].spec.body.thinking and pending[2].spec.body.thinking.type,
     "MiMo's short connection test skips default deep thinking")
 pending[2].callback({status = 200, body = Json.encode({choices = {{message = {}}}})})
@@ -57,7 +57,7 @@ pending[4].callback({status=200,body=Json.encode({unrelated=true})})
 eq('AI 返回内容不可用，请检查密钥、模型和服务余额',malformed_error,
     'missing choices always produces an explicit error rather than nil answer and nil error')
 for _,case in ipairs{
-    {status=401,expected='AI 密钥无效或已过期，请重新选择密钥文件。'},
+    {status=401,expected='AI 密钥无效或已过期，请在 AI 服务设置中重新输入或选择密钥文件。'},
     {status=402,expected='AI 服务余额不足，请在服务商处检查余额。'},
     {status=429,expected='AI 请求过于频繁，请稍后重试。'},
     {status=503,expected='AI 服务暂时不可用，请稍后重试。'},

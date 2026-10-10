@@ -1949,81 +1949,7 @@ function Presenter:_aiRequest(message, start, current, finish)
 end
 
 function Presenter:_aiSettings(view)
-    local values = view:refresh()
-    local provider = values.ai_provider == "mimo" and "mimo" or "deepseek"
-    local items = {}
-    local widget, test_generation = nil, 0
-    for _, choice in ipairs({ { "DeepSeek", "deepseek" }, { "小米 MiMo", "mimo" } }) do
-        items[#items + 1] = { text = (choice[2] == provider and "✓ " or "□ ") .. choice[1], callback = function()
-            local saved, err = view:set("ai_provider", choice[2])
-            if saved == nil then return self:_info("设置保存失败（"
-                .. safe_token(err and err.code, "STORAGE_ERROR") .. "）", "AI 服务") end
-            return self:_aiSettings(view)
-        end }
-    end
-    local function save_key(path)
-        local saved, err = view.ai_service:setKeyFile(view.settings:get("ai_provider"), path)
-        if not saved then return self:_info(err or "密钥文件无效", "AI 服务") end
-        return self:_aiSettings(view)
-    end
-    items[#items + 1] = { text = "选择密钥 JSON 文件", callback = function()
-        local PathChooser = optional("ui/widget/pathchooser")
-        if PathChooser then
-            return self:_show(PathChooser:new{ title = "选择密钥 JSON 文件", select_file = true,
-                select_directory = false, show_files = true,
-                file_filter = function(path) return tostring(path):lower():match("%.json$") ~= nil end,
-                path = (G_reader_settings and G_reader_settings.readSetting
-                    and G_reader_settings:readSetting("home_dir")) or "/mnt/us/documents",
-                onConfirm = save_key })
-        end
-        local dialog
-        local function accepted(path)
-            if path == nil and dialog and type(dialog.getInputText) == "function" then path = dialog:getInputText() end
-            if not self:_closeWidget(dialog) then return false end
-            return save_key(path)
-        end
-        dialog = construct(self.input_dialog, { title = "密钥 JSON 文件路径", input_type = "string",
-            buttons = { { { text = "取消", callback = function() return self:_closeWidget(dialog) end },
-                { text = "确定", is_enter_default = true, callback = accepted } } } })
-        return self:_showInput(dialog)
-    end }
-    items[#items + 1] = { text = "补充提示词", callback = function()
-        local dialog
-        local function accepted(value)
-            if value == nil and dialog and type(dialog.getInputText) == "function" then value = dialog:getInputText() end
-            if type(value) ~= "string" or #value > 2000 then return self:_info("补充提示词不能超过 2000 字节", "AI 服务") end
-            if not self:_closeWidget(dialog) then return false end
-            local saved, err = view:set("ai_prompt_extra", value)
-            if saved == nil then return self:_info("设置保存失败（"
-                .. safe_token(err and err.code, "STORAGE_ERROR") .. "）", "AI 服务") end
-            return self:_aiSettings(view)
-        end
-        dialog = construct(self.input_dialog, { title = "补充提示词", input = values.ai_prompt_extra or "",
-            multiline = true, buttons = { { { text = "取消", callback = function() return self:_closeWidget(dialog) end },
-                { text = "保存", is_enter_default = true, callback = accepted } } } })
-        return self:_showInput(dialog)
-    end }
-    items[#items + 1] = { text = "测试连接", callback = function()
-        test_generation = test_generation + 1
-        local generation = test_generation
-        return self:_aiRequest('正在测试 AI 连接，请稍候…',function(done)
-            return view.ai_service:testConnection(done)
-        end,function()
-            return generation == test_generation and self.view_widgets[view] == widget
-                and view.settings:get("ai_provider") == provider
-        end,function(answer,err)
-            self:_info(answer and "AI 连接成功" or (err or "AI 连接失败"), "AI 服务")
-        end)
-    end }
-    widget = self:_modelMenu(view, { title = "AI 服务", item_table = items,
-        close_callback = function()
-            test_generation=test_generation+1
-            if self.ai_operation then self.ai_operation:cancel() end
-            if not self:_closeWidget(widget) then return false end
-            if view.section == 'ai' and view.on_close then return view.on_close(view.local_directories_changed) end
-            return self:_settings(view)
-        end })
-    return widget
+    return require('legado.ui.ai_settings').show(self,view)
 end
 
 function Presenter:_cacheSettings(view)
@@ -2145,43 +2071,7 @@ function Presenter:showDictionary(client,word,document,is_current)
 end
 
 function Presenter:explainSelection(service, selected_text, document)
-    if type(selected_text) ~= 'string' or selected_text == '' or #selected_text > 4000 then
-        local message='请选择不超过 4000 字节的阅读内容。'
-        self:_info(message,'AI 解释')
-        return nil,{code='INVALID_INPUT',message=message}
-    end
-    self.ai_generation=(self.ai_generation or 0)+1
-    local generation=self.ai_generation
-    if self.ai_operation then self.ai_operation:cancel() end
-    self:_closeWidget(self.ai_selection_dialog)
-    local dialog
-    local default_extra = service.settings and service.settings:get('ai_prompt_extra') or ''
-    local function current() return generation==self.ai_generation and (not document or document.closed ~= true) end
-    local function accepted(extra)
-        if extra == nil and dialog and type(dialog.getInputText) == 'function' then extra=dialog:getInputText() end
-        if type(extra) ~= 'string' or #extra > 2000 then
-            return self:_info('补充提示词不能超过 2000 字节。', 'AI 解释')
-        end
-        if self.closed_widgets[dialog] or not current() then return false end
-        return self:_aiRequest('正在分析所选内容，请稍候…',function(done)
-            if not self:_closeWidget(dialog) then
-                done(nil,'分析窗口切换失败，请重新选择文字后重试。')
-                return nil
-            end
-            return service:explain(selected_text,extra,done)
-        end,current,function(answer,err)
-            if not answer then return self:_info(err or 'AI 解释失败', 'AI 解释') end
-            local TextViewer=optional('ui/widget/textviewer')
-            return self:_show(construct(TextViewer or self.info_message, { title='AI 解释', text=answer }))
-        end)
-    end
-    local preview,_,more=require('legado.lib.leko_text').utf8Window(selected_text,1,120)
-    dialog=construct(self.input_dialog, { title='AI 解释 · 补充要求', input=default_extra,
-        description='已选文字：'..preview..(more and '…' or ''),input_hint='可留空，按默认要求分析',
-        multiline=true, buttons={{{text='取消',callback=function() return self:_closeWidget(dialog) end},
-            {text='解释',is_enter_default=true,callback=accepted}}} })
-    self.ai_selection_dialog=dialog
-    return self:_showInput(dialog)
+    return require('legado.ui.ai_selection').show(self,service,selected_text,document)
 end
 
 function Presenter:_readingResult(result, err, detail)

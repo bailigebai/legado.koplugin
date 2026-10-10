@@ -2,6 +2,7 @@ local Errors = require("legado.lib.errors")
 local Fs = require("legado.lib.fs")
 local Json = require("legado.lib.json_codec")
 local ReceiptStyles = require('legado.lib.receipt_styles')
+local AIPresets = require('legado.lib.ai_presets')
 
 local Settings = {}
 Settings.__index = Settings
@@ -47,6 +48,8 @@ Settings.DEFAULTS = {
     ai_deepseek_key_file = "",
     ai_mimo_key_file = "",
     ai_prompt_extra = "",
+    ai_deepseek_model = "",
+    ai_mimo_model = "",
     obsidian_config_file = "",
     log_level = "info",
     cache_limit_mb = 500,
@@ -100,6 +103,8 @@ local function normalized(key, value)
         return value == "mimo" and "mimo" or "deepseek"
     elseif key == "ai_prompt_extra" then
         return type(value) == "string" and value:sub(1, 2000) or ""
+    elseif key == 'ai_deepseek_model' or key == 'ai_mimo_model' then
+        return AIPresets.validModel(value) and value or ''
     elseif key == "side_toc_position" then
         return value == "right" and "right" or "left"
     elseif key == 'receipt_style' then
@@ -326,6 +331,9 @@ local function validate_settings(value, allow_legacy)
     end
     if value.local_dir ~= nil and (#value.local_dir > 4096 or value.local_dir:find('%z')) then error("invalid local directory") end
     if value.ai_provider ~= nil and not ({deepseek=true,mimo=true})[value.ai_provider] then error("invalid AI provider") end
+    for _,key in ipairs{'ai_deepseek_model','ai_mimo_model'} do
+        if value[key]~=nil and value[key]~='' and not AIPresets.validModel(value[key]) then error('invalid AI model') end
+    end
     for _, key in ipairs({"ai_deepseek_key_file","ai_mimo_key_file","obsidian_config_file"}) do
         if value[key] ~= nil and (#value[key] > 4096 or value[key]:find('%z')) then error("invalid AI key file path") end
     end

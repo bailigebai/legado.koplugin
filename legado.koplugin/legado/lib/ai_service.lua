@@ -1,13 +1,11 @@
 local Json = require("legado.lib.json_codec")
+local Presets = require('legado.lib.ai_presets')
 
 local AI = {}
 AI.__index = AI
 
-AI.providers = {
-    deepseek = { base_url = "https://api.deepseek.com", model = "deepseek-flash" },
-    mimo = { base_url = "https://api.xiaomimimo.com/v1", model = "mimo-v2.5-pro" },
-}
-AI.DEFAULT_PROMPT = "请用通俗中文解释下面这段阅读内容。先说明不熟悉的名称或术语，再解释句子的意思和上下文；不要编造原文没有的信息。"
+AI.providers = Presets.providers
+AI.DEFAULT_PROMPT = Presets.templates[1].prompt
 
 local function trim(value)
     return type(value) == "string" and value:match("^%s*(.-)%s*$") or ""
@@ -20,7 +18,7 @@ local function decoded(raw)
 end
 
 local function request_error(status,err)
-    if status==401 then return 'AI 密钥无效或已过期，请重新选择密钥文件。' end
+    if status==401 then return 'AI 密钥无效或已过期，请在 AI 服务设置中重新输入或选择密钥文件。' end
     if status==402 then return 'AI 服务余额不足，请在服务商处检查余额。' end
     if status==429 then return 'AI 请求过于频繁，请稍后重试。' end
     if status and status>=500 then return 'AI 服务暂时不可用，请稍后重试。' end
@@ -31,7 +29,52 @@ end
 function AI.new(options)
     options = options or {}
     assert(options.requests and options.fs and options.settings, "AI service requires requests, fs and settings")
-    return setmetatable({ requests = options.requests, fs = options.fs, settings = options.settings }, AI)
+    return setmetatable({ requests = options.requests, fs = options.fs, settings = options.settings,
+        key_dir = options.key_dir }, AI)
+end
+
+function AI:model(provider)
+    provider=provider or self:provider()
+    local config=AI.providers[provider]
+    if not config then return nil end
+    local value=self.settings:get('ai_'..provider..'_model')
+    return Presets.validModel(value) and value or config.model
+end
+
+function AI:setModel(provider,value)
+    if not AI.providers[provider] or not Presets.validModel(value) then
+        return nil,'模型 ID 无效：请使用 1～128 个英文字母、数字或 . _ / - :，不要包含空格。'
+    end
+    if self.settings:set('ai_'..provider..'_model',value)==nil then return nil,'模型保存失败，仍使用之前的模型。' end
+    return true
+end
+
+function AI:_manualPath(provider)
+    if not AI.providers[provider] or type(self.key_dir)~='string' or self.key_dir=='' then return nil end
+    return self.key_dir..'/'..provider..'.json'
+end
+
+function AI:keySource(provider)
+    local path=self.settings:get('ai_'..provider..'_key_file')
+    if type(path)~='string' or path=='' then return 'unset' end
+    return path==self:_manualPath(provider) and 'manual' or 'file'
+end
+
+function AI:setManualKey(provider,value)
+    local path=self:_manualPath(provider)
+    if not path then return nil,'设备密钥目录不可用，请选择密钥 JSON 文件。' end
+    if self.settings.recovery_required then return nil,'请先恢复插件设置，再保存密钥。' end
+    value=trim(value)
+    if value=='' or #value>4096 or value:find('[%c%s]') then return nil,'密钥无效：不能为空或包含空格、换行。' end
+    local raw=Json.encode{api_key=value}
+    if #raw>8192 then return nil,'密钥过长。' end
+    local ok,saved=pcall(self.fs.atomicWrite,self.fs,path,raw)
+    if not ok or not saved then return nil,'密钥保存失败，原有配置仍可使用。' end
+    if self.settings:get('ai_'..provider..'_key_file')~=path
+        and self.settings:set('ai_'..provider..'_key_file',path)==nil then
+        return nil,'密钥配置保存失败，仍使用之前的密钥。'
+    end
+    return true
 end
 
 function AI:provider()
@@ -43,7 +86,7 @@ function AI:_key(provider, path)
     if not AI.providers[provider] then return nil, "AI 服务商不可用" end
     path = path or self.settings:get("ai_" .. provider .. "_key_file")
     if type(path) ~= "string" or path == "" or #path > 4096 or path:find("%z") then
-        return nil, "请先选择密钥 JSON 文件"
+        return nil, "请在 AI 服务设置中输入密钥或选择密钥 JSON 文件"
     end
     local ok, raw = pcall(self.fs.readBounded, self.fs, path, 8192)
     if not ok or type(raw) ~= "string" then return nil, "密钥文件无法读取或超过 8 KiB" end
@@ -72,7 +115,7 @@ function AI:_chat(provider, messages, callback)
     if not config then callback(nil, "AI 服务商不可用"); return nil end
     local key, key_error = self:_key(provider)
     if not key then callback(nil, key_error); return nil end
-    local body = { model = config.model, messages = messages, stream = false }
+    local body = { model = self:model(provider), messages = messages, stream = false }
     if provider == "mimo" then body.thinking = { type = "disabled" } end
     return self.requests:execute({ url = config.base_url .. "/chat/completions",
         method = "POST", source_id = "ai-" .. provider, priority = "foreground",
@@ -95,13 +138,14 @@ function AI:_chat(provider, messages, callback)
     end)
 end
 
-function AI:explain(selected_text, extra_prompt, callback)
+function AI:explain(selected_text, extra_prompt, callback, template_id)
     callback = callback or function() end
     local text = trim(selected_text)
     if text == "" or #text > 4000 then callback(nil, "请选择不超过 4000 字节的阅读内容"); return nil end
     local extra = trim(extra_prompt ~= nil and extra_prompt or self.settings:get("ai_prompt_extra"))
     if #extra > 2000 then callback(nil, "补充提示词过长"); return nil end
-    local prompt = AI.DEFAULT_PROMPT
+    local prompt = Presets.prompt(template_id)
+    if not prompt then callback(nil,'读书提示词模板不可用，请重新选择。');return nil end
     if extra ~= "" then prompt = prompt .. "\n补充要求：" .. extra end
     return self:_chat(self:provider(), { { role = "system", content = prompt },
         { role = "user", content = text } }, callback)

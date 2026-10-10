@@ -83,6 +83,7 @@ function Bootstrap.build(plugin, options)
                 requests=RequestEngine.new{scheduler=UIManager,settings=settings}}
             excerpt_service=require('legado.lib.excerpt_service').new{storage=storage,client=excerpt_client,scheduler=UIManager}
             ai_service = require("legado.lib.ai_service").new({
+                key_dir = root .. '/ai-keys',
                 requests = RequestEngine.new({ scheduler = UIManager, settings = settings, max_timeout = 90 }),
                 fs = fs, settings = settings,
             })
